@@ -46,8 +46,10 @@ Evidence-first detection and interactive remediation of remote-access software:
 - Checks original PE filename, product metadata, company metadata, Authenticode status, service-name patterns, package names, and paths. This detects variable ScreenConnect service names and can identify renamed tools such as an AppData copy named `AdobeReader.exe` whose original filename is `ScreenConnect.ClientService.exe`.
 - Separately flags unknown services or persistence in user-writable paths and network-connected processes running from those locations.
 - Makes no changes while scanning. Before remediation it exports JSON/CSV evidence to `%ProgramData%\CompuTek\RemoteScanner\Cases`.
-- Requires typed confirmation per product, uses the registered vendor uninstaller first, checks its exit code, and rescans afterward. Portable or hidden AppData artifacts require an additional typed confirmation before their processes are stopped, persistence is disabled, and files are moved to quarantine.
-- Does not delete service definitions automatically; disabled service/task definitions remain available as evidence.
+- Separates findings by installation location, even when two copies use the same product. A technician must classify every location with a typed `KEEP <review-id>` or `REMOVE <review-id>` decision, so the approved company support agent can remain while a hidden AppData copy is removed.
+- Saves the technician identity, ticket/case reference, every keep/remove decision, and a final verification result in the case folder. No remediation begins until all findings are classified and the technician types `APPLY REMOVALS`.
+- For each approved removal, preserves product logs, configuration, hashes, and registry evidence first; runs the registered vendor uninstaller; then removes residual processes, services, scheduled tasks, autoruns, AppX/provisioned packages, uninstall registrations, and executable artifacts. Residual files are moved to quarantine instead of being permanently erased.
+- Rescans each removed installation scope. It reports `RemovalVerified` only when that scope is gone and the verification scan completed without collector errors; a kept copy of the same product does not cause a false removal failure.
 
 ### Shared scanner files
 

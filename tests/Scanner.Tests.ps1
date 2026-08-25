@@ -39,6 +39,32 @@ foreach ($relativePath in @(
 Assert-True (@($catalog.products).Count -ge 60) 'Catalog contains at least 60 remote-access/RMM product families'
 Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.products).Count) 'Catalog product IDs are unique'
 
+$remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
+Assert-True ($remediationSource -match 'KEEP \$\(\$candidate\.Id\)' -and $remediationSource -match 'REMOVE \$\(\$candidate\.Id\)') 'Technician must explicitly keep or remove every installation scope'
+Assert-True ($remediationSource -match "APPLY REMOVALS" -and $remediationSource -notmatch 'A for all') 'Bulk removal cannot start without a final typed confirmation'
+Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
+Assert-True ($remediationSource -match 'Protect-CompuTekEvidenceDirectory' -and $remediationSource -match 'S-1-5-32-544') 'Case and quarantine evidence is restricted to SYSTEM and Administrators'
+Assert-True ($remediationSource -match 'sc\.exe delete' -and $remediationSource -match 'Unregister-ScheduledTask') 'Full removal deletes residual service and scheduled-task persistence'
+Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource -match 'NotVerified-ScanIncomplete') 'Removal is only verified after a complete follow-up scan'
+
+$moduleSource = Get-Content -LiteralPath $modulePath -Raw
+Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
+
+$remediationTokens = $null
+$remediationErrors = $null
+$remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
+foreach ($functionName in @('Get-FindingScopePath','New-RemovalCandidates')) {
+    $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
+    Invoke-Expression $functionAst.Extent.Text
+}
+$legitimateInstall = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='InstalledProgram';Name='Company Support';Path='C:\Program Files\ScreenConnect';InstallLocation='C:\Program Files\ScreenConnect';RegistryPath='HKLM:\Software\Uninstall\CompanySupport';PackageFullName=$null}
+$legitimateService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
+$hiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden';Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
+$scopes = @(New-RemovalCandidates @($legitimateInstall,$legitimateService,$hiddenService))
+Assert-True ($scopes.Count -eq 2) 'Approved and hidden copies of the same product are presented as separate technician decisions'
+Assert-True (@($scopes | Where-Object {$_.ScopePath -eq 'C:\Program Files\ScreenConnect'}).Findings.Count -eq 2) 'Subfolder services are grouped with their registered installation'
+Assert-True (@($scopes | Where-Object {$_.ScopePath -eq 'C:\Users\Victim\AppData\Roaming\Adobe'}).Count -eq 1) 'Hidden AppData copy remains isolated from the approved installation'
+
 $hiddenScreenConnect = New-TestEvidence @{
     ArtifactType='Service';Name='ScreenConnect Client 0123456789abcdef';DisplayName='ScreenConnect Client 0123456789abcdef'
     Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';CommandLine='"C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe" -service'
