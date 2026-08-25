@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $repoRoot 'scripts\CompuTek.Scanner.Common.psm1'
 $catalogPath = Join-Path $repoRoot 'scripts\RemoteAccessSignatures.json'
-Import-Module $modulePath -Force
+$scannerModule = Import-Module $modulePath -Force -PassThru
 
 $script:Failures = 0
 function Assert-True {
@@ -49,6 +49,25 @@ Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource
 
 $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
+
+$artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts'))
+$traversalRoot = Join-Path $artifactRoot ('TraversalTest-' + [Guid]::NewGuid().ToString('N'))
+try {
+    $current = New-Item -Path $traversalRoot -ItemType Directory -Force
+    $expectedFile = Join-Path $current.FullName 'ScreenConnect.ClientService.exe'
+    Set-Content -LiteralPath $expectedFile -Value 'test' -Encoding ASCII
+    foreach ($depth in 1..6) { $current = New-Item -Path (Join-Path $current.FullName ("Depth$depth")) -ItemType Directory -Force }
+    $tooDeepFile = Join-Path $current.FullName 'AnyDesk.exe'
+    Set-Content -LiteralPath $tooDeepFile -Value 'test' -Encoding ASCII
+    $traversalResults = @(& $scannerModule { param($root) Get-CompuTekCandidateFilesSafe -Root $root -Extensions @('.exe') -MaxDepth 5 } $traversalRoot)
+    Assert-True ($traversalResults.FullName -contains $expectedFile) 'Bounded file discovery finds ScreenConnect executables in a scanned high-risk folder'
+    Assert-True ($traversalResults.FullName -notcontains $tooDeepFile) 'Normal file discovery honors its depth boundary; Deep Scan is required beyond it'
+} finally {
+    $resolvedTraversalRoot = [IO.Path]::GetFullPath($traversalRoot)
+    if ($resolvedTraversalRoot.StartsWith($artifactRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedTraversalRoot)) {
+        Remove-Item -LiteralPath $resolvedTraversalRoot -Recurse -Force
+    }
+}
 
 $remediationTokens = $null
 $remediationErrors = $null

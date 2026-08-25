@@ -131,7 +131,7 @@ namespace CompuTek.Scanner.App
             daysSuffix.Location = new Point(159, 31);
             options.Controls.Add(daysSuffix);
 
-            deepScan.Text = "Deep fixed-drive scan (slower)";
+            deepScan.Text = "Full fixed-drive scan (much slower)";
             deepScan.AutoSize = true;
             deepScan.Location = new Point(18, 64);
             options.Controls.Add(deepScan);

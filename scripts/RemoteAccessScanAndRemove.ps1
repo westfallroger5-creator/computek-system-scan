@@ -27,6 +27,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
@@ -284,8 +285,7 @@ function Preserve-CandidateOperationalData {
     $namePattern = '(?i)(screenconnect|connectwise|remote|support|session|audit|history|server|client|agent|ssh|authorized_keys)'
     foreach ($directory in $sourceDirectories) {
         if ($copiedCount -ge 500 -or $copiedBytes -ge 524288000) { break }
-        $enumerationErrors = @()
-        foreach ($file in Get-ChildItem -LiteralPath $directory -Recurse -File -Force -ErrorAction SilentlyContinue -ErrorVariable +enumerationErrors) {
+        foreach ($file in Get-CompuTekCandidateFilesSafe -Root $directory -MaxDepth 8) {
             if ($copiedCount -ge 500 -or $copiedBytes -ge 524288000) { break }
             if ($file.Length -gt 52428800) { continue }
             if ($file.Extension -notmatch '^\.(log|config|ini|yaml|yml|xml|json|txt|db|sqlite|sqlite3)$' -and $file.Name -notmatch $namePattern) { continue }
@@ -645,7 +645,11 @@ Write-Host '  CompuTek Remote-Access Scanner and Remediation Tool' -ForegroundCo
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host "Catalog: $($catalog.catalogVersion) ($(@($catalog.products).Count) product families)" -ForegroundColor DarkGray
 Write-Host "Case folder: $caseRoot" -ForegroundColor DarkGray
-if ($DeepScan) { Write-Host 'Deep scan is enabled. This can take a long time.' -ForegroundColor Yellow }
+if ($DeepScan) {
+    Write-Host 'Full fixed-drive scan is enabled. This can take a long time.' -ForegroundColor Yellow
+} else {
+    Write-Host 'Scan mode: bounded high-risk folders. Select Full fixed-drive scan to inspect beyond the targeted depth.' -ForegroundColor Yellow
+}
 Write-Host 'Scanning. No changes are made during this phase...' -ForegroundColor Cyan
 
 try {

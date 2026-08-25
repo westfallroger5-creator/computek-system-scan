@@ -14,7 +14,7 @@ The EXE contains a known-good copy of both scanners and their shared module. It 
 
 1. Double-click `CompuTekScanner.exe` and approve the Windows administrator prompt.
 2. Confirm the signature version shown in the upper-right corner.
-3. Choose the lookback period and optional deep scan/file hashes.
+3. Choose the lookback period and optional full fixed-drive scan/file hashes. The normal scan uses a junction-safe, bounded search of high-risk user and shared-data folders. Full fixed-drive mode searches every fixed drive and can take considerably longer.
 4. Leave **Remote scan only** checked for reporting without removal, or clear it to enter technician-reviewed removal mode.
 5. Leave the application open while it reports the current collection stage and elapsed time. Large AppData or ProgramData folders can take several minutes; a visible **Still working** heartbeat confirms the scan has not frozen.
 6. For removal mode, classify each detected installation with the exact `KEEP <review-id>` or `REMOVE <review-id>` response shown by the application. This happens separately for different installation locations, including two copies of the same product.

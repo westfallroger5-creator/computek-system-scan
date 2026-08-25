@@ -18,6 +18,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
@@ -154,6 +155,7 @@ function Get-RecentFileCandidates {
     param([string[]]$Extensions, [switch]$OnlyTempAndAppData)
     $roots = New-Object System.Collections.Generic.List[string]
     foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directory -Force -ErrorAction SilentlyContinue) {
+        if (($profile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         $relativePaths = if ($OnlyTempAndAppData) { @('AppData\Local\Temp','AppData\Roaming') } else { @('Desktop','Documents','Downloads','OneDrive','AppData\Local\Temp') }
         foreach ($relative in $relativePaths) {
             $candidate = Join-Path $profile.FullName $relative
@@ -162,9 +164,9 @@ function Get-RecentFileCandidates {
     }
     if (Test-Path (Join-Path $env:SystemRoot 'Temp')) { $roots.Add((Join-Path $env:SystemRoot 'Temp')) }
     $seen = @{}
+    $maxDepth = if ($DeepScan) { -1 } else { 5 }
     foreach ($root in @($roots | Sort-Object -Unique)) {
-        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue) {
-            if ($Extensions -notcontains $file.Extension.ToLowerInvariant()) { continue }
+        foreach ($file in Get-CompuTekCandidateFilesSafe -Root $root -Extensions $Extensions -MaxDepth $maxDepth) {
             if ($file.LastWriteTime -lt $cutoff -and $file.CreationTime -lt $cutoff) { continue }
             if ($seen.ContainsKey($file.FullName)) { continue }
             $seen[$file.FullName] = $true
@@ -208,7 +210,7 @@ try {
         $configurationDirectories[$normalized] = [pscustomobject]@{Path=$directory;ProductId=$finding.ProductId;ProductName=$finding.ProductName}
     }
     foreach ($entry in $configurationDirectories.Values) {
-        $configFiles = @(Get-ChildItem -LiteralPath $entry.Path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {$_.Extension.ToLowerInvariant() -in @('.config','.conf','.ini','.xml','.json','.log','.txt','.db')} | Select-Object -First 300)
+        $configFiles = @(Get-CompuTekCandidateFilesSafe -Root $entry.Path -Extensions @('.config','.conf','.ini','.xml','.json','.log','.txt','.db') -MaxDepth 6 | Select-Object -First 300)
         foreach ($file in $configFiles) {
             $fileEvidence = Get-CompuTekFileEvidence -Path $file.FullName -IncludeHash
             $hints = ''
@@ -610,7 +612,7 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
         (Join-Path $profile.FullName 'AppData\Local\BraveSoftware\Brave-Browser\User Data')
     )) {
         if (-not (Test-Path -LiteralPath $browserRoot)) { continue }
-        foreach ($manifestFile in Get-ChildItem -LiteralPath $browserRoot -Filter 'manifest.json' -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {$_.FullName -match '\\Extensions\\'}) {
+        foreach ($manifestFile in Get-CompuTekCandidateFilesSafe -Root $browserRoot -Extensions @('.json') -MaxDepth 6 | Where-Object {$_.Name -eq 'manifest.json' -and $_.FullName -match '\\Extensions\\'}) {
             try {
                 $manifest = Get-Content -LiteralPath $manifestFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
                 $permissions = @($manifest.permissions) + @($manifest.host_permissions)
