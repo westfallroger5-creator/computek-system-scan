@@ -22,6 +22,71 @@ function Add-CompuTekCollectorWarning {
     }
 }
 
+function Get-CompuTekCandidateFilesSafe {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string[]]$Extensions = @(),
+        [int]$MaxDepth = -1
+    )
+
+    try {
+        $rootItem = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+        if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Add-CompuTekCollectorWarning "Skipped reparse-point scan root '$Root' to prevent a traversal loop."
+            return
+        }
+    } catch {
+        Add-CompuTekCollectorWarning "File scan root could not be opened: $Root ($($_.Exception.Message))"
+        return
+    }
+
+    $extensionSet = @{}
+    foreach ($extension in $Extensions) {
+        if ($extension) { $extensionSet[$extension.ToLowerInvariant()] = $true }
+    }
+
+    $pending = New-Object 'System.Collections.Generic.Queue[object]'
+    $pending.Enqueue([pscustomobject]@{Path=$Root;Depth=0})
+    $visitedDirectories = @{}
+    $filesInspected = 0
+    $candidateFiles = 0
+    $readErrors = 0
+
+    while ($pending.Count -gt 0) {
+        $entry = $pending.Dequeue()
+        try { $directoryKey = [IO.Path]::GetFullPath([string]$entry.Path).TrimEnd('\').ToLowerInvariant() } catch { $directoryKey = ([string]$entry.Path).ToLowerInvariant() }
+        if ($visitedDirectories.ContainsKey($directoryKey)) { continue }
+        $visitedDirectories[$directoryKey] = $true
+
+        $directoryErrors = @()
+        $children = @(Get-ChildItem -LiteralPath $entry.Path -Force -ErrorAction SilentlyContinue -ErrorVariable +directoryErrors)
+        $readErrors += @($directoryErrors).Count
+        foreach ($child in $children) {
+            if ($child.PSIsContainer) {
+                if ($MaxDepth -ge 0 -and [int]$entry.Depth -ge $MaxDepth) { continue }
+                if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                $pending.Enqueue([pscustomobject]@{Path=$child.FullName;Depth=([int]$entry.Depth + 1)})
+                continue
+            }
+
+            $filesInspected++
+            if (($filesInspected % 2500) -eq 0) {
+                Write-CompuTekScanStage -Message ("Inspected {0:N0} files under {1}" -f $filesInspected,$Root)
+            }
+            if ($extensionSet.Count -eq 0 -or $extensionSet.ContainsKey($child.Extension.ToLowerInvariant())) {
+                $candidateFiles++
+                Write-Output $child
+            }
+        }
+    }
+
+    if ($readErrors -gt 0) {
+        Add-CompuTekCollectorWarning "Some folders under '$Root' could not be read ($readErrors access/read errors)."
+    }
+    Write-CompuTekScanStage -Message ("Finished {0} - inspected {1:N0} files, {2:N0} relevant file types" -f $Root,$filesInspected,$candidateFiles)
+}
+
 function ConvertTo-CompuTekArray {
     param($Value)
     if ($null -eq $Value) { return @() }
@@ -558,20 +623,22 @@ function Get-CompuTekTargetedFileArtifacts {
 
     $cutoff = (Get-Date).ToUniversalTime().AddDays(-1 * [Math]::Abs($LookbackDays))
     $roots = New-Object System.Collections.Generic.List[string]
-    $profileErrors = @()
-    foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable +profileErrors) {
-        foreach ($relative in @('AppData\Local','AppData\Roaming','Downloads','Desktop')) {
-            $candidate = Join-Path $profile.FullName $relative
-            if (Test-Path -LiteralPath $candidate -ErrorAction SilentlyContinue) { $roots.Add($candidate) }
-        }
-    }
-    if ($profileErrors.Count -gt 0) { Add-CompuTekCollectorWarning "Some user profiles could not be enumerated for the targeted file scan ($($profileErrors.Count) errors)." }
-    foreach ($candidate in @($env:ProgramData, (Join-Path $env:SystemRoot 'Temp'))) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate)) { $roots.Add($candidate) }
-    }
     if ($DeepScan) {
         foreach ($volume in Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' -ErrorAction SilentlyContinue) {
             if ($volume.DeviceID) { $roots.Add(($volume.DeviceID + '\')) }
+        }
+    } else {
+        $profileErrors = @()
+        foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable +profileErrors) {
+            if (($profile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            foreach ($relative in @('AppData\Local','AppData\Roaming','Downloads','Desktop')) {
+                $candidate = Join-Path $profile.FullName $relative
+                if (Test-Path -LiteralPath $candidate -ErrorAction SilentlyContinue) { $roots.Add($candidate) }
+            }
+        }
+        if ($profileErrors.Count -gt 0) { Add-CompuTekCollectorWarning "Some user profiles could not be enumerated for the targeted file scan ($($profileErrors.Count) errors)." }
+        foreach ($candidate in @($env:ProgramData, (Join-Path $env:SystemRoot 'Temp'))) {
+            if ($candidate -and (Test-Path -LiteralPath $candidate)) { $roots.Add($candidate) }
         }
     }
 
@@ -583,17 +650,16 @@ function Get-CompuTekTargetedFileArtifacts {
     ) | ForEach-Object { ([string]$_).TrimEnd('\').ToLowerInvariant() + '\' }
     $items = @()
     $seen = @{}
+    $maxDepth = if ($DeepScan) { -1 } else { 5 }
     foreach ($root in @($roots | Sort-Object -Unique)) {
-        Write-CompuTekScanStage -Message ("Inspecting files under {0}" -f $root)
-        $enumerationErrors = @()
-        foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue -ErrorVariable +enumerationErrors) {
+        Write-CompuTekScanStage -Message ("Inspecting files under {0} ({1})" -f $root,$(if($DeepScan){'full depth'}else{'targeted depth'}))
+        foreach ($file in Get-CompuTekCandidateFilesSafe -Root $root -Extensions $extensions -MaxDepth $maxDepth) {
             $lowerPath = $file.FullName.ToLowerInvariant()
             $excluded = $false
             foreach ($prefix in $excludedPrefixes) {
                 if ($lowerPath.StartsWith($prefix)) { $excluded = $true; break }
             }
             if ($excluded) { continue }
-            if ($extensions -notcontains $file.Extension.ToLowerInvariant()) { continue }
             $key = $file.FullName.ToLowerInvariant()
             if ($seen.ContainsKey($key)) { continue }
             $seen[$key] = $true
@@ -622,9 +688,6 @@ function Get-CompuTekTargetedFileArtifacts {
                 $artifact.HeuristicConfidence = 'Low'
                 $items += $artifact
             }
-        }
-        if ($enumerationErrors.Count -gt 0) {
-            Add-CompuTekCollectorWarning "Some paths under '$root' could not be scanned ($($enumerationErrors.Count) access/read errors)."
         }
     }
     return @($items)
@@ -806,6 +869,8 @@ function Invoke-CompuTekRemoteAccessScan {
     }
 
     $completed = (Get-Date).ToUniversalTime()
+    $errorArray = $errors.ToArray()
+    $findingArray = $findings.ToArray()
     return [pscustomobject][ordered]@{
         SchemaVersion = 1
         CatalogVersion = $catalog.catalogVersion
@@ -815,14 +880,14 @@ function Invoke-CompuTekRemoteAccessScan {
         DeepScan = [bool]$DeepScan
         LookbackDays = $LookbackDays
         IsComplete = ($errors.Count -eq 0)
-        Errors = @($errors)
-        Findings = @($findings)
+        Errors = $errorArray
+        Findings = $findingArray
         Stats = [pscustomobject]@{
             ArtifactsInspected = $artifacts.Count
             Findings = $findings.Count
-            KnownProducts = @($findings | Where-Object {$_.Disposition -eq 'KnownRemoteAccessSoftware'} | Select-Object -ExpandProperty ProductId -Unique).Count
-            NativeFeatures = @($findings | Where-Object {$_.Disposition -eq 'RemoteFeatureEnabledOrInstalled'} | Select-Object -ExpandProperty ProductId -Unique).Count
-            SuspiciousUnknown = @($findings | Where-Object {$_.Disposition -eq 'SuspiciousUnknown'}).Count
+            KnownProducts = @($findingArray | Where-Object {$_.Disposition -eq 'KnownRemoteAccessSoftware'} | Select-Object -ExpandProperty ProductId -Unique).Count
+            NativeFeatures = @($findingArray | Where-Object {$_.Disposition -eq 'RemoteFeatureEnabledOrInstalled'} | Select-Object -ExpandProperty ProductId -Unique).Count
+            SuspiciousUnknown = @($findingArray | Where-Object {$_.Disposition -eq 'SuspiciousUnknown'}).Count
             CollectorErrors = $errors.Count
         }
     }
@@ -888,6 +953,7 @@ Export-ModuleMember -Function @(
     'Get-CompuTekExecutablePath',
     'Test-CompuTekUserWritablePath',
     'Get-CompuTekFileEvidence',
+    'Get-CompuTekCandidateFilesSafe',
     'Find-CompuTekProductMatch',
     'Get-CompuTekUninstallArtifacts',
     'Get-CompuTekProcessArtifacts',
