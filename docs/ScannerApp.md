@@ -1,6 +1,6 @@
 # CompuTek Scanner Windows application
 
-`CompuTekScanner.exe` is the technician-facing Windows application for remote-access review/removal and post-scam evidence collection. It requests administrator rights when opened; technicians no longer need to start a BAT file or manually open PowerShell.
+`CompuTekScanner.exe` is the technician-facing Windows application for remote-access review/removal, post-scam evidence collection, and the legacy CompuTek technician utilities. It requests administrator rights when opened; technicians no longer need to start a BAT file or manually open PowerShell.
 
 ## Files to keep together
 
@@ -8,7 +8,7 @@
 - `RemoteAccessSignatures.json` — the updateable remote-software catalog.
 - `SHA256SUMS.txt` — checksums for verifying the published EXE and catalog.
 
-The EXE contains a known-good copy of both scanners and their shared module. It stages those protected components under `%ProgramData%\CompuTek\ScannerApp\Engine` whenever it runs. The JSON catalog remains outside the EXE and can be replaced without rebuilding the program.
+The EXE contains known-good copies of both scanners, the technician tools, and the shared scanner module. It stages those protected components under `%ProgramData%\CompuTek\ScannerApp\Engine` whenever it runs. The JSON catalog remains outside the EXE and can be replaced without rebuilding the program.
 
 ## Technician workflow
 
@@ -22,6 +22,16 @@ The EXE contains a known-good copy of both scanners and their shared module. It 
 8. Use **Open last case folder** after completion to review the evidence, decisions, remediation log, and verification report.
 
 The post-scam collector is read-only. It gathers local evidence and collection gaps but cannot prove that no data was taken or that no custom/fileless backdoor exists.
+
+## Technician tools
+
+The **Technician tools** tab restores the original entry points:
+
+- **IT Technician Toolbox** — system and network information, DNS/IP repair, internet testing, temporary-file cleanup, SFC, CHKDSK, DISM, Task Manager, print-queue cleanup, BitLocker, and reboot.
+- **Final System Check** — the original readiness workflow, including its hibernation, restore-point, BitLocker, and audio actions.
+- **Pre-Clone Preparation** — the original advanced BitLocker decryption/key-backup, Secure Boot, disk-check, and reboot workflow.
+
+These tools are launched individually. The old **Run ALL scripts** choice is intentionally not present because it could start multiple disk, encryption, cleanup, and reboot operations together. The application displays a warning before each legacy workflow, and the embedded scripts retain their action-specific prompts. BitLocker recovery information is written beneath the USB/application folder rather than the protected staging directory.
 
 ## Updating remote-software signatures
 

@@ -1,7 +1,7 @@
 # =====================================================
 #  FINAL SYSTEM READINESS CHECK - COMPU-TEK
 # =====================================================
-$Host.UI.RawUI.WindowTitle = "Final System Readiness Check - Compu-TEK"
+try { $Host.UI.RawUI.WindowTitle = "Final System Readiness Check - Compu-TEK" } catch {}
 Write-Host "`n===================================================" -ForegroundColor Cyan
 Write-Host "      FINAL SYSTEM READINESS CHECK - COMPU-TEK" -ForegroundColor Cyan
 Write-Host "===================================================`n" -ForegroundColor Cyan
@@ -386,8 +386,12 @@ if ($SpeakerTestFailed) {
 }
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
-Write-Host "Press Enter to close this window..." -ForegroundColor Cyan
-[void][System.Console]::ReadLine()
+if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+    Write-Host "Final System Check complete." -ForegroundColor Green
+} else {
+    Write-Host "Press Enter to close this window..." -ForegroundColor Cyan
+    [void][System.Console]::ReadLine()
+}
 exit
 
 

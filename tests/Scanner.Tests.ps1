@@ -50,6 +50,23 @@ Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource
 $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
 
+$singleEndpointArtifacts = @(& $scannerModule {
+    function Get-CimInstance {
+        [pscustomobject]@{
+            ExecutablePath = $null
+            CommandLine = '"C:\Temp\agent.exe"'
+            ProcessId = 42
+            Name = 'agent.exe'
+        }
+    }
+    try {
+        Get-CompuTekProcessArtifacts -ConnectionMap @{'42'='203.0.113.10:443'}
+    } finally {
+        Remove-Item Function:\Get-CimInstance -Force -ErrorAction SilentlyContinue
+    }
+})
+Assert-True ($singleEndpointArtifacts.Count -eq 1 -and $singleEndpointArtifacts[0].ConnectionCount -eq 1) 'Process inventory handles a single active remote endpoint without failing the scan'
+
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts'))
 $traversalRoot = Join-Path $artifactRoot ('TraversalTest-' + [Guid]::NewGuid().ToString('N'))
 try {
@@ -106,6 +123,13 @@ $zohoBooks = New-TestEvidence @{
 }
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $zohoBooks)
 Assert-True ($matches.Product.id -notcontains 'zoho-assist') 'Broad Zoho publisher does not misidentify another Zoho product as Zoho Assist'
+
+$autodeskInstaller = New-TestEvidence @{
+    ArtifactType='File';Name='Autodesk_DWG_TrueView_setup.exe';DisplayName='Autodesk DWG TrueView';
+    Path='C:\Users\Technician\Downloads\Autodesk_DWG_TrueView_setup.exe';ProductName='Autodesk Installer';FileName='Autodesk_DWG_TrueView_setup.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $autodeskInstaller)
+Assert-True ($matches.Product.id -notcontains 'todesk') 'Token-boundary matching does not misidentify Autodesk as ToDesk'
 
 $quickAssist = New-TestEvidence @{
     ArtifactType='AppxPackage';Name='MicrosoftCorporationII.QuickAssist';DisplayName='MicrosoftCorporationII.QuickAssist'

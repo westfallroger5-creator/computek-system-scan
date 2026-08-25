@@ -12,6 +12,9 @@ namespace CompuTek.Scanner.App
         public string DirectoryPath { get; set; }
         public string RemoteScannerPath { get; set; }
         public string PostScamScannerPath { get; set; }
+        public string TechnicianToolboxPath { get; set; }
+        public string FinalSystemCheckPath { get; set; }
+        public string PreClonePath { get; set; }
         public string CatalogPath { get; set; }
         public CatalogInfo Catalog { get; set; }
     }
@@ -20,6 +23,9 @@ namespace CompuTek.Scanner.App
     {
         private const string RemoteResource = "CompuTek.Scanner.Engine.RemoteAccessScanAndRemove.ps1";
         private const string PostScamResource = "CompuTek.Scanner.Engine.PostScam_SystemIntegrityScanner.ps1";
+        private const string TechnicianToolboxResource = "CompuTek.Scanner.Engine.IT_Technician_Toolbox.ps1";
+        private const string FinalSystemCheckResource = "CompuTek.Scanner.Engine.FinalSystemCheck_CompuTek.ps1";
+        private const string PreCloneResource = "CompuTek.Scanner.Engine.PreClone.ps1";
         private const string ModuleResource = "CompuTek.Scanner.Engine.CompuTek.Scanner.Common.psm1";
         private const string CatalogResource = "CompuTek.Scanner.Engine.RemoteAccessSignatures.json";
 
@@ -37,11 +43,17 @@ namespace CompuTek.Scanner.App
 
             string remotePath = Path.Combine(stageDirectory, "RemoteAccessScanAndRemove.ps1");
             string postScamPath = Path.Combine(stageDirectory, "PostScam_SystemIntegrityScanner.ps1");
+            string technicianToolboxPath = Path.Combine(stageDirectory, "IT_Technician_Toolbox.ps1");
+            string finalSystemCheckPath = Path.Combine(stageDirectory, "FinalSystemCheck_CompuTek.ps1");
+            string preClonePath = Path.Combine(stageDirectory, "PreClone.ps1");
             string modulePath = Path.Combine(stageDirectory, "CompuTek.Scanner.Common.psm1");
             string catalogPath = Path.Combine(stageDirectory, "RemoteAccessSignatures.json");
 
             WriteResource(assembly, RemoteResource, remotePath);
             WriteResource(assembly, PostScamResource, postScamPath);
+            WriteResource(assembly, TechnicianToolboxResource, technicianToolboxPath);
+            WriteResource(assembly, FinalSystemCheckResource, finalSystemCheckPath);
+            WriteResource(assembly, PreCloneResource, preClonePath);
             WriteResource(assembly, ModuleResource, modulePath);
 
             CatalogInfo catalog = LoadCatalog(assembly, programDataRoot);
@@ -52,6 +64,9 @@ namespace CompuTek.Scanner.App
                 DirectoryPath = stageDirectory,
                 RemoteScannerPath = remotePath,
                 PostScamScannerPath = postScamPath,
+                TechnicianToolboxPath = technicianToolboxPath,
+                FinalSystemCheckPath = finalSystemCheckPath,
+                PreClonePath = preClonePath,
                 CatalogPath = catalogPath,
                 Catalog = catalog
             };

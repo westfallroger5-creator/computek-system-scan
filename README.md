@@ -1,10 +1,10 @@
-# Compu-TEK Technician Toolbox
+# CompuTek Scanner and Technician Toolbox
 
-A portable PowerShell-based launcher that discovers every `.ps1` script in the `scripts/` directory, presents them in a menu, and starts them in elevated PowerShell windows. Use it from a USB stick or shared folder to run common post-scam and readiness checks on Windows systems.
+CompuTek's portable Windows program for remote-access review/removal, post-scam evidence collection, and common technician workflows. It can run directly from a USB drive and requests administrator rights when opened.
 
-## Windows application (preferred for the scanners)
+## Windows application (preferred)
 
-`CompuTekScanner.exe` provides a technician-facing Windows interface for `RemoteAccessScanAndRemove` and `PostScam_SystemIntegrityScanner`. It requests administrator rights itself, embeds the trusted scanner engine, displays live output and technician questions in one window, and removes the BAT-to-PowerShell launch requirement for these two tools.
+`CompuTekScanner.exe` provides one technician-facing Windows interface for the remote-access scanner, post-scam collector, IT Technician Toolbox, Final System Check, and Pre-Clone Preparation. It embeds the trusted scripts, displays live output and technician questions in one window, and removes the BAT-to-PowerShell launch requirement.
 
 The remote-software catalog remains an external `RemoteAccessSignatures.json` file, so signatures can be updated without rebuilding the EXE. See [docs/ScannerApp.md](docs/ScannerApp.md) for technician use, signature updates, build instructions, and code-signing guidance.
 
@@ -14,11 +14,9 @@ Build and test it on Windows with:
 .\tests\ScannerApp.Tests.ps1
 ```
 
-## Launching the toolbox
+## Legacy BAT/PowerShell launcher
 
-1. Copy the repository contents to a Windows workstation (USB, network share, or local folder).
-2. Double-click `Launch_CTSupport_Toolbox.bat`. The batch file opens an elevated PowerShell window and runs `CTSupport_Toolbox.ps1`.
-3. Pick an individual tool by number, or choose **A** to launch all scripts. New `.ps1` files dropped into the `scripts/` directory are automatically listed the next time the menu appears.
+The original `Launch_CTSupport_Toolbox.bat` and `CTSupport_Toolbox.ps1` remain available for compatibility. New USB deployments should use `CompuTekScanner.exe`. The Windows program launches each technician workflow individually and does not expose the legacy **Run ALL scripts** action, which could start cleanup, encryption, disk-repair, and reboot workflows together.
 
 > All tools request administrative rights up front so they can read system state, create logs, and make changes when needed.
 

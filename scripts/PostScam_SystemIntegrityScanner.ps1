@@ -30,6 +30,12 @@ function Read-CompuTekInput {
     return Read-Host $Prompt
 }
 
+function Complete-CompuTekRun {
+    param([string]$Message = 'Complete')
+    Write-Host $Message -ForegroundColor Green
+    if ($env:COMPUTEK_SCANNER_APP -ne '1') { [void](Read-Host 'Press Enter to close') }
+}
+
 function Test-IsAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -698,5 +704,5 @@ Write-Host "Summary:     $summaryPath" -ForegroundColor DarkGray
 Write-Host "Evidence:    $evidenceJson" -ForegroundColor DarkGray
 Write-Host 'This report cannot prove that no other backdoor exists or identify every file that may have been viewed or copied.' -ForegroundColor Yellow
 Write-Host 'If the scammer had administrator access, consider the machine untrusted until the evidence is reviewed and the remediation decision is made.' -ForegroundColor Yellow
-Read-CompuTekInput 'Press Enter to close'
+Complete-CompuTekRun 'Post-scam evidence collection complete.'
 exit 0

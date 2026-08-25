@@ -10,13 +10,23 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit
 }
 
+function Read-CompuTekInput {
+    param([Parameter(Mandatory)][string]$Prompt)
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
+        [Console]::Out.Flush()
+        return [Console]::In.ReadLine()
+    }
+    return Read-Host $Prompt
+}
+
 # --- Setup ---
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$ScriptDir = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 if (-not $ScriptDir) { $ScriptDir = Get-Location }
 $Computer = $env:COMPUTERNAME
 $Time = Get-Date -Format "yyyyMMdd_HHmmss"
 
-Clear-Host
+if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
 Write-Host "==== PRE-CLONE SYSTEM PREPARATION TOOL ====" -ForegroundColor Cyan
 Write-Host "Running as Administrator.`n" -ForegroundColor Green
 
@@ -49,7 +59,7 @@ if ($encrypted.Count -gt 0) {
     Write-Host "`nEncrypted volumes detected:" -ForegroundColor Yellow
     $encrypted | ForEach-Object { Write-Host " - $_" -ForegroundColor Cyan }
 
-    $confirm = Read-Host "`nDo you want to decrypt these drives now? (Y/N)"
+    $confirm = Read-CompuTekInput "Do you want to decrypt these drives now? (Y/N)"
     if ($confirm -match "^[Yy]$") {
         $decryptedAny = $true
         $KeyDir = Join-Path $ScriptDir ("BitLockerKeys\" + $Computer)
@@ -190,9 +200,13 @@ if ($decryptedAny) {
 }
 Write-Host "Secure Boot status checked." -ForegroundColor Cyan
 
-$reboot = Read-Host "Reboot now? (Y/N)"
+$reboot = Read-CompuTekInput "Reboot now? (Y/N)"
 if ($reboot -match '^[Yy]') { Restart-Computer -Force }
 
 Write-Host ""
-Write-Host "Press any key to close..." -ForegroundColor Cyan
-[void][System.Console]::ReadKey($true)
+if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+    Write-Host "Pre-Clone Preparation complete." -ForegroundColor Green
+} else {
+    Write-Host "Press any key to close..." -ForegroundColor Cyan
+    [void][System.Console]::ReadKey($true)
+}

@@ -39,6 +39,15 @@ function Read-CompuTekInput {
     return Read-Host $Prompt
 }
 
+function Complete-CompuTekRun {
+    param(
+        [string]$Message = 'Complete',
+        [ConsoleColor]$Color = [ConsoleColor]::Green
+    )
+    Write-Host $Message -ForegroundColor $Color
+    if ($env:COMPUTEK_SCANNER_APP -ne '1') { [void](Read-Host 'Press Enter to close') }
+}
+
 function Test-IsAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -656,7 +665,7 @@ try {
     $scan = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeHashes
 } catch {
     Write-Host "Scanner could not start: $($_.Exception.Message)" -ForegroundColor Red
-    Read-CompuTekInput 'Press Enter to close'
+    Complete-CompuTekRun 'Scanner stopped before collection completed.' Red
     exit 2
 }
 
@@ -677,7 +686,7 @@ if ($candidates.Count -eq 0) {
     Write-Host "`nNo cataloged remote-access software or suspicious remote-capable artifacts were found." -ForegroundColor $(if($scan.IsComplete){'Green'}else{'Yellow'})
     Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
     Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
-    Read-CompuTekInput 'Press Enter to close'
+    Complete-CompuTekRun 'Scan complete.'
     exit 0
 }
 
@@ -695,14 +704,14 @@ Write-Host "  $($reportPaths.Csv)" -ForegroundColor DarkGray
 Write-Host 'A finding is not proof of malicious use. Verify company-approved support tools before removal.' -ForegroundColor Yellow
 
 if ($ScanOnly) {
-    Read-CompuTekInput 'Scan-only mode complete. Press Enter to close'
+    Complete-CompuTekRun 'Scan-only mode complete.'
     exit 0
 }
 
 if (-not $caseFolderProtected) {
     Write-Host 'Removal is blocked because the evidence folder could not be restricted to SYSTEM and Administrators.' -ForegroundColor Red
     Write-Host 'Nothing was changed. Correct the folder-permission problem and run the scanner again.' -ForegroundColor Yellow
-    Read-CompuTekInput 'Press Enter to close'
+    Complete-CompuTekRun 'Removal is unavailable because the evidence folder could not be secured.'
     exit 3
 }
 
@@ -770,7 +779,7 @@ Write-Host "Decision record: $decisionPath" -ForegroundColor DarkGray
 $selected = @($candidates | Where-Object {$decisionById[$_.Id] -eq 'Remove'})
 if ($selected.Count -eq 0) {
     Write-Host 'All detected installations were approved to keep. Nothing was changed.' -ForegroundColor Green
-    Read-CompuTekInput 'Press Enter to close'
+    Complete-CompuTekRun 'Technician review complete. No removals were selected.'
     exit 0
 }
 
@@ -834,5 +843,5 @@ $decisionDocument | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $decision
 
 Write-Host "Remediation log: $remediationLog" -ForegroundColor DarkGray
 Write-Host 'Reboot if requested by an uninstaller, then run this scanner again.' -ForegroundColor Yellow
-Read-CompuTekInput 'Press Enter to close'
+Complete-CompuTekRun 'Remediation workflow complete.'
 exit 0
