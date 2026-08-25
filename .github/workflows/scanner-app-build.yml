@@ -1,0 +1,30 @@
+name: Scanner application build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-application:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run scanner engine tests
+        shell: powershell
+        run: .\tests\Scanner.Tests.ps1
+
+      - name: Build and test Windows application
+        shell: powershell
+        run: .\tests\ScannerApp.Tests.ps1
+
+      - name: Publish unsigned review build
+        uses: actions/upload-artifact@v4
+        with:
+          name: CompuTekScanner-unsigned-review
+          path: artifacts/ScannerAppTests/
+          if-no-files-found: error

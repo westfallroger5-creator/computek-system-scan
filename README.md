@@ -2,6 +2,18 @@
 
 A portable PowerShell-based launcher that discovers every `.ps1` script in the `scripts/` directory, presents them in a menu, and starts them in elevated PowerShell windows. Use it from a USB stick or shared folder to run common post-scam and readiness checks on Windows systems.
 
+## Windows application (preferred for the scanners)
+
+`CompuTekScanner.exe` provides a technician-facing Windows interface for `RemoteAccessScanAndRemove` and `PostScam_SystemIntegrityScanner`. It requests administrator rights itself, embeds the trusted scanner engine, displays live output and technician questions in one window, and removes the BAT-to-PowerShell launch requirement for these two tools.
+
+The remote-software catalog remains an external `RemoteAccessSignatures.json` file, so signatures can be updated without rebuilding the EXE. See [docs/ScannerApp.md](docs/ScannerApp.md) for technician use, signature updates, build instructions, and code-signing guidance.
+
+Build and test it on Windows with:
+
+```powershell
+.\tests\ScannerApp.Tests.ps1
+```
+
 ## Launching the toolbox
 
 1. Copy the repository contents to a Windows workstation (USB, network share, or local folder).

@@ -28,6 +28,16 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Read-CompuTekInput {
+    param([Parameter(Mandatory)][string]$Prompt)
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
+        [Console]::Out.Flush()
+        return [Console]::In.ReadLine()
+    }
+    return Read-Host $Prompt
+}
+
 function Test-IsAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -629,7 +639,7 @@ function Test-FindingBelongsToCandidate {
     return $false
 }
 
-Clear-Host
+if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host '  CompuTek Remote-Access Scanner and Remediation Tool' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
@@ -642,7 +652,7 @@ try {
     $scan = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeHashes
 } catch {
     Write-Host "Scanner could not start: $($_.Exception.Message)" -ForegroundColor Red
-    Read-Host 'Press Enter to close'
+    Read-CompuTekInput 'Press Enter to close'
     exit 2
 }
 
@@ -663,7 +673,7 @@ if ($candidates.Count -eq 0) {
     Write-Host "`nNo cataloged remote-access software or suspicious remote-capable artifacts were found." -ForegroundColor $(if($scan.IsComplete){'Green'}else{'Yellow'})
     Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
     Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
-    Read-Host 'Press Enter to close'
+    Read-CompuTekInput 'Press Enter to close'
     exit 0
 }
 
@@ -681,23 +691,23 @@ Write-Host "  $($reportPaths.Csv)" -ForegroundColor DarkGray
 Write-Host 'A finding is not proof of malicious use. Verify company-approved support tools before removal.' -ForegroundColor Yellow
 
 if ($ScanOnly) {
-    Read-Host 'Scan-only mode complete. Press Enter to close'
+    Read-CompuTekInput 'Scan-only mode complete. Press Enter to close'
     exit 0
 }
 
 if (-not $caseFolderProtected) {
     Write-Host 'Removal is blocked because the evidence folder could not be restricted to SYSTEM and Administrators.' -ForegroundColor Red
     Write-Host 'Nothing was changed. Correct the folder-permission problem and run the scanner again.' -ForegroundColor Yellow
-    Read-Host 'Press Enter to close'
+    Read-CompuTekInput 'Press Enter to close'
     exit 3
 }
 
 $technicianName = ''
 while ([string]::IsNullOrWhiteSpace($technicianName)) {
-    $technicianName = Read-Host 'Technician name or initials (required; Q quits without changes)'
+    $technicianName = Read-CompuTekInput 'Technician name or initials (required; Q quits without changes)'
     if ($technicianName -match '^[Qq]$') { exit 0 }
 }
-$caseReference = Read-Host 'Ticket/case reference (optional)'
+$caseReference = Read-CompuTekInput 'Ticket/case reference (optional)'
 $decisionPath = Join-Path $caseRoot 'TechnicianDecisions.json'
 $decisions = @()
 $decisionById = @{}
@@ -710,7 +720,7 @@ foreach ($candidate in $candidates) {
 
     $decision = $null
     while (-not $decision) {
-        $answer = Read-Host "Type KEEP $($candidate.Id), REMOVE $($candidate.Id), or Q to abort"
+        $answer = Read-CompuTekInput "Type KEEP $($candidate.Id), REMOVE $($candidate.Id), or Q to abort"
         if ($answer -match '^[Qq]$') {
             Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow
             exit 0
@@ -756,13 +766,13 @@ Write-Host "Decision record: $decisionPath" -ForegroundColor DarkGray
 $selected = @($candidates | Where-Object {$decisionById[$_.Id] -eq 'Remove'})
 if ($selected.Count -eq 0) {
     Write-Host 'All detected installations were approved to keep. Nothing was changed.' -ForegroundColor Green
-    Read-Host 'Press Enter to close'
+    Read-CompuTekInput 'Press Enter to close'
     exit 0
 }
 
 Write-Host "`n$($selected.Count) installation(s) are authorized for full removal." -ForegroundColor Yellow
 Write-Host 'Logs and configuration will be preserved first. Then uninstallers, services, tasks, autoruns, packages, registrations, and residual files will be removed or quarantined.' -ForegroundColor Yellow
-$finalConfirmation = Read-Host 'Type APPLY REMOVALS to begin, or anything else to quit without changes'
+$finalConfirmation = Read-CompuTekInput 'Type APPLY REMOVALS to begin, or anything else to quit without changes'
 if ($finalConfirmation -cne 'APPLY REMOVALS') {
     Write-Host 'Final confirmation was not provided. Nothing was changed.' -ForegroundColor Yellow
     exit 0
@@ -820,5 +830,5 @@ $decisionDocument | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $decision
 
 Write-Host "Remediation log: $remediationLog" -ForegroundColor DarkGray
 Write-Host 'Reboot if requested by an uninstaller, then run this scanner again.' -ForegroundColor Yellow
-Read-Host 'Press Enter to close'
+Read-CompuTekInput 'Press Enter to close'
 exit 0
