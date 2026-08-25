@@ -268,6 +268,8 @@ function New-CompuTekArtifact {
         InstallLocation    = $null
         PackageName        = $null
         PackageFullName    = $null
+        TaskPath           = $null
+        SourcePath         = $null
         ProcessId          = $null
         ServiceState       = $null
         ServiceStartMode   = $null
@@ -480,6 +482,7 @@ function Get-CompuTekPersistenceArtifacts {
                     $artifact = New-CompuTekArtifact @{
                         ArtifactType = 'ScheduledTask'; Source = 'TaskScheduler'; Name = $task.TaskName
                         DisplayName = ($task.TaskPath + $task.TaskName); Path = $path; CommandLine = $command
+                        TaskPath = $task.TaskPath
                         RemediationKind = 'DisableScheduledTask'
                     }
                     if ($path) { $artifact = Add-CompuTekFileFields $artifact (Get-CompuTekFileEvidence $path) }
@@ -518,6 +521,7 @@ function Get-CompuTekPersistenceArtifacts {
                 $artifact = New-CompuTekArtifact @{
                     ArtifactType = 'StartupFile'; Source = 'StartupFolder'; Name = $file.Name
                     DisplayName = $file.Name; Path = $target; CommandLine = $command
+                    SourcePath = $file.FullName
                     LastWriteTimeUtc = $file.LastWriteTimeUtc; RemediationKind = 'QuarantineFile'
                 }
                 if ($target -and (Test-Path -LiteralPath $target -PathType Leaf)) {
@@ -685,6 +689,8 @@ function ConvertTo-CompuTekFinding {
         InstallLocation      = $Artifact.InstallLocation
         PackageName          = $Artifact.PackageName
         PackageFullName      = $Artifact.PackageFullName
+        TaskPath             = $Artifact.TaskPath
+        SourcePath           = $Artifact.SourcePath
         ProcessId            = $Artifact.ProcessId
         ServiceState         = $Artifact.ServiceState
         ServiceStartMode     = $Artifact.ServiceStartMode
@@ -817,7 +823,7 @@ function Export-CompuTekScanReport {
     $jsonPath = Join-Path $Directory ($BaseName + '.json')
     $csvPath = Join-Path $Directory ($BaseName + '.csv')
     $Scan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
-    @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,CommandLine,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
+    @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,SourcePath,TaskPath,CommandLine,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
     return [pscustomobject]@{Json=$jsonPath;Csv=$csvPath}
 }
 
