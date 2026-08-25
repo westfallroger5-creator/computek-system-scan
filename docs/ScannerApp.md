@@ -16,9 +16,10 @@ The EXE contains a known-good copy of both scanners and their shared module. It 
 2. Confirm the signature version shown in the upper-right corner.
 3. Choose the lookback period and optional deep scan/file hashes.
 4. Leave **Remote scan only** checked for reporting without removal, or clear it to enter technician-reviewed removal mode.
-5. For removal mode, classify each detected installation with the exact `KEEP <review-id>` or `REMOVE <review-id>` response shown by the application. This happens separately for different installation locations, including two copies of the same product.
-6. Review the decision summary and type `APPLY REMOVALS` only when the selections are correct.
-7. Use **Open last case folder** after completion to review the evidence, decisions, remediation log, and verification report.
+5. Leave the application open while it reports the current collection stage and elapsed time. Large AppData or ProgramData folders can take several minutes; a visible **Still working** heartbeat confirms the scan has not frozen.
+6. For removal mode, classify each detected installation with the exact `KEEP <review-id>` or `REMOVE <review-id>` response shown by the application. This happens separately for different installation locations, including two copies of the same product.
+7. Review the decision summary and type `APPLY REMOVALS` only when the selections are correct.
+8. Use **Open last case folder** after completion to review the evidence, decisions, remediation log, and verification report.
 
 The post-scam collector is read-only. It gathers local evidence and collection gaps but cannot prove that no data was taken or that no custom/fileless backdoor exists.
 
