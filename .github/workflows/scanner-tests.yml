@@ -1,0 +1,19 @@
+name: Scanner tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run scanner syntax and detection tests in Windows PowerShell 5.1
+        shell: powershell
+        run: .\tests\Scanner.Tests.ps1
