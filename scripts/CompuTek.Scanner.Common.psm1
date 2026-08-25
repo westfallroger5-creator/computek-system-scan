@@ -3,6 +3,18 @@ Set-StrictMode -Version 2.0
 $script:DefaultCatalogPath = Join-Path $PSScriptRoot 'RemoteAccessSignatures.json'
 $script:CollectorWarnings = New-Object System.Collections.Generic.List[string]
 
+function Write-CompuTekScanStage {
+    param([Parameter(Mandatory)][string]$Message)
+
+    $line = "SCAN STAGE: $Message"
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine($line)
+        [Console]::Out.Flush()
+    } else {
+        Write-Host $line -ForegroundColor Cyan
+    }
+}
+
 function Add-CompuTekCollectorWarning {
     param([string]$Message)
     if ($Message -and -not $script:CollectorWarnings.Contains($Message)) {
@@ -572,6 +584,7 @@ function Get-CompuTekTargetedFileArtifacts {
     $items = @()
     $seen = @{}
     foreach ($root in @($roots | Sort-Object -Unique)) {
+        Write-CompuTekScanStage -Message ("Inspecting files under {0}" -f $root)
         $enumerationErrors = @()
         foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue -ErrorVariable +enumerationErrors) {
             $lowerPath = $file.FullName.ToLowerInvariant()
@@ -716,11 +729,14 @@ function Invoke-CompuTekRemoteAccessScan {
     $errors = New-Object System.Collections.Generic.List[string]
     $findings = New-Object System.Collections.Generic.List[object]
     $artifacts = New-Object System.Collections.Generic.List[object]
+    Write-CompuTekScanStage -Message 'Step 1 of 10 - validating the remote-software catalog'
     $catalog = Get-CompuTekCatalog -Path $CatalogPath
 
     $connectionMap = @{}
+    Write-CompuTekScanStage -Message 'Step 2 of 10 - mapping active network connections'
     try { $connectionMap = Get-CompuTekTcpProcessMap } catch { $errors.Add("TCP connection inventory failed: $($_.Exception.Message)") }
 
+    $collectorNumber = 2
     foreach ($collector in @(
         @{Name='uninstall registry'; Run={ Get-CompuTekUninstallArtifacts }},
         @{Name='AppX packages'; Run={ Get-CompuTekAppxArtifacts }},
@@ -730,6 +746,8 @@ function Invoke-CompuTekRemoteAccessScan {
         @{Name='native remote features'; Run={ Get-CompuTekNativeFeatureArtifacts }},
         @{Name='targeted files'; Run={ Get-CompuTekTargetedFileArtifacts -Catalog $catalog -LookbackDays $LookbackDays -DeepScan:$DeepScan }}
     )) {
+        $collectorNumber++
+        Write-CompuTekScanStage -Message ("Step {0} of 10 - collecting {1}" -f $collectorNumber,$collector.Name)
         try {
             foreach ($artifact in & $collector.Run) { if ($artifact) { $artifacts.Add($artifact) } }
         } catch {
@@ -740,6 +758,7 @@ function Invoke-CompuTekRemoteAccessScan {
         if (-not $errors.Contains($warning)) { $errors.Add($warning) }
     }
 
+    Write-CompuTekScanStage -Message ("Step 10 of 10 - analyzing {0} collected artifacts" -f $artifacts.Count)
     $dedupe = @{}
     foreach ($artifact in $artifacts) {
         if ($IncludeHashes -and $artifact.Path -and -not $artifact.SHA256 -and (Test-Path -LiteralPath $artifact.Path -PathType Leaf)) {

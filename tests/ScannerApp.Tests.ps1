@@ -16,6 +16,7 @@ function Assert-AppTest {
 foreach ($relativePath in @(
     'scripts\RemoteAccessScanAndRemove.ps1',
     'scripts\PostScam_SystemIntegrityScanner.ps1',
+    'scripts\CompuTek.Scanner.Common.psm1',
     'build\Build-ScannerApp.ps1'
 )) {
     $tokens = $null
@@ -28,6 +29,11 @@ $remoteSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAcc
 $postScamSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1') -Raw
 Assert-AppTest ($remoteSource -match '__COMPUTEK_PROMPT__:' -and $postScamSource -match '__COMPUTEK_PROMPT__:') 'Both scanner engines expose application-safe input prompts'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_APP' -and $remoteSource -match 'Read-CompuTekInput') 'The remote scanner remains interactive in both EXE and direct-script modes'
+
+$moduleSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\CompuTek.Scanner.Common.psm1') -Raw
+$mainFormSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\MainForm.cs') -Raw
+Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
+Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'Still working' -and $mainFormSource -match 'elapsedText') 'The Windows application shows elapsed-time heartbeats during quiet collectors'
 
 $promptTokens = $null
 $promptErrors = $null

@@ -29,11 +29,17 @@ namespace CompuTek.Scanner.App
         private readonly Button sendButton = new Button();
         private readonly Label statusLabel = new Label();
         private readonly ProgressBar progress = new ProgressBar();
+        private readonly Timer runningTimer = new Timer();
 
         private EngineLayout engineLayout;
         private ScannerEngineHost engineHost;
         private bool awaitingInput;
         private string lastCaseFolder;
+        private string runningDisplayName;
+        private string currentStage;
+        private DateTime engineStartedUtc;
+        private DateTime lastEngineOutputUtc;
+        private DateTime lastHeartbeatUtc;
 
         public MainForm()
         {
@@ -45,6 +51,8 @@ namespace CompuTek.Scanner.App
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             AutoScaleMode = AutoScaleMode.Dpi;
             BuildInterface();
+            runningTimer.Interval = 1000;
+            runningTimer.Tick += UpdateRunningStatus;
             FormClosing += HandleFormClosing;
             Load += delegate { ReloadEngine(); };
         }
@@ -329,7 +337,13 @@ namespace CompuTek.Scanner.App
                 lastCaseFolder = null;
                 openCaseButton.Enabled = false;
                 awaitingInput = false;
+                runningDisplayName = displayName;
+                currentStage = "Starting scanner engine";
+                engineStartedUtc = DateTime.UtcNow;
+                lastEngineOutputUtc = engineStartedUtc;
+                lastHeartbeatUtc = engineStartedUtc;
                 SetRunningState(true, displayName + " is running");
+                runningTimer.Start();
 
                 engineHost = new ScannerEngineHost();
                 engineHost.OutputReceived += HandleEngineOutput;
@@ -345,6 +359,7 @@ namespace CompuTek.Scanner.App
             {
                 if (engineHost != null) engineHost.Dispose();
                 engineHost = null;
+                runningTimer.Stop();
                 SetRunningState(false, "Could not start scanner");
                 AppendOutput("ERROR: " + exception.Message, Color.Salmon);
                 MessageBox.Show(exception.Message, "Scanner start error", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -356,6 +371,9 @@ namespace CompuTek.Scanner.App
             if (IsDisposed) return;
             BeginInvoke((MethodInvoker)delegate
             {
+                lastEngineOutputUtc = DateTime.UtcNow;
+                if (args.Text.StartsWith("SCAN STAGE:", StringComparison.OrdinalIgnoreCase))
+                    currentStage = args.Text.Substring("SCAN STAGE:".Length).Trim();
                 CaptureCaseFolder(args.Text);
                 AppendOutput(args.IsError ? "ERROR: " + args.Text : args.Text, args.IsError ? Color.Salmon : Color.Gainsboro);
             });
@@ -387,11 +405,34 @@ namespace CompuTek.Scanner.App
                 promptLabel.Text = "Technician response (enabled when the scanner asks a question)";
                 if (engineHost != null) engineHost.Dispose();
                 engineHost = null;
+                runningTimer.Stop();
                 string status = args.ExitCode == 0 ? "Scanner completed" : "Scanner stopped with exit code " + args.ExitCode;
                 SetRunningState(false, status);
                 AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : Color.Salmon);
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
             });
+        }
+
+        private void UpdateRunningStatus(object sender, EventArgs args)
+        {
+            if (engineHost == null || !engineHost.IsRunning)
+                return;
+
+            DateTime now = DateTime.UtcNow;
+            TimeSpan elapsed = now - engineStartedUtc;
+            string elapsedText = elapsed.TotalHours >= 1
+                ? elapsed.ToString(@"h\:mm\:ss")
+                : elapsed.ToString(@"m\:ss");
+            statusLabel.Text = currentStage + " — elapsed " + elapsedText;
+
+            if ((now - lastEngineOutputUtc).TotalSeconds >= 15 && (now - lastHeartbeatUtc).TotalSeconds >= 15)
+            {
+                AppendOutput(
+                    "Still working — " + runningDisplayName + " has been running for " + elapsedText +
+                    ". Large user folders can make this step take several minutes.",
+                    Color.DarkGray);
+                lastHeartbeatUtc = now;
+            }
         }
 
         private void SendResponse(object sender, EventArgs args)
