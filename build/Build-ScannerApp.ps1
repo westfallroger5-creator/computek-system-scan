@@ -40,6 +40,7 @@ $engineResources = [ordered]@{
     (Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1') = 'CompuTek.Scanner.Engine.PostScam_SystemIntegrityScanner.ps1'
     (Join-Path $repoRoot 'scripts\CompuTek.Scanner.Common.psm1') = 'CompuTek.Scanner.Engine.CompuTek.Scanner.Common.psm1'
     (Join-Path $repoRoot 'scripts\RemoteAccessSignatures.json') = 'CompuTek.Scanner.Engine.RemoteAccessSignatures.json'
+    (Join-Path $repoRoot 'scripts\RemoteAccessSignatures.2026-ThreatIntel.json') = 'CompuTek.Scanner.Engine.RemoteAccessSignatures.2026-ThreatIntel.json'
 }
 foreach ($resourcePath in $engineResources.Keys) {
     if (-not (Test-Path -LiteralPath $resourcePath -PathType Leaf)) { throw "Scanner engine resource is missing: $resourcePath" }
