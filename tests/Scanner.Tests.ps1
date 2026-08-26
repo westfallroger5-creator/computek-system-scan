@@ -41,7 +41,7 @@ Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
 Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
-Assert-True ($remediationSource -match 'KEEP \$\(\$candidate\.Id\)' -and $remediationSource -match 'REMOVE \$\(\$candidate\.Id\)') 'Technician must explicitly keep or remove every installation scope'
+Assert-True ($remediationSource -match 'Which agent numbers should be kept' -and $remediationSource -match 'Which agent numbers should be removed' -and $remediationSource -match 'Every agent must be classified' -and $remediationSource -match 'CONFIRM DECISIONS') 'Technician must explicitly classify and confirm every numbered agent'
 Assert-True ($remediationSource -match "APPLY REMOVALS" -and $remediationSource -notmatch 'A for all') 'Bulk removal cannot start without a final typed confirmation'
 Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
 Assert-True ($remediationSource -match 'PortableMedia-\$fileSystem-NormalPermissions' -and $remediationSource -notmatch '\bSet-Acl\b' -and $remediationSource -notmatch 'SetAccessRuleProtection') 'USB evidence keeps normal inherited permissions so technicians can remove old scan folders without elevation'
@@ -55,6 +55,7 @@ $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
 Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or invalidly signed executable") 'Unsigned Temp files alone are not treated as remote-access removal candidates'
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
+Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
 
 $singleEndpointArtifacts = @(& $scannerModule {
     function Get-CimInstance {
@@ -95,7 +96,7 @@ try {
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate')) {
+foreach ($functionName in @('Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate','ConvertTo-CompuTekCandidateSelection')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -114,11 +115,18 @@ Assert-True (Test-FindingBelongsToCandidate -Finding $legitimateService -Candida
 $differentVersionSameName = [pscustomobject]@{ProductId='screenconnect';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
 Assert-True (-not (Test-FindingBelongsToCandidate -Finding $differentVersionSameName -Candidate $version24Candidate)) 'Verification does not confuse a remaining different version with the version that was removed'
 
-$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='6.2.0'}
-$syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='6.2.0'}
-$syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null;DisplayVersion='6.2.0';FileVersion=$null}
+$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.73.16374'}
+$syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.29.18406'}
+$syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null;DisplayVersion='1.0.203.18518';FileVersion=$null}
 $syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall))
-Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].GroupByVersion -and $syncroScopes[0].DetectedVersion -eq '6.2.0' -and $syncroScopes[0].Locations.Count -eq 3) 'Related Syncro components of one version are presented as one product decision'
+Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].GroupByVersion -and $syncroScopes[0].DetectedVersion -eq '1.0.203.18518' -and $syncroScopes[0].Locations.Count -eq 3) 'Different Syncro component build numbers follow the single registered suite version'
+
+$keepSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'KEEP 1,3-5' -Maximum 7 -ExpectedAction KEEP)
+$removeSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 2,6-7' -Maximum 7 -ExpectedAction REMOVE)
+Assert-True (($keepSelection -join ',') -eq '1,3,4,5' -and ($removeSelection -join ',') -eq '2,6,7') 'Batch decisions accept comma-separated numbers and ranges'
+$invalidSelectionRejected = $false
+try { ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 8' -Maximum 7 -ExpectedAction REMOVE | Out-Null } catch { $invalidSelectionRejected = $true }
+Assert-True $invalidSelectionRejected 'Batch decisions reject unavailable agent numbers'
 
 $hiddenScreenConnect = New-TestEvidence @{
     ArtifactType='Service';Name='ScreenConnect Client 0123456789abcdef';DisplayName='ScreenConnect Client 0123456789abcdef'

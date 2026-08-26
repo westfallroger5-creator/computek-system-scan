@@ -631,7 +631,7 @@ function Get-CompuTekTargetedFileArtifacts {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Catalog,
-        [int]$LookbackDays = 30,
+        [int]$LookbackDays = 7,
         [switch]$DeepScan
     )
 
@@ -801,7 +801,7 @@ function Invoke-CompuTekRemoteAccessScan {
     [CmdletBinding()]
     param(
         [string]$CatalogPath = $script:DefaultCatalogPath,
-        [int]$LookbackDays = 30,
+        [int]$LookbackDays = 7,
         [switch]$DeepScan,
         [switch]$IncludeHashes
     )
@@ -849,18 +849,28 @@ function Invoke-CompuTekRemoteAccessScan {
         }
 
         $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $artifact)
-        foreach ($match in $matches) {
-            if ($match.Product.id -eq 'windows-rdp' -and $artifact.ArtifactType -eq 'Service') { continue }
-            if ($match.Product.id -eq 'windows-winrm' -and $artifact.ArtifactType -eq 'Service' -and $artifact.ServiceState -ne 'Running') { continue }
-
-            $disposition = if ($match.Product.category -eq 'native-feature') { 'RemoteFeatureEnabledOrInstalled' } else { 'KnownRemoteAccessSoftware' }
+        $actionableMatches = @($matches | Where-Object {$_.Product.category -ne 'native-feature'})
+        foreach ($match in $actionableMatches) {
+            $disposition = 'KnownRemoteAccessSoftware'
             $evidenceText = (@($match.Reasons) -join '; ')
             $finding = ConvertTo-CompuTekFinding $artifact $match $disposition $match.Strength $evidenceText
             $key = ("{0}|{1}|{2}|{3}" -f $finding.ProductId,$finding.ArtifactType,$finding.Name,$finding.Path).ToLowerInvariant()
             if (-not $dedupe.ContainsKey($key)) { $dedupe[$key] = $true; $findings.Add($finding) }
         }
 
-        if ($matches.Count -gt 0) { continue }
+        if ($actionableMatches.Count -gt 0) { continue }
+        if ($matches.Count -gt 0) {
+            # Built-in Windows remote features, signed Microsoft tasks, and ordinary
+            # configuration are not removal findings. Post-Scam event evidence handles
+            # actual RDP/Quick Assist/WinRM use. Only a native-named persistence item in
+            # a user-writable location is allowed to fall through to the unknown-artifact
+            # safety heuristics below.
+            $nativeNamedHighRisk = (
+                $artifact.ArtifactType -in @('Service','RunKey','ScheduledTask','StartupFile','Process') -and
+                (Test-CompuTekUserWritablePath $artifact.Path)
+            )
+            if (-not $nativeNamedHighRisk) { continue }
+        }
         $reason = $null
         $confidence = $null
         if ($artifact.ArtifactType -eq 'Service' -and (Test-CompuTekUserWritablePath $artifact.Path)) {

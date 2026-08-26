@@ -21,7 +21,7 @@
 [CmdletBinding()]
 param(
     [switch]$DeepScan,
-    [ValidateRange(1,365)][int]$LookbackDays = 30,
+    [ValidateRange(1,365)][int]$LookbackDays = 7,
     [switch]$IncludeHashes
 )
 
@@ -127,7 +127,9 @@ function Show-CandidateSummary {
     $runningProcesses = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Process'}).Count
     $endpoints = @($Candidate.Findings | ForEach-Object {@($_.RemoteEndpoints)} | Where-Object {$_} | Sort-Object -Unique)
     $renamed = @($Candidate.Findings | Where-Object {
-        $_.OriginalFilename -and $_.Path -and ([IO.Path]::GetFileName($_.Path) -ine $_.OriginalFilename)
+        $_.OriginalFilename -and $_.Path -and
+        ([IO.Path]::GetFileName($_.Path) -ine $_.OriginalFilename) -and
+        (Test-CompuTekUserWritablePath $_.Path)
     })
 
     Write-Host ("    Location: {0}" -f (Get-CandidateLocationLabel $Candidate)) -ForegroundColor Cyan
@@ -214,6 +216,12 @@ function Test-PathWithinVersionAnchor {
 function New-RemovalCandidates {
     param($Findings)
 
+    $suiteProducts = @{}
+    foreach ($product in @($catalog.products)) {
+        $groupProperty = $product.PSObject.Properties['groupProductComponents']
+        if ($groupProperty -and [bool]$groupProperty.Value) { $suiteProducts[[string]$product.id] = $true }
+    }
+
     # Group every known product by its exact detected version. Supporting artifacts
     # without version metadata join only when there is one unambiguous product version
     # or their path belongs to a versioned installation. Ambiguous items stay separate.
@@ -262,6 +270,13 @@ function New-RemovalCandidates {
                 Test-PathWithinVersionAnchor -Path $scopePath -Anchor $_.Path
             } | Sort-Object @{Expression={$_.Path.Length};Descending=$true} | Select-Object -First 1)
             if ($matchingVersionAnchor) { $resolvedVersion = [string]$matchingVersionAnchor[0].Version }
+        }
+        $isSuiteProduct = $suiteProducts.ContainsKey([string]$finding.ProductId)
+        if (-not $resolvedVersion -and $isSuiteProduct -and $productVersionData -and @($productVersionData.InstallVersions).Count -eq 1) {
+            # Syncro and Splashtop install multiple helper services/programs whose file
+            # build numbers differ from the registered suite version. Treat those as
+            # components of the one installed suite instead of separate agents.
+            $resolvedVersion = [string]$productVersionData.InstallVersions[0]
         }
         if (-not $resolvedVersion) { $resolvedVersion = Get-FindingDetectedVersion $finding }
         if (-not $resolvedVersion -and $productVersionData) {
@@ -835,6 +850,45 @@ function Test-FindingBelongsToCandidate {
     return $false
 }
 
+function ConvertTo-CompuTekCandidateSelection {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][ValidateRange(1,10000)][int]$Maximum,
+        [Parameter(Mandatory)][ValidateSet('KEEP','REMOVE')][string]$ExpectedAction
+    )
+
+    $value = ([string]$Text).Trim()
+    $actionMatch = [regex]::Match($value,'(?i)^(KEEP|REMOVE)\b\s*(.*)$')
+    if ($actionMatch.Success) {
+        if ($actionMatch.Groups[1].Value.ToUpperInvariant() -ne $ExpectedAction) {
+            throw "This answer must start with $ExpectedAction."
+        }
+        $value = $actionMatch.Groups[2].Value.Trim()
+    }
+    if ($value -match '^NONE$') { return @() }
+    if ($value -match '^ALL$') { return @(1..$Maximum) }
+    if (-not $value) { throw "Enter $ExpectedAction followed by numbers, $ExpectedAction ALL, or $ExpectedAction NONE." }
+
+    $numbers = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($part in @($value -split ',')) {
+        $item = $part.Trim()
+        if ($item -match '^(\d+)$') {
+            $start = [int]$Matches[1]
+            $end = $start
+        } elseif ($item -match '^(\d+)\s*-\s*(\d+)$') {
+            $start = [int]$Matches[1]
+            $end = [int]$Matches[2]
+            if ($end -lt $start) { throw "Range '$item' must go from a lower number to a higher number." }
+        } else {
+            throw "'$item' is not a valid number or range. Example: $ExpectedAction 2,4-7"
+        }
+        if ($start -lt 1 -or $end -gt $Maximum) { throw "'$item' is outside the available agent numbers 1-$Maximum." }
+        foreach ($number in $start..$end) { [void]$numbers.Add($number) }
+    }
+    return @($numbers | Sort-Object)
+}
+
 if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host '  CompuTek Remote-Access Scanner and Remediation Tool' -ForegroundColor Cyan
@@ -860,7 +914,7 @@ try {
 $reportPaths = Export-CompuTekScanReport -Scan $scan -Directory $caseRoot -BaseName 'BeforeRemediation'
 Write-Host "`n==================== SCAN STATUS ====================" -ForegroundColor Cyan
 Write-Host "Artifacts inspected: $($scan.Stats.ArtifactsInspected)"
-Write-Host "Known remote products/features: $($scan.Stats.KnownProducts + $scan.Stats.NativeFeatures)"
+Write-Host "Known remote product families: $($scan.Stats.KnownProducts)"
 Write-Host "Suspicious unknown artifacts: $($scan.Stats.SuspiciousUnknown)"
 if ($scan.IsComplete) {
     Write-Host 'Scan status: COMPLETE' -ForegroundColor Green
@@ -881,7 +935,8 @@ if ($candidates.Count -eq 0) {
 Write-Host "`n===================== FINDINGS ======================" -ForegroundColor Cyan
 foreach ($candidate in $candidates) {
     $highest = if ($candidate.Findings.Confidence -contains 'High') {'High'} elseif ($candidate.Findings.Confidence -contains 'Medium') {'Medium'} else {'Low'}
-    Write-Host ("{0,2}. [{1}] {2} - review ID {3}" -f $candidate.Index,$highest,$candidate.Name,$candidate.Id) -ForegroundColor $(if($highest -eq 'High'){'Red'}elseif($highest -eq 'Medium'){'Yellow'}else{'DarkYellow'})
+    $displayClass = if ($candidate.IsUnknown) {$highest} else {'Known'}
+    Write-Host ("{0,2}. [{1}] {2}" -f $candidate.Index,$displayClass,$candidate.Name) -ForegroundColor $(if($candidate.IsUnknown -and $highest -eq 'High'){'Red'}elseif($candidate.IsUnknown){'Yellow'}else{'Cyan'})
     Show-CandidateSummary $candidate
 }
 
@@ -900,25 +955,53 @@ $decisionPath = Join-Path $caseRoot 'TechnicianDecisions.json'
 $decisions = @()
 $decisionById = @{}
 
-Write-Host "`nEvery installation must be verified. KEEP and REMOVE decisions are recorded before any changes occur." -ForegroundColor Cyan
-foreach ($candidate in $candidates) {
-    Write-Host "`n---------------- $($candidate.Name) ----------------" -ForegroundColor Magenta
-    Write-Host ("Review ID: {0}" -f $candidate.Id) -ForegroundColor Cyan
-    Show-CandidateSummary $candidate -Detailed
+Write-Host "`nClassify the numbered agents in two batches. Every number must be placed in KEEP or REMOVE before continuing." -ForegroundColor Cyan
+Write-Host 'Examples: KEEP 1,3-5    REMOVE 2,6-8    KEEP ALL    REMOVE NONE' -ForegroundColor Gray
+$keepNumbers = @()
+$removeNumbers = @()
+while ($true) {
+    try {
+        $keepAnswer = Read-CompuTekInput 'Which agent numbers should be kept? Type KEEP numbers, KEEP ALL, or KEEP NONE (Q aborts)'
+        if ($keepAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
+        $keepNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $keepAnswer -Maximum $candidates.Count -ExpectedAction KEEP)
 
-    $decision = $null
-    while (-not $decision) {
-        $answer = Read-CompuTekInput "Type KEEP $($candidate.Id), REMOVE $($candidate.Id), or Q to abort"
-        if ($answer -match '^[Qq]$') {
-            Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow
-            exit 0
-        }
-        if ($answer -ieq "KEEP $($candidate.Id)") { $decision = 'KeepApproved' }
-        elseif ($answer -ieq "REMOVE $($candidate.Id)") { $decision = 'Remove' }
-        else { Write-Host 'The entry did not match this review ID. Try again.' -ForegroundColor Yellow }
+        $removeAnswer = Read-CompuTekInput 'Which agent numbers should be removed? Type REMOVE numbers, REMOVE ALL, or REMOVE NONE (Q aborts)'
+        if ($removeAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
+        $removeNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $removeAnswer -Maximum $candidates.Count -ExpectedAction REMOVE)
+    } catch {
+        Write-Host $_.Exception.Message -ForegroundColor Yellow
+        Write-Host 'Re-enter both KEEP and REMOVE selections.' -ForegroundColor Yellow
+        continue
     }
 
+    $overlap = @($keepNumbers | Where-Object {$removeNumbers -contains $_})
+    $classified = @($keepNumbers + $removeNumbers | Sort-Object -Unique)
+    $unclassified = @(1..$candidates.Count | Where-Object {$classified -notcontains $_})
+    if ($overlap.Count -gt 0) {
+        Write-Host ("The same number cannot be kept and removed: {0}" -f ($overlap -join ', ')) -ForegroundColor Red
+        continue
+    }
+    if ($unclassified.Count -gt 0) {
+        Write-Host ("Every agent must be classified. Missing: {0}" -f ($unclassified -join ', ')) -ForegroundColor Yellow
+        continue
+    }
+
+    Write-Host "`n================ PROPOSED DECISIONS ================" -ForegroundColor Cyan
+    foreach ($candidate in $candidates) {
+        $choice = if ($keepNumbers -contains $candidate.Index) {'KEEP'} else {'REMOVE'}
+        $versionLabel = if ($candidate.DetectedVersion) { "version $($candidate.DetectedVersion)" } else { 'version unavailable' }
+        Write-Host ("{0,2}. [{1,-6}] {2} - {3}" -f $candidate.Index,$choice,$candidate.Name,$versionLabel) -ForegroundColor $(if($choice -eq 'KEEP'){'Green'}else{'Yellow'})
+    }
+    $decisionConfirmation = Read-CompuTekInput 'Type CONFIRM DECISIONS to accept, R to re-enter them, or Q to abort'
+    if ($decisionConfirmation -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
+    if ($decisionConfirmation -ceq 'CONFIRM DECISIONS') { break }
+    Write-Host 'Selections were not confirmed. Re-enter both lists.' -ForegroundColor Yellow
+}
+
+foreach ($candidate in $candidates) {
+    $decision = if ($keepNumbers -contains $candidate.Index) { 'KeepApproved' } else { 'Remove' }
     $record = [pscustomobject][ordered]@{
+        CandidateNumber = $candidate.Index
         CandidateId = $candidate.Id
         ProductId = $candidate.ProductId
         ProductName = $candidate.Name
@@ -936,7 +1019,7 @@ foreach ($candidate in $candidates) {
 }
 
 $decisionDocument = [pscustomobject][ordered]@{
-    SchemaVersion = 1
+    SchemaVersion = 2
     ComputerName = $env:COMPUTERNAME
     CaseFolder = $caseRoot
     Technician = $technicianName
@@ -949,7 +1032,7 @@ $decisionDocument = [pscustomobject][ordered]@{
 $decisionDocument | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $decisionPath -Encoding UTF8
 Write-Host "`n================ TECHNICIAN DECISIONS ================" -ForegroundColor Cyan
 foreach ($record in $decisions) {
-    Write-Host ("{0,-16} {1,-14} {2}" -f $record.Decision,$record.CandidateId,$record.InstallationScope) -ForegroundColor $(if($record.Decision -eq 'Remove'){'Yellow'}else{'Green'})
+    Write-Host ("{0,2}. {1,-16} {2,-14} {3}" -f $record.CandidateNumber,$record.Decision,$record.CandidateId,$record.InstallationScope) -ForegroundColor $(if($record.Decision -eq 'Remove'){'Yellow'}else{'Green'})
 }
 Write-Host "Decision record: $decisionPath" -ForegroundColor DarkGray
 

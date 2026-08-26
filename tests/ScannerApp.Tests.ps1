@@ -42,6 +42,7 @@ $finalCheckSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\Final
 $brandingSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\Branding.cs') -Raw
 Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
 Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'elapsedText' -and $mainFormSource -notmatch 'Still working' -and $mainFormSource -notmatch 'writeHeartbeatToOutput') 'Elapsed time remains in the status bar without adding heartbeat lines to tool output'
+Assert-AppTest ($mainFormSource -match 'lookbackDays\.Value = 7' -and $remoteSource -match '\$LookbackDays = 7' -and $postScamSource -match '\$LookbackDays = 7') 'Remote and post-scam scans default to a one-week lookback'
 Assert-AppTest ($moduleSource -match 'Get-CompuTekCandidateFilesSafe' -and $moduleSource -match 'FileAttributes\]::ReparsePoint' -and $moduleSource -notmatch 'Get-ChildItem -LiteralPath \$root -Recurse') 'Default file discovery uses a junction-safe bounded traversal'
 Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} else \{ 5 \}') 'Full-depth file traversal is reserved for explicit Deep Scan mode'
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
@@ -56,6 +57,8 @@ Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $pre
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remoteSource -match 'CompuTekData' -and $postScamSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $postScamSource -match 'CompuTekData') 'Remote and post-scam evidence is stored beside the EXE on the service USB'
 Assert-AppTest ($postScamSource -match '\$script:Supplemental' -and $postScamSource -match 'ActionableFindings\.txt' -and $postScamSource -match '\[switch\]\$ExtendedForensics' -and $postScamSource -match 'Select-Object -First 12') 'Post-scam default output is consolidated to actionable findings while optional extended leads stay in USB reports'
 Assert-AppTest ($remoteSource -match 'Get-FindingDetectedVersion' -and $remoteSource -match 'GroupByVersion' -and $moduleSource -match 'DisplayVersion') 'Remote findings are grouped by detected product version'
+Assert-AppTest ($remoteSource -match 'ConvertTo-CompuTekCandidateSelection' -and $remoteSource -match 'KEEP 1,3-5' -and $remoteSource -match 'REMOVE 2,6-8' -and $remoteSource -match 'CONFIRM DECISIONS') 'Numbered agents support confirmed batch KEEP and REMOVE ranges'
+Assert-AppTest ($moduleSource -match '\$actionableMatches' -and $moduleSource -match "category -ne 'native-feature'") 'Ordinary Windows-native remote features are excluded from removal candidates'
 Assert-AppTest ($remoteSource -match 'retry after blockers were stopped' -and $remoteSource -match 'ManualRemovalRequired\.txt') 'Failed uninstallers get one blocker-stop retry and incomplete removal locations are saved for technicians'
 Assert-AppTest ($mainFormSource -match 'CreateSessionLog' -and $mainFormSource -match 'ApplicationSessions' -and $mainFormSource -match 'File\.AppendAllText' -and $mainFormSource -match 'USB session log could not be updated') 'Every application run saves its displayed output to a USB session log and visibly warns if USB writing stops'
 Assert-AppTest ($moduleSource -match '\$portableDataRoot' -and $moduleSource -match 'Join-Path \$env:COMPUTEK_SCANNER_PORTABLE_ROOT ''CompuTekData''') 'File discovery excludes the scanner data it saved on the service USB'
@@ -184,7 +187,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.1.0') 'Built EXE reports version 1.4.1.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.2.0') 'Built EXE reports version 1.4.2.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}
