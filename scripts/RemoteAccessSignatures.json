@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.26.6",
+  "catalogVersion": "2026.08.26.7",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "heuristicTerms": [
     "remote access", "remote desktop", "remote support", "remote control", "screen sharing",
@@ -307,6 +307,17 @@
       "servicePatterns": ["BASupportExpressStandaloneService*", "Take Control Agent*"],
       "packagePatterns": ["*Take Control*", "*N-able*"],
       "pathPatterns": ["*\\beanywhere support express\\*", "*\\take control agent\\*"]
+    },
+    {
+      "id": "n-able-rmm",
+      "name": "N-able N-central / N-sight RMM Agent",
+      "category": "rmm",
+      "aliases": ["n-able n-central", "n-able n-sight", "n-central", "n-sight rmm", "msp agent by n-able"],
+      "executables": ["msp-agent-core.exe", "naagentimplserver.exe", "agentmaint.exe", "agentmonitor.exe"],
+      "originalFilenames": ["msp-agent-core.exe", "naagentimplserver.exe", "agentmaint.exe", "agentmonitor.exe"],
+      "servicePatterns": ["MSPAgent", "N-central Custom Protocol Launching Service"],
+      "packagePatterns": ["*N-able N-central*", "*N-able N-sight*", "*N-central Agent*", "*N-sight RMM*"],
+      "pathPatterns": ["*\\n-able technologies\\windows agent\\*", "*\\msp agent\\*", "*\\advanced monitoring agent\\*"]
     },
     {
       "id": "simplehelp",

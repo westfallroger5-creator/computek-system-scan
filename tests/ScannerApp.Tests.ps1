@@ -202,7 +202,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.6.0') 'Built EXE reports version 1.4.6.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.7.0') 'Built EXE reports version 1.4.7.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

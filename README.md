@@ -61,7 +61,7 @@ Read-only, focused post-scam integrity review with a configurable 7-day default 
 
 ### RemoteAccessScanAndRemove.ps1
 Evidence-first detection and interactive remediation of remote-access software:
-- Uses `RemoteAccessSignatures.json`, currently covering 60+ remote-support, RMM, VNC, and built-in Windows remote-access families. The catalog can be updated without changing either scanner.
+- Uses `RemoteAccessSignatures.json`, currently covering 60+ remote-support, RMM, VNC, and built-in Windows remote-access families, including both N-able Take Control and the separate N-central/N-sight agent families. The catalog can be updated without changing either scanner.
 - Inspects machine and loaded-user uninstall entries, all-user AppX packages, services, running processes, active connections, Run keys, scheduled tasks, the all-users Startup folder, every user profile's Startup/AppData/Desktop/Downloads folders, ProgramData, and Windows Temp.
 - Resolves Startup-folder shortcuts, URLs, and scripts and flags an item that can download or reinstall software at sign-in, even when the visible target is a normal Windows program such as PowerShell. A complete before/after Startup inventory is saved as separate JSON and CSV evidence on the service USB; ordinary entries that do not match remote software or suspicious persistence stay out of the review list.
 - Checks original PE filename, product metadata, company metadata, Authenticode status, service-name patterns, package names, and paths. This detects variable ScreenConnect service names and can identify renamed tools such as an AppData copy named `AdobeReader.exe` whose original filename is `ScreenConnect.ClientService.exe`.
