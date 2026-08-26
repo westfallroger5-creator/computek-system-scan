@@ -253,18 +253,30 @@ do {
         }
         "10" {
             Write-Host "`nClearing print queue..." -ForegroundColor Yellow
+            $queueCleared = $false
+            $spoolerRestarted = $false
             try {
-                Stop-Service -Name Spooler -Force
+                Stop-Service -Name Spooler -Force -ErrorAction Stop
                 $printDir = "$env:SystemRoot\System32\spool\PRINTERS"
                 if (Test-Path $printDir) {
-                    Remove-Item "$printDir\*" -Force -Recurse -ErrorAction SilentlyContinue
+                    Get-ChildItem -LiteralPath $printDir -Force -ErrorAction Stop | Remove-Item -Force -Recurse -ErrorAction Stop
                 }
-                Start-Service -Name Spooler
-                Write-Host "Print queue cleared successfully." -ForegroundColor Green
-                Log "Cleared print queue successfully"
+                $queueCleared = $true
             } catch {
                 Write-Host "Failed to clear print queue: $_" -ForegroundColor Red
                 Log "Error clearing print queue: $_"
+            } finally {
+                try {
+                    Start-Service -Name Spooler -ErrorAction Stop
+                    $spoolerRestarted = $true
+                } catch {
+                    Write-Host "Print Spooler could not be restarted: $_" -ForegroundColor Red
+                    Log "Error restarting Print Spooler: $_"
+                }
+            }
+            if ($queueCleared -and $spoolerRestarted) {
+                Write-Host "Print queue cleared and Print Spooler restarted successfully." -ForegroundColor Green
+                Log "Cleared print queue and restarted Print Spooler successfully"
             }
         }
         "11" {

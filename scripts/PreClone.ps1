@@ -166,6 +166,35 @@ function Set-CompuTekPreCloneEncryptionPolicy {
     }
 }
 
+function Get-CompuTekPortableMediaInfo {
+    param([Parameter(Mandatory)][string]$RootPath)
+
+    $rootItem = Get-Item -LiteralPath $RootPath -ErrorAction Stop
+    $driveLetter = [string]$rootItem.PSDrive.Name
+    if ($driveLetter -notmatch '^[A-Za-z]$') {
+        throw 'The program is not running from a drive-letter-based service USB.'
+    }
+    $volume = Get-Volume -DriveLetter $driveLetter -ErrorAction Stop
+    $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop | Select-Object -First 1
+    if (-not $partition -or $null -eq $partition.DiskNumber) {
+        throw "The physical disk for service media $driveLetter`: could not be identified."
+    }
+    $disk = Get-Disk -Number $partition.DiskNumber -ErrorAction Stop
+    $driveType = [string]$volume.DriveType
+    $busType = [string]$disk.BusType
+    $isExternalServiceMedia = ($driveType -eq 'Removable' -or $busType -in @('USB','SD','MMC'))
+    if (-not $isExternalServiceMedia) {
+        throw "Pre-Clone must be launched from removable service media. $driveLetter`: is $driveType on a $busType disk."
+    }
+    return [pscustomobject]@{
+        DriveLetter = $driveLetter.ToUpperInvariant()
+        DiskNumber = [int]$partition.DiskNumber
+        DriveType = $driveType
+        BusType = $busType
+        FriendlyName = [string]$disk.FriendlyName
+    }
+}
+
 $portableRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) {
     $env:COMPUTEK_SCANNER_PORTABLE_ROOT
 } else {
@@ -177,6 +206,16 @@ $computer = if ([string]::IsNullOrWhiteSpace($env:COMPUTERNAME)) { 'UNKNOWN-COMP
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $caseDirectory = Join-Path $portableRoot ("BitLockerKeys\{0}\PreClone_{1}" -f $computer,$timestamp)
 $exitCode = 4
+
+$portableMedia = $null
+try {
+    $portableMedia = Get-CompuTekPortableMediaInfo -RootPath $portableRoot
+}
+catch {
+    Write-Host "[BLOCKED] Service USB safety check failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host 'Run CompuTekScanner.exe directly from the service USB. Pre-Clone will not exclude an unverified internal disk.' -ForegroundColor Yellow
+    exit $exitCode
+}
 
 try {
     New-Item -Path $caseDirectory -ItemType Directory -Force -ErrorAction Stop | Out-Null
@@ -190,26 +229,42 @@ catch {
 Write-Host '==== PRE-CLONE SYSTEM PREPARATION ====' -ForegroundColor Cyan
 Write-Host 'Workflow: verify recovery-key backup, fully decrypt, then check disks.' -ForegroundColor Cyan
 Write-Host "Case folder: $caseDirectory" -ForegroundColor Green
+Write-Host ("Service media: {0}: on physical disk {1} ({2}, {3})" -f $portableMedia.DriveLetter,$portableMedia.DiskNumber,$portableMedia.BusType,$portableMedia.FriendlyName) -ForegroundColor Cyan
 Write-Host 'Recovery-key files are confidential. Secure or remove them from the service USB after the job.' -ForegroundColor Yellow
 
 $fixedVolumes = @()
+$storageMappingSucceeded = $true
 try {
     $fixedVolumes = @(Get-Volume -ErrorAction Stop | Where-Object {
         $_.DriveLetter -and $_.DriveType -eq 'Fixed'
     } | Sort-Object DriveLetter)
 }
 catch {
+    $storageMappingSucceeded = $false
     Write-Host "[BLOCKED] Fixed-drive inventory failed: $($_.Exception.Message)" -ForegroundColor Red
 }
 
-$portableDrive = $null
-try { $portableDrive = (Get-Item -LiteralPath $portableRoot -ErrorAction Stop).PSDrive.Name } catch {}
-$targetVolumes = @($fixedVolumes | Where-Object { -not $portableDrive -or $_.DriveLetter -ne $portableDrive })
+$portableDrive = $portableMedia.DriveLetter
+$targetVolumes = @()
+foreach ($volume in $fixedVolumes) {
+    try {
+        $partition = Get-Partition -DriveLetter $volume.DriveLetter -ErrorAction Stop | Select-Object -First 1
+        if (-not $partition -or $null -eq $partition.DiskNumber) { throw 'No physical disk number was returned.' }
+        if ([int]$partition.DiskNumber -eq [int]$portableMedia.DiskNumber) {
+            Write-Host ("[INFO] Excluding service-media volume {0}: on physical disk {1}." -f $volume.DriveLetter,$portableMedia.DiskNumber) -ForegroundColor DarkGray
+            continue
+        }
+        $targetVolumes += $volume
+    }
+    catch {
+        $storageMappingSucceeded = $false
+        Write-Host ("[BLOCKED] Could not map volume {0}: to a physical disk: {1}" -f $volume.DriveLetter,$_.Exception.Message) -ForegroundColor Red
+    }
+}
 $bitLockerResults = @()
 $keyBackups = @()
 $diskResults = @()
-$inspectionSucceeded = $targetVolumes.Count -gt 0
-$decryptionStartedAny = $false
+$inspectionSucceeded = $storageMappingSucceeded -and $targetVolumes.Count -gt 0
 $decryptionApproved = $false
 
 Write-CompuTekStage 'Inspecting BitLocker status on fixed drives'
@@ -293,7 +348,6 @@ if ($decryptionApproved) {
                 Disable-BitLockerAutoUnlock -MountPoint $mountPoint -ErrorAction Stop | Out-Null
             }
             Disable-BitLocker -MountPoint $mountPoint -ErrorAction Stop | Out-Null
-            $decryptionStartedAny = $true
             Write-Host "[STARTED] BitLocker decryption on $mountPoint." -ForegroundColor Cyan
 
             $waitResult = Wait-CompuTekDecryption -MountPoint $mountPoint
@@ -337,7 +391,11 @@ foreach ($volume in @($bitLockerVolumes | Where-Object {
     }
 }
 
-if ($decryptionStartedAny) {
+$bitLockerPreparationReady = $inspectionSucceeded -and
+    $bitLockerResults.Count -eq $targetVolumes.Count -and
+    @($bitLockerResults | Where-Object {-not $_.Ready}).Count -eq 0
+$encryptionPolicyReady = $false
+if ($bitLockerPreparationReady) {
     Write-CompuTekStage 'Preventing automatic re-encryption during cloning'
     try {
         $policyBackup = Join-Path $caseDirectory 'PreClonePolicyBackup.json'
@@ -345,6 +403,7 @@ if ($decryptionStartedAny) {
         Write-Host '[OK] Automatic device-encryption prevention is active for the clone workflow.' -ForegroundColor Green
         Write-Host "     Original policy values: $policyBackup" -ForegroundColor DarkGray
         Write-Host '     The BitLocker service was left available; Final System Check removes these temporary flags.' -ForegroundColor Cyan
+        $encryptionPolicyReady = $true
     }
     catch {
         Write-Host "[NOT READY] Could not set temporary encryption-prevention policy: $($_.Exception.Message)" -ForegroundColor Red
@@ -400,9 +459,7 @@ foreach ($volume in $targetVolumes) {
     }
 }
 
-$bitLockerReady = $inspectionSucceeded -and
-    $bitLockerResults.Count -eq $targetVolumes.Count -and
-    @($bitLockerResults | Where-Object {-not $_.Ready}).Count -eq 0
+$bitLockerReady = $bitLockerPreparationReady -and $encryptionPolicyReady
 $disksReady = $diskResults.Count -eq $targetVolumes.Count -and
     @($diskResults | Where-Object {-not $_.Ready}).Count -eq 0
 $acronisReady = $targetVolumes.Count -gt 0 -and $bitLockerReady -and $disksReady
@@ -412,6 +469,7 @@ $summary = [pscustomobject]@{
     ComputerName = $computer
     CompletedUtc = [DateTime]::UtcNow.ToString('o')
     PortableRoot = $portableRoot
+    PortableMedia = $portableMedia
     SecureBoot = $secureBootStatus
     BitLockerInspectionSucceeded = $inspectionSucceeded
     AcronisReady = $acronisReady

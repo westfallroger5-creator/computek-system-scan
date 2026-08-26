@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.26.5",
+  "catalogVersion": "2026.08.26.6",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "heuristicTerms": [
     "remote access", "remote desktop", "remote support", "remote control", "screen sharing",
@@ -103,11 +103,23 @@
       "name": "RealVNC",
       "category": "remote-support",
       "aliases": ["realvnc", "vnc server"],
-      "executables": ["vncserver.exe", "vncviewer.exe", "vncservice.exe"],
-      "originalFilenames": ["vncserver.exe", "vncviewer.exe"],
+      "executables": ["vncserver.exe", "vncservice.exe"],
+      "originalFilenames": ["vncserver.exe"],
       "servicePatterns": ["VNC Server*", "RealVNC*"],
       "packagePatterns": ["*RealVNC*", "*VNC Server*"],
       "pathPatterns": ["*\\realvnc\\*", "*\\vnc server\\*"]
+    },
+    {
+      "id": "vnc-viewer-generic",
+      "name": "VNC Viewer (vendor not identified)",
+      "category": "remote-support",
+      "fallbackOnly": true,
+      "aliases": [],
+      "executables": ["vncviewer.exe"],
+      "originalFilenames": ["vncviewer.exe"],
+      "servicePatterns": [],
+      "packagePatterns": [],
+      "pathPatterns": []
     },
     {
       "id": "tightvnc",
@@ -125,7 +137,7 @@
       "name": "UltraVNC",
       "category": "remote-support",
       "aliases": ["ultravnc"],
-      "executables": ["winvnc.exe", "vncviewer.exe"],
+      "executables": ["winvnc.exe"],
       "originalFilenames": ["winvnc.exe"],
       "servicePatterns": ["uvnc_service", "UltraVNC*", "WinVNC*"],
       "packagePatterns": ["*UltraVNC*"],
@@ -136,7 +148,7 @@
       "name": "TigerVNC",
       "category": "remote-support",
       "aliases": ["tigervnc"],
-      "executables": ["winvnc4.exe", "vncviewer.exe"],
+      "executables": ["winvnc4.exe"],
       "originalFilenames": ["winvnc4.exe"],
       "servicePatterns": ["TigerVNC*"],
       "packagePatterns": ["*TigerVNC*"],

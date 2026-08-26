@@ -29,7 +29,10 @@ $catalog = Get-CompuTekCatalog -Path $catalogPath
 foreach ($relativePath in @(
     'scripts\CompuTek.Scanner.Common.psm1',
     'scripts\RemoteAccessScanAndRemove.ps1',
-    'scripts\PostScam_SystemIntegrityScanner.ps1'
+    'scripts\PostScam_SystemIntegrityScanner.ps1',
+    'scripts\IT_Technician_Toolbox.ps1',
+    'scripts\FinalSystemCheck_CompuTek.ps1',
+    'scripts\PreClone.ps1'
 )) {
     $tokens = $null
     $parseErrors = $null
@@ -51,6 +54,7 @@ Assert-True ($remediationSource -match 'sc\.exe delete' -and $remediationSource 
 Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource -match 'NotVerified-ScanIncomplete') 'Removal is only verified after a complete follow-up scan'
 Assert-True ($remediationSource -match 'retry after blockers were stopped' -and $remediationSource -match 'Stop-CandidateServices' -and $remediationSource -match 'Stop-CandidateProcesses') 'A failed vendor uninstall is retried once after exact related blockers are stopped'
 Assert-True ($remediationSource -match 'ManualRemovalRequired\.txt' -and $remediationSource -match 'TECHNICIAN ACTION REQUIRED' -and $remediationSource -match 'RemainingLocations') 'Incomplete removals show and save exact locations for manual technician work'
+Assert-True ($remediationSource -match '\$attentionRequired' -and $remediationSource -match 'NotVerified-ScanFailed' -and $remediationSource -match 'do not manually delete files' -and $remediationSource -match 'exit \$\(if\(\$attentionRequired\)\{3\}else\{0\}\)') 'Incomplete or failed verification returns an attention result and never implies that removal was verified'
 
 $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
@@ -58,6 +62,7 @@ Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or 
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
+Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
 Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
 
 $singleEndpointArtifacts = @(& $scannerModule {
@@ -135,10 +140,18 @@ try {
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate','ConvertTo-CompuTekCandidateSelection')) {
+foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
+$caseRoot = 'Z:\CompuTekTest\Case'
+$quarantineRoot = 'Z:\CompuTekTest\Quarantine'
+Assert-True (Test-ProtectedRemediationPath -Path 'C:\Program Files\Common Files\Microsoft Shared' -Directory) 'Shared Common Files trees cannot be quarantined as a product folder'
+Assert-True (Test-ProtectedRemediationPath -Path 'C:\ProgramData\Microsoft\Windows' -Directory) 'Microsoft ProgramData trees cannot be quarantined as a product folder'
+Assert-True (Test-ProtectedRemediationPath -Path 'C:\Users\Victim\Downloads' -Directory) 'A whole user Downloads folder cannot be quarantined'
+Assert-True (Test-ProtectedRemediationPath -Path 'C:\Users\Victim' -Directory) 'A whole user profile cannot be quarantined'
+Assert-True (-not (Test-ProtectedRemediationPath -Path 'C:\Program Files\RemoteVendor\Agent' -Directory)) 'A vendor-specific program directory remains eligible after technician-approved removal'
+Assert-True (-not (Test-ProtectedRemediationPath -Path 'C:\Users\Victim\AppData\Roaming\RemoteVendor' -Directory)) 'A vendor-specific AppData directory remains eligible after technician-approved removal'
 $legitimateInstall = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='InstalledProgram';Name='Company Support';Path='C:\Program Files\ScreenConnect';InstallLocation='C:\Program Files\ScreenConnect';RegistryPath='HKLM:\Software\Uninstall\CompanySupport';PackageFullName=$null;DisplayVersion='24.1.0';FileVersion=$null}
 $legitimateService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='24.1.0.123'}
 $hiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden';Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
@@ -214,6 +227,17 @@ $renamedAnyDesk = New-TestEvidence @{
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $renamedAnyDesk)
 Assert-True ($matches.Product.id -contains 'anydesk') 'Renamed AnyDesk executable is detected from original filename/product metadata'
 
+$genericVncViewer = New-TestEvidence @{
+    ArtifactType='File';Name='vncviewer.exe';DisplayName='vncviewer.exe';Path='C:\Temp\vncviewer.exe';FileName='vncviewer.exe';OriginalFilename='vncviewer.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $genericVncViewer)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'vnc-viewer-generic') 'An otherwise unidentified VNC Viewer is shown once instead of as three vendors'
+$realVncViewer = New-TestEvidence @{
+    ArtifactType='File';Name='vncviewer.exe';DisplayName='VNC Viewer';Path='C:\Program Files\RealVNC\VNC Viewer\vncviewer.exe';FileName='vncviewer.exe';OriginalFilename='vncviewer.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $realVncViewer)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'realvnc') 'A vendor-specific VNC path suppresses the generic fallback finding'
+
 $zohoBooks = New-TestEvidence @{
     ArtifactType='InstalledProgram';Name='Zoho Books';DisplayName='Zoho Books';Path='C:\Program Files\Zoho\Books\books.exe'
     Publisher='Zoho Corporation';ProductName='Zoho Books';FileName='books.exe'
@@ -254,6 +278,18 @@ Assert-True (@($unquoted.Arguments) -contains '/quiet') 'Uninstall arguments are
 
 $msi = Split-CompuTekUninstallCommand 'MsiExec.exe /I{12345678-1234-1234-1234-1234567890AB}'
 Assert-True ($msi.FilePath -eq 'msiexec.exe' -and @($msi.Arguments) -contains '/x') 'MSI maintenance command is converted to an uninstall command'
+
+$postScamTokens = $null
+$postScamErrors = $null
+$postScamAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'),[ref]$postScamTokens,[ref]$postScamErrors)
+$postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-CompuTekPostScamPersistenceText'},$true))[0]
+Invoke-Expression $postScamFunction.Extent.Text
+$remoteRegex = '(?i)(screenconnect|anydesk)'
+$suspiciousCommandRegex = '(?i)(encodedcommand|invoke-webrequest)'
+Assert-True (-not (Test-CompuTekPostScamPersistenceText 'Service FileSyncHelper installed under C:\Program Files\Vendor')) 'An ordinary recent service installation is supplemental evidence, not an actionable scam backdoor'
+Assert-True (Test-CompuTekPostScamPersistenceText 'ScreenConnect Client service installed') 'A remote-software service installation remains actionable'
+Assert-True (Test-CompuTekPostScamPersistenceText 'powershell.exe -EncodedCommand AAAA') 'A suspicious persistence command remains actionable'
+Assert-True (Test-CompuTekPostScamPersistenceText 'C:\Users\Victim\AppData\Roaming\helper.exe') 'Persistence from a user-writable profile path remains actionable'
 
 if ($script:Failures -gt 0) {
     Write-Host "$script:Failures test(s) failed." -ForegroundColor Red

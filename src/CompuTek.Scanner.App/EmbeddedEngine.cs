@@ -37,9 +37,13 @@ namespace CompuTek.Scanner.App
                 Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                 "CompuTek",
                 "ScannerApp");
-            string stageDirectory = Path.Combine(programDataRoot, "Engine", version);
-            Directory.CreateDirectory(stageDirectory);
-            ProtectDirectory(stageDirectory);
+            string compuTekRoot = Directory.GetParent(programDataRoot).FullName;
+            string engineRoot = Path.Combine(programDataRoot, "Engine");
+            string stageDirectory = Path.Combine(engineRoot, version);
+            PrepareProtectedDirectory(compuTekRoot);
+            PrepareProtectedDirectory(programDataRoot);
+            PrepareProtectedDirectory(engineRoot);
+            PrepareProtectedDirectory(stageDirectory);
 
             string remotePath = Path.Combine(stageDirectory, "RemoteAccessScanAndRemove.ps1");
             string postScamPath = Path.Combine(stageDirectory, "PostScam_SystemIntegrityScanner.ps1");
@@ -84,10 +88,13 @@ namespace CompuTek.Scanner.App
         {
             string managedCatalog = Path.Combine(programDataRoot, "RemoteAccessSignatures.json");
             string portableCatalog = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RemoteAccessSignatures.json");
-            if (File.Exists(managedCatalog))
-                return CatalogValidator.Validate(File.ReadAllBytes(managedCatalog), "managed ProgramData catalog");
             if (File.Exists(portableCatalog))
                 return CatalogValidator.Validate(File.ReadAllBytes(portableCatalog), "catalog beside the EXE");
+            if (File.Exists(managedCatalog))
+            {
+                RejectReparsePoint(managedCatalog);
+                return CatalogValidator.Validate(File.ReadAllBytes(managedCatalog), "managed ProgramData catalog");
+            }
             return CatalogValidator.Validate(ReadResource(assembly, CatalogResource), "embedded default catalog");
         }
 
@@ -112,16 +119,39 @@ namespace CompuTek.Scanner.App
 
         private static void WriteAtomic(string destination, byte[] content)
         {
+            RejectReparsePoint(destination);
             string temporary = destination + ".tmp-" + Guid.NewGuid().ToString("N");
             File.WriteAllBytes(temporary, content);
             try
             {
-                File.Copy(temporary, destination, true);
+                // Delete a pre-existing regular file before the move so an unsafe
+                // explicit ACL from an older/user-created file cannot survive the
+                // overwrite. The new file inherits the protected directory ACL.
+                if (File.Exists(destination)) File.Delete(destination);
+                File.Move(temporary, destination);
             }
             finally
             {
                 if (File.Exists(temporary)) File.Delete(temporary);
             }
+        }
+
+        private static void PrepareProtectedDirectory(string path)
+        {
+            if (Directory.Exists(path))
+                RejectReparsePoint(path);
+            else
+                Directory.CreateDirectory(path);
+            RejectReparsePoint(path);
+            ProtectDirectory(path);
+        }
+
+        private static void RejectReparsePoint(string path)
+        {
+            if (!File.Exists(path) && !Directory.Exists(path)) return;
+            FileAttributes attributes = File.GetAttributes(path);
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("A trusted scanner path is a link or reparse point and will not be used: " + path);
         }
 
         private static void ProtectDirectory(string path)

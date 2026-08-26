@@ -318,6 +318,8 @@ function Find-CompuTekProductMatch {
         }
     }
 
+    $specificMatches = @($productMatches | Where-Object {-not [bool](Get-CompuTekPropertyValue $_.Product 'fallbackOnly')})
+    if ($specificMatches.Count -gt 0) { return $specificMatches }
     return @($productMatches)
 }
 
@@ -752,7 +754,8 @@ function Get-CompuTekTargetedFileArtifacts {
             }
             $fastMatches = @(Find-CompuTekProductMatch -Catalog $Catalog -Evidence $artifact)
             $recentExecutable = ($file.Extension -match '^\.(exe|com|dll|msi)$' -and $file.LastWriteTimeUtc -ge $cutoff)
-            if ($fastMatches.Count -eq 0 -and -not $recentExecutable) { continue }
+            $inspectExecutableMetadata = ($file.Extension -match '^\.(exe|com|dll|msi)$' -and ($DeepScan -or $recentExecutable -or $fastMatches.Count -gt 0))
+            if ($fastMatches.Count -eq 0 -and -not $inspectExecutableMetadata) { continue }
 
             if ($file.Extension -match '^\.(exe|com|dll|msi)$') {
                 $artifact = Add-CompuTekFileFields $artifact (Get-CompuTekFileEvidence $file.FullName)

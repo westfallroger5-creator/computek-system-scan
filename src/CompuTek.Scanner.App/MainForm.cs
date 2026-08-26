@@ -557,12 +557,16 @@ namespace CompuTek.Scanner.App
                 string status;
                 if (args.ExitCode == 0)
                     status = runningDisplayName + " completed";
+                else if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-Access Scanner", StringComparison.Ordinal))
+                    status = runningDisplayName + " completed — ATTENTION REQUIRED";
                 else if (args.ExitCode == 4 && String.Equals(runningDisplayName, "Pre-Clone Preparation", StringComparison.Ordinal))
                     status = runningDisplayName + " completed — NOT READY for Acronis";
+                else if (args.ExitCode == 5 && String.Equals(runningDisplayName, "Final System Check", StringComparison.Ordinal))
+                    status = runningDisplayName + " completed — ATTENTION REQUIRED";
                 else
                     status = runningDisplayName + " stopped with exit code " + args.ExitCode;
                 SetRunningState(false, status);
-                AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : Color.Salmon);
+                AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : (args.ExitCode == 3 || args.ExitCode == 4 || args.ExitCode == 5 ? Color.Khaki : Color.Salmon));
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
             });
         }
