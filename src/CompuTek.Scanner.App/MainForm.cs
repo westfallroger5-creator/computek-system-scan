@@ -181,7 +181,7 @@ namespace CompuTek.Scanner.App
 
             lookbackDays.Minimum = 1;
             lookbackDays.Maximum = 365;
-            lookbackDays.Value = 30;
+            lookbackDays.Value = 7;
             lookbackDays.Location = new Point(91, 27);
             lookbackDays.Width = 62;
             options.Controls.Add(lookbackDays);
@@ -250,7 +250,7 @@ namespace CompuTek.Scanner.App
             commandPanel.Controls.Add(openCaseButton);
 
             Label safety = new Label();
-            safety.Text = "Removal mode still requires the technician to KEEP or REMOVE every installation and type APPLY REMOVALS. Nothing is removed automatically.";
+            safety.Text = "Removal requires numbered KEEP/REMOVE choices and the final words APPLY REMOVALS. Nothing is removed automatically.";
             safety.ForeColor = Color.FromArgb(128, 74, 0);
             safety.Location = new Point(828, 96);
             safety.Size = new Size(320, 54);
@@ -393,7 +393,7 @@ namespace CompuTek.Scanner.App
         private void StartRemoteScanner(object sender, EventArgs args)
         {
             DialogResult result = MessageBox.Show(
-                "The scanner will display every finding and save its reports beside this EXE on the service USB. It will then offer technician-reviewed removal.\r\n\r\nNothing is removed automatically. Every installation requires an exact KEEP or REMOVE decision, and removals require the final words APPLY REMOVALS.\r\n\r\nContinue?",
+                "The scanner will display every finding and save its reports beside this EXE on the service USB. It will then ask which numbered agents to KEEP and which to REMOVE.\r\n\r\nNothing is removed automatically. Every agent must be classified, and removals require the final words APPLY REMOVALS.\r\n\r\nContinue?",
                 "Start remote-access review",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,

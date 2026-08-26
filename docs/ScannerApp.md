@@ -18,15 +18,16 @@ Reports and quarantine data saved on the service USB use the drive's normal inhe
 
 1. Double-click `CompuTekScanner.exe` and approve the Windows administrator prompt.
 2. Confirm the signature version shown in the upper-right corner.
-3. Choose the lookback period and optional full fixed-drive scan/file hashes. The normal scan uses a junction-safe, bounded search of high-risk user and shared-data folders. Full fixed-drive mode searches every fixed drive and can take considerably longer.
-4. The remote scanner always displays its findings and offers technician-reviewed removal when findings exist. It never removes anything automatically. Findings are grouped by product and detected version: protecting copies of the same version are reviewed together, while different versions remain separate. Version-unknown items stay separated by location.
+3. The default lookback is 7 days. Change it when a case needs a wider period, and optionally select full fixed-drive scan/file hashes. The normal scan uses a junction-safe, bounded search of high-risk user and shared-data folders.
+4. The remote scanner always displays its findings and offers technician-reviewed removal when findings exist. It never removes anything automatically. Findings are grouped by product and detected installed version. Syncro/Splashtop component build numbers follow their registered suite version; separate ScreenConnect versions remain independent.
 5. Leave the application open while the bottom status bar reports the current collection stage and elapsed time. The program does not add repetitive elapsed-time lines to the findings area.
-6. Classify each detected product/version group with the exact `KEEP <review-id>` or `REMOVE <review-id>` response shown by the application.
-7. Review the decision summary and type `APPLY REMOVALS` only when the selections are correct. Without that exact final phrase, nothing is removed.
-8. For approved removals, the vendor uninstaller runs first. If it fails, the scanner stops/disables the matching services, terminates processes at exact matching executable paths, and retries once. If verification still finds that version, open `ManualRemovalRequired.txt` in the USB case folder for exact remaining locations; a technician can then reboot, rescan, or perform manual/Safe Mode removal.
-9. Use **Open last case folder** after completion to review the USB evidence, decisions, remediation log, and verification report.
+6. Classify numbered agents in batches, for example `KEEP 1,3-5` and `REMOVE 2,6-8`. `ALL` and `NONE` are also accepted. Every number must appear in exactly one list.
+7. Review the proposed decision summary and type `CONFIRM DECISIONS`. Re-enter the lists if anything is wrong.
+8. Type `APPLY REMOVALS` only when the confirmed removal selections are correct. Without that exact final phrase, nothing is removed.
+9. For approved removals, the vendor uninstaller runs first. If it fails, the scanner stops/disables the matching services, terminates processes at exact matching executable paths, and retries once. If verification still finds that version, open `ManualRemovalRequired.txt` in the USB case folder for exact remaining locations.
+10. Use **Open last case folder** after completion to review the USB evidence, decisions, remediation log, and verification report.
 
-The post-scam collector is read-only and focused on actionable persistence, hidden access, security changes, suspicious execution, and possible customer harm. Repeated records are consolidated in `ActionableFindings.txt`; supplemental inventory is saved separately and not shown as a finding. It cannot prove that no data was taken or that no custom/fileless backdoor exists. A technician can run the script directly with `-ExtendedForensics` when broader data-access/staging leads are required.
+Built-in Windows remote features are not offered for removal merely because they are installed or enabled. The post-scam collector is read-only and reports relevant remote-session events or suspicious persistence when evidence of actual use exists. It remains focused on actionable persistence, hidden access, security changes, suspicious execution, and possible customer harm.
 
 All application sessions save a readable log beside the EXE under `CompuTekData/<COMPUTERNAME>/ApplicationSessions`. Remote-scan cases, post-scam evidence, Toolbox logs and CHKDSK reports are also stored under that computer's `CompuTekData` folder on the service USB. Pre-Clone recovery material remains under `BitLockerKeys/<COMPUTERNAME>`.
 

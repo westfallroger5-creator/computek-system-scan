@@ -12,7 +12,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateRange(1,365)][int]$LookbackDays = 30,
+    [ValidateRange(1,365)][int]$LookbackDays = 7,
     [switch]$DeepScan,
     [switch]$IncludeFileHashes,
     [switch]$ExtendedForensics

@@ -43,7 +43,7 @@ Pre-imaging helper focused on BitLocker and disk health:
 - Runs non-destructive CHKDSK scans, preserves each result, and reports **READY FOR ACRONIS CLONE: YES** only when BitLocker inspection, complete decryption, and all disk checks pass.
 
 ### PostScam_SystemIntegrityScanner.ps1
-Read-only, focused post-scam integrity review with a configurable 30-day default lookback:
+Read-only, focused post-scam integrity review with a configurable 7-day default lookback:
 - Runs the shared remote-access inventory, including every user profile's AppData, and preserves the results as JSON and CSV.
 - Flags actionable persistence, hidden access, security-control changes, suspicious execution, remote sessions, account changes, SSH keys, firewall/proxy/hosts changes, and other customer-harm indicators.
 - Consolidates repeated evidence into a short `ActionableFindings.txt` report and shows at most 12 finding groups in the application. Normal inventory and low-confidence leads are saved separately instead of being flagged.
@@ -60,9 +60,10 @@ Evidence-first detection and interactive remediation of remote-access software:
 - Separately flags unknown services or persistence in user-writable paths and network-connected processes running from those locations.
 - Makes no changes while scanning. It displays every finding and exports JSON/CSV evidence beside the EXE under `CompuTekData/<COMPUTERNAME>/RemoteScanner/Cases` on the service USB.
 - A technician must classify every product/version group with a typed `KEEP <review-id>` or `REMOVE <review-id>` decision. Different detected versions remain independent, so an approved company version can be kept while an unwanted version is removed.
-- Groups each known remote-software product by detected version. Related files, services, and protecting copies of the same version become one decision, while three detected versions remain three independent decisions. Items whose version cannot be determined stay separated by location for safety. Supporting evidence is summarized instead of printed line by line; complete details remain in JSON/CSV.
+- Groups each known remote-software product by detected installed version. Syncro and Splashtop helper services/files follow their one registered suite version even when component build numbers differ; separate registered versions remain independent. ScreenConnect versions remain independently reviewable, and version-unknown items stay separated by location for safety.
+- Built-in Windows Remote Desktop, Remote Assistance, Quick Assist, WinRM, and OpenSSH configuration are not removal findings by themselves. The Post-Scam scan reports relevant session/event evidence when actual use or suspicious persistence is observed.
 - Does not treat an ordinary recent unsigned file in Temp/AppData as remote access by itself. Unknown services, persistence, and network-connected processes in user-writable locations remain flagged.
-- Always offers technician-reviewed removal when findings exist. It saves the technician identity, ticket/case reference, every keep/remove decision, and a final verification result in the USB case folder. No remediation begins until all findings are classified and the technician types `APPLY REMOVALS`.
+- Always offers technician-reviewed removal when findings exist. Numbered agents can be classified in batches such as `KEEP 1,3-5` and `REMOVE 2,6-8`; every number must be classified and the proposed list confirmed. No remediation begins until the technician also types `APPLY REMOVALS`.
 - For each approved removal, preserves product logs, configuration, hashes, and registry evidence first; then runs the registered vendor uninstaller. If it fails, the scanner disables/stops only the matching version's services, stops exact related executable paths, and retries the uninstaller once before residual cleanup. Files that remain after verification are listed in `ManualRemovalRequired.txt` for technician or Safe Mode follow-up; the program does not force-delete them.
 - Rescans each removed installation scope. It reports `RemovalVerified` only when that scope is gone and the verification scan completed without collector errors; a kept copy of the same product does not cause a false removal failure.
 
