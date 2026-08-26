@@ -19,6 +19,59 @@ function Read-CompuTekInput {
     return Read-Host $Prompt
 }
 
+function Get-ToolboxRecoveryProtectors {
+    param([Parameter(Mandatory)]$BitLockerVolume)
+    return @($BitLockerVolume.KeyProtector | Where-Object {
+        $_.KeyProtectorType -eq 'RecoveryPassword' -and
+        ([string]$_.RecoveryPassword) -match '^\d{6}(?:-\d{6}){7}$'
+    })
+}
+
+function Save-ToolboxRecoveryPasswords {
+    param(
+        [Parameter(Mandatory)]$BitLockerVolume,
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][string]$Timestamp
+    )
+
+    $mountPoint = [string]$BitLockerVolume.MountPoint
+    $protectors = @(Get-ToolboxRecoveryProtectors -BitLockerVolume $BitLockerVolume)
+    if ($protectors.Count -eq 0) { throw "No complete 48-digit recovery password is available for $mountPoint." }
+
+    $keyFile = Join-Path $Directory ("BitLockerRecovery_{0}_{1}_{2}.txt" -f $env:COMPUTERNAME,$mountPoint.TrimEnd(':'),$Timestamp)
+    $content = @(
+        'BITLOCKER RECOVERY INFORMATION - CONFIDENTIAL',
+        'Anyone with this recovery password may be able to unlock the drive.',
+        'Secure or remove this file from the service USB after the job.',
+        '',
+        "Computer: $env:COMPUTERNAME",
+        "Mount point: $mountPoint",
+        "Saved (UTC): $([DateTime]::UtcNow.ToString('o'))",
+        ''
+    )
+    foreach ($protector in $protectors) {
+        $content += "Recovery key ID: $([string]$protector.KeyProtectorId)"
+        $content += "Recovery password: $([string]$protector.RecoveryPassword)"
+        $content += ''
+    }
+    $content | Set-Content -LiteralPath $keyFile -Encoding UTF8 -Force
+    $flushStream = [IO.File]::Open($keyFile,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+    try { $flushStream.Flush($true) } finally { $flushStream.Dispose() }
+
+    $savedText = Get-Content -LiteralPath $keyFile -Raw -ErrorAction Stop
+    foreach ($protector in $protectors) {
+        if ($savedText.IndexOf([string]$protector.RecoveryPassword,[StringComparison]::Ordinal) -lt 0 -or
+            $savedText.IndexOf([string]$protector.KeyProtectorId,[StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "The recovery-password file for $mountPoint failed its read-back check."
+        }
+    }
+    return [pscustomobject]@{
+        FilePath = $keyFile
+        Sha256 = (Get-FileHash -LiteralPath $keyFile -Algorithm SHA256 -ErrorAction Stop).Hash
+        ProtectorCount = $protectors.Count
+    }
+}
+
 # --- Console Setup ---
 try { $host.UI.RawUI.WindowTitle = "IT Technician Toolbox" } catch {}
 if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
@@ -138,125 +191,123 @@ do {
             }
         }
         "11" {
-    Write-Host "`n=== ENABLE BITLOCKER ENCRYPTION (USED SPACE ONLY) ===" -ForegroundColor Cyan
+            Write-Host "`n=== ENABLE BITLOCKER ENCRYPTION (USED SPACE ONLY) ===" -ForegroundColor Cyan
+            Write-Host 'Recovery passwords must be verified on the service USB before encryption is enabled.' -ForegroundColor Yellow
 
-    # --- STEP 1: Ensure BitLocker service is enabled ---
-    Write-Host "Checking BitLocker service (BDESVC)..." -ForegroundColor Yellow
-    try {
-        $svc = Get-Service -Name "BDESVC" -ErrorAction SilentlyContinue
-        if ($svc -and $svc.Status -ne "Running") {
-            Write-Host "Starting BitLocker service..." -ForegroundColor DarkYellow
-            Set-Service -Name "BDESVC" -StartupType Manual -ErrorAction SilentlyContinue
-            Start-Service -Name "BDESVC" -ErrorAction SilentlyContinue
-        }
-    } catch {
-        Write-Host "Could not verify or start BDESVC service: $_" -ForegroundColor Red
-    }
+            try {
+                Import-Module BitLocker -ErrorAction Stop | Out-Null
+                Set-Service -Name 'BDESVC' -StartupType Manual -ErrorAction Stop
+                Start-Service -Name 'BDESVC' -ErrorAction SilentlyContinue
 
-    # --- STEP 2: Check and remove policy blocks ---
-    Write-Host "Checking for BitLocker policy restrictions..." -ForegroundColor Yellow
-    $regPaths = @(
-        "HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker",
-        "HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE"
-    )
-
-    foreach ($path in $regPaths) {
-        if (Test-Path $path) {
-            foreach ($name in @("PreventDeviceEncryption", "PreventAutoEncryption", "DisableAutoEncryption")) {
-                $val = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).$name
-                if ($val -eq 1) {
-                    Write-Host "Detected $name=1 → removing restriction..." -ForegroundColor Yellow
-                    Remove-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue
+                foreach ($path in @('HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker','HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE')) {
+                    if (Test-Path -LiteralPath $path) {
+                        foreach ($name in @('PreventDeviceEncryption','PreventAutoEncryption','DisableAutoEncryption')) {
+                            if ((Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue).$name -eq 1) {
+                                Remove-ItemProperty -LiteralPath $path -Name $name -ErrorAction Stop
+                            }
+                        }
+                    }
                 }
+
+                $toolRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
+                $scriptDrive = (Get-Item -LiteralPath $toolRoot -ErrorAction Stop).PSDrive.Name
+                $eligibleDrives = @()
+                foreach ($storageVolume in @(Get-Volume -ErrorAction Stop | Where-Object {
+                    $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.DriveLetter -ne $scriptDrive
+                } | Sort-Object DriveLetter)) {
+                    $letter = "$($storageVolume.DriveLetter):"
+                    try {
+                        $bitLockerVolume = Get-BitLockerVolume -MountPoint $letter -ErrorAction Stop
+                        if ([string]$bitLockerVolume.VolumeStatus -eq 'FullyDecrypted' -and [int]$bitLockerVolume.EncryptionPercentage -eq 0) {
+                            $eligibleDrives += [pscustomobject]@{ Storage = $storageVolume; BitLocker = $bitLockerVolume }
+                        } else {
+                            Write-Host "$letter is $($bitLockerVolume.VolumeStatus) and is not eligible for a new enable request." -ForegroundColor DarkGray
+                        }
+                    } catch {
+                        Write-Host "Could not safely inspect $letter; it will not be offered." -ForegroundColor Red
+                    }
+                }
+
+                if ($eligibleDrives.Count -eq 0) {
+                    Write-Host 'No fully decrypted fixed drives are available for encryption.' -ForegroundColor Green
+                    break
+                }
+
+                Write-Host "`nAvailable drives for BitLocker:" -ForegroundColor Yellow
+                for ($i = 0; $i -lt $eligibleDrives.Count; $i++) {
+                    $item = $eligibleDrives[$i]
+                    Write-Host "[$($i + 1)] $($item.Storage.DriveLetter):  $($item.Storage.FileSystemLabel)" -ForegroundColor Cyan
+                }
+                Write-Host '[A] Encrypt All Listed Drives' -ForegroundColor Yellow
+                Write-Host '[0] Cancel' -ForegroundColor DarkGray
+
+                $choiceBL = Read-CompuTekInput 'Select a drive number (or A for all)'
+                $targets = @()
+                if ($choiceBL.ToUpper() -eq 'A') {
+                    $targets = @($eligibleDrives)
+                } elseif ($choiceBL -match '^\d+$' -and [int]$choiceBL -ge 1 -and [int]$choiceBL -le $eligibleDrives.Count) {
+                    $targets = @($eligibleDrives[[int]$choiceBL - 1])
+                } else {
+                    Write-Host 'Canceled BitLocker encryption.' -ForegroundColor DarkGray
+                    break
+                }
+
+                $approval = Read-CompuTekInput 'Type ENABLE BITLOCKER to verify recovery passwords and begin encryption, or type CANCEL'
+                if ($approval -ne 'ENABLE BITLOCKER') {
+                    Write-Host 'Canceled BitLocker encryption.' -ForegroundColor DarkGray
+                    break
+                }
+
+                $keyDirectory = Join-Path $toolRoot ("BitLockerKeys\{0}" -f $env:COMPUTERNAME)
+                New-Item -Path $keyDirectory -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                $keyTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+
+                foreach ($target in $targets) {
+                    $letter = "$($target.Storage.DriveLetter):"
+                    Write-Host "`nPreparing BitLocker on $letter..." -ForegroundColor Yellow
+                    try {
+                        $current = Get-BitLockerVolume -MountPoint $letter -ErrorAction Stop
+                        if ([string]$current.VolumeType -eq 'OperatingSystem') {
+                            $tpm = Get-Tpm -ErrorAction Stop
+                            if (-not $tpm.TpmPresent -or -not $tpm.TpmReady) {
+                                throw 'The TPM is not present and ready; the operating-system drive was not encrypted.'
+                            }
+                        }
+
+                        if (@(Get-ToolboxRecoveryProtectors -BitLockerVolume $current).Count -eq 0) {
+                            Add-BitLockerKeyProtector -MountPoint $letter -RecoveryPasswordProtector -ErrorAction Stop | Out-Null
+                            $current = Get-BitLockerVolume -MountPoint $letter -ErrorAction Stop
+                        }
+
+                        $backup = Save-ToolboxRecoveryPasswords -BitLockerVolume $current -Directory $keyDirectory -Timestamp $keyTimestamp
+                        Write-Host "[VERIFIED] Recovery password saved and read back: $($backup.FilePath)" -ForegroundColor Green
+                        Write-Host "           SHA-256: $($backup.Sha256)" -ForegroundColor DarkGray
+
+                        if ([string]$current.VolumeType -eq 'OperatingSystem') {
+                            Enable-BitLocker -MountPoint $letter -EncryptionMethod XtsAes128 -UsedSpaceOnly -TpmProtector -ErrorAction Stop | Out-Null
+                        } else {
+                            Enable-BitLocker -MountPoint $letter -EncryptionMethod XtsAes128 -UsedSpaceOnly -RecoveryPasswordProtector -ErrorAction Stop | Out-Null
+                        }
+
+                        $afterEnable = Get-BitLockerVolume -MountPoint $letter -ErrorAction Stop
+                        $backup = Save-ToolboxRecoveryPasswords -BitLockerVolume $afterEnable -Directory $keyDirectory -Timestamp $keyTimestamp
+                        Write-Host "[STARTED] $letter state: $($afterEnable.VolumeStatus), $($afterEnable.EncryptionPercentage)% encrypted." -ForegroundColor Green
+                        if ([string]$afterEnable.VolumeType -eq 'OperatingSystem' -and [string]$afterEnable.VolumeStatus -eq 'EncryptionInProgress') {
+                            Write-Host 'The OS-drive hardware check may require a reboot before encryption continues.' -ForegroundColor Yellow
+                        }
+                        Log "BitLocker requested on $letter; recovery file $($backup.FilePath); status $($afterEnable.VolumeStatus)"
+                    } catch {
+                        Write-Host "[FAILED] BitLocker was not safely enabled on ${letter}: $($_.Exception.Message)" -ForegroundColor Red
+                        Log "BitLocker enable failed on ${letter}: $($_.Exception.Message)"
+                    }
+                }
+
+                Write-Host "`nBitLocker requests complete. Encryption is not reported complete until VolumeStatus is FullyEncrypted." -ForegroundColor Cyan
+            } catch {
+                Write-Host "BitLocker workflow could not start safely: $($_.Exception.Message)" -ForegroundColor Red
+                Log "BitLocker workflow failed: $($_.Exception.Message)"
             }
         }
-    }
-    Write-Host "BitLocker restrictions cleared (if any)." -ForegroundColor Green
-
-    # --- STEP 3: Detect encryptable drives (skip flash drive) ---
-    $toolRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
-    $scriptDrive = (Get-Item $toolRoot).PSDrive.Name
-    $allDrives = Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.DriveLetter -ne $scriptDrive }
-    $eligibleDrives = @()
-
-    foreach ($d in $allDrives) {
-        $letter = "$($d.DriveLetter):"
-        try {
-            $status = (& manage-bde -status $letter 2>$null) -join "`n"
-            if ($status -match "Conversion Status:\s+(Used Space Only Encrypted|Fully Encrypted|Encryption in Progress)") {
-                Write-Host "$letter is already encrypted or encrypting - skipping." -ForegroundColor DarkGray
-            } else {
-                $eligibleDrives += $d
-            }
-        } catch {
-            Write-Host "Could not read BitLocker status for $letter" -ForegroundColor Red
-        }
-    }
-
-    if (-not $eligibleDrives) {
-        Write-Host "`nNo drives available for encryption. All fixed drives already encrypted." -ForegroundColor Green
-        break
-    }
-
-    Write-Host "`nAvailable drives for BitLocker:" -ForegroundColor Yellow
-    $i = 1
-    foreach ($d in $eligibleDrives) {
-        Write-Host "[$i] $($d.DriveLetter):  $($d.FileSystemLabel)" -ForegroundColor Cyan
-        $i++
-    }
-    Write-Host "[A] Encrypt All Listed Drives" -ForegroundColor Yellow
-    Write-Host "[0] Cancel" -ForegroundColor DarkGray
-
-    $choiceBL = Read-CompuTekInput "Select a drive number (or A for all)"
-    $targets = @()
-    if ($choiceBL.ToUpper() -eq "A") {
-        $targets = $eligibleDrives
-    } elseif ($choiceBL -match "^\d+$" -and [int]$choiceBL -le $eligibleDrives.Count -and $choiceBL -ne "0") {
-        $targets += $eligibleDrives[[int]$choiceBL - 1]
-    } else {
-        Write-Host "Canceled BitLocker encryption." -ForegroundColor DarkGray
-        break
-    }
-
-    # --- STEP 4: Prepare key storage folder on flash drive ---
-    $FlashDir = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
-    $KeyDir = Join-Path $FlashDir ("BitLockerKeys\" + $env:COMPUTERNAME)
-    if (-not (Test-Path $KeyDir)) { New-Item -Path $KeyDir -ItemType Directory | Out-Null }
-
-    # --- STEP 5: Encrypt selected drives (used space only) ---
-    foreach ($drive in $targets) {
-        $letter = "$($drive.DriveLetter):"
-        Write-Host "`nEnabling BitLocker (used space only) on $letter..." -ForegroundColor Yellow
-        $keyFile = Join-Path $KeyDir ("BitLockerKey_${letter.TrimEnd(':')}.txt")
-
-        try {
-            manage-bde -protectors -add $letter -RecoveryPassword > $keyFile
-            manage-bde -on $letter -UsedSpaceOnly -RecoveryPassword > $null
-            Write-Host "BitLocker enabled on $letter (Used Space Only). Key saved to: $keyFile" -ForegroundColor Green
-
-            Write-Host "`nBitLocker initialization complete on $letter (Used Space Only)." -ForegroundColor Green
-Write-Host "Encryption will begin automatically after the next reboot." -ForegroundColor Yellow
-
-$pending = ($status -match "Encryption Pending")
-if ($pending) {
-    Write-Host "`nSystem reboot required to start encryption on $letter." -ForegroundColor Cyan
-    $confirm = Read-CompuTekInput "Reboot now? (Y/N)"
-    if ($confirm -match "^[Yy]$") {
-        Write-Host "Restarting system to begin encryption..." -ForegroundColor Yellow
-        Restart-Computer -Force
-    } else {
-        Write-Host "Reboot postponed. Encryption will start next time the computer restarts." -ForegroundColor DarkGray
-    }
-}
-            Write-Progress -Activity "Encrypting $letter" -Completed
-            Write-Host "Drive $letter encryption complete." -ForegroundColor Green
-        } catch {
-            Write-Host "Failed to enable BitLocker on $letter : $_" -ForegroundColor Red
-        }
-    }
-
-    Write-Host "`nBitLocker encryption complete. Verify with 'manage-bde -status'." -ForegroundColor Cyan
-}
         "0" {
             $confirmReboot = Read-CompuTekInput "Are you sure you want to reboot now? (Y/N)"
             if ($confirmReboot -match "^[Yy]$") {

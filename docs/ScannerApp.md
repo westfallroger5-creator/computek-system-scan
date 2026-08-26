@@ -1,6 +1,6 @@
 # CompuTek Scanner Windows application
 
-`CompuTekScanner.exe` is the technician-facing Windows application for remote-access review/removal, post-scam evidence collection, and the legacy CompuTek technician utilities. It requests administrator rights when opened; technicians no longer need to start a BAT file or manually open PowerShell.
+`CompuTekScanner.exe` is the technician-facing Windows application for remote-access review/removal, post-scam evidence collection, and CompuTek technician utilities. It requests administrator rights when opened; the obsolete BAT and PowerShell launchers are no longer used.
 
 ## Files to keep together
 
@@ -27,11 +27,15 @@ The post-scam collector is read-only. It gathers local evidence and collection g
 
 The **Technician tools** tab restores the original entry points:
 
-- **IT Technician Toolbox** — system and network information, DNS/IP repair, internet testing, temporary-file cleanup, SFC, CHKDSK, DISM, Task Manager, print-queue cleanup, BitLocker, and reboot.
-- **Final System Check** — the original readiness workflow, including its hibernation, restore-point, BitLocker, and audio actions.
-- **Pre-Clone Preparation** — the original advanced BitLocker decryption/key-backup, Secure Boot, disk-check, and reboot workflow.
+- **IT Technician Toolbox** — system and network information, DNS/IP repair, internet testing, temporary-file cleanup, SFC, CHKDSK, DISM, Task Manager, print-queue cleanup, verified BitLocker enablement, and reboot. BitLocker requires exact technician approval and a complete recovery-password file that passes a service-USB read-back check before encryption starts.
+- **Final System Check** — the standard final-store workflow. It disables hibernation, checks activation, security, updates, devices and Splashtop, creates a restore point, un-mutes and sets speaker volume to 50%, plays the test melody, and asks the technician to confirm it was heard.
+- **Pre-Clone Preparation** — the Acronis readiness gate. It verifies complete BitLocker recovery-password files on the service USB before decryption, waits for full decryption, and runs non-destructive CHKDSK scans.
 
-These tools are launched individually. The old **Run ALL scripts** choice is intentionally not present because it could start multiple disk, encryption, cleanup, and reboot operations together. The application displays a warning before each legacy workflow, and the embedded scripts retain their action-specific prompts. BitLocker recovery information is written beneath the USB/application folder rather than the protected staging directory.
+These tools are launched individually; there is no **Run ALL scripts** action. The application explains each workflow before it starts, and the embedded scripts retain their action-specific prompts. BitLocker recovery information is written beneath the USB/application folder rather than the protected staging directory.
+
+Pre-Clone displays **READY FOR ACRONIS CLONE: YES** only after every fixed target drive is fully decrypted and CHKDSK returns no errors. A cancelled prompt, missing or unverified recovery password, incomplete decryption, failed status query, or disk error produces **NOT READY**. Each run saves a readable summary, JSON details, CHKDSK logs, and hashes beneath `BitLockerKeys/<COMPUTERNAME>/PreClone_<timestamp>`.
+
+BitLocker recovery passwords are confidential and can unlock customer data. Keep the service USB under technician control, never save a key onto the drive it unlocks, and secure or remove customer key files after the job is complete.
 
 ## Updating remote-software signatures
 

@@ -38,6 +38,7 @@ $moduleSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\CompuTek.
 $mainFormSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\MainForm.cs') -Raw
 $toolboxSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\IT_Technician_Toolbox.ps1') -Raw
 $preCloneSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PreClone.ps1') -Raw
+$finalCheckSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1') -Raw
 Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
 Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'Still working' -and $mainFormSource -match 'elapsedText') 'The Windows application shows elapsed-time heartbeats during quiet collectors'
 Assert-AppTest ($moduleSource -match 'Get-CompuTekCandidateFilesSafe' -and $moduleSource -match 'FileAttributes\]::ReparsePoint' -and $moduleSource -notmatch 'Get-ChildItem -LiteralPath \$root -Recurse') 'Default file discovery uses a junction-safe bounded traversal'
@@ -45,9 +46,55 @@ Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} el
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
 Assert-AppTest ($moduleSource -match '\[string\[\]\]\$endpoints = @\(\)' -and $moduleSource -match '\$file\.Name -ieq ''desktop\.ini''') 'Process endpoint counting and Startup-folder noise from the field report are corrected'
 Assert-AppTest ($mainFormSource -match 'Technician tools' -and $mainFormSource -match 'StartTechnicianToolbox' -and $mainFormSource -match 'StartFinalSystemCheck' -and $mainFormSource -match 'StartPreClone') 'The Windows application restores the legacy technician tool entry points'
-Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSource -match '__COMPUTEK_PROMPT__:') 'Interactive legacy tools use the EXE technician-response bridge'
+Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSource -match '__COMPUTEK_PROMPT__:' -and $finalCheckSource -match '__COMPUTEK_PROMPT__:') 'Interactive technician tools use the EXE technician-response bridge'
 Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
 Assert-AppTest ($mainFormSource -match 'ConfirmSensitiveTool' -and $mainFormSource -match 'MessageBoxDefaultButton\.Button2') 'Advanced technician workflows require a warning with safe default cancellation'
+Assert-AppTest (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'Launch_CTSupport_Toolbox.bat')) -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'CTSupport_Toolbox.ps1'))) 'Obsolete BAT and PowerShell launchers are removed'
+
+Assert-AppTest ($preCloneSource -match 'Get-BitLockerVolume' -and $preCloneSource -match 'Disable-BitLocker' -and $preCloneSource -notmatch 'manage-bde') 'Pre-Clone uses structured BitLocker commands instead of localized console-text parsing'
+Assert-AppTest ($preCloneSource -match '\^\\d\{6\}\(\?:-\\d\{6\}\)\{7\}\$' -and $preCloneSource -match 'Get-Content -LiteralPath \$destination -Raw' -and $preCloneSource -match 'Get-FileHash') 'Pre-Clone validates, reads back, and hashes complete 48-digit recovery-password files'
+$saveIndex = $preCloneSource.IndexOf('Save-CompuTekRecoveryPasswords -BitLockerVolume')
+$decryptIndex = $preCloneSource.IndexOf('Disable-BitLocker -MountPoint')
+Assert-AppTest ($saveIndex -ge 0 -and $decryptIndex -gt $saveIndex) 'Pre-Clone cannot start decryption before the recovery-password file passes verification'
+Assert-AppTest ($preCloneSource -match 'READY FOR ACRONIS CLONE: YES' -and $preCloneSource -match '\$checkExitCode -eq 0' -and $preCloneSource -match '''FullyDecrypted'' -and \$percentage -eq 0') 'Acronis readiness requires complete decryption and successful CHKDSK exit codes'
+Assert-AppTest ($preCloneSource -notmatch "Set-Service[^\r\n]+BDESVC[^\r\n]+Disabled" -and $preCloneSource -notmatch "Stop-Service[^\r\n]+BDESVC") 'Pre-Clone no longer disables the BitLocker service'
+Assert-AppTest ($preCloneSource -match 'Disable-BitLockerAutoUnlock' -and $preCloneSource -match '\$current\.AutoUnlockEnabled') 'Pre-Clone handles auto-unlock data volumes before decryption'
+Assert-AppTest ($finalCheckSource -match 'powercfg\.exe /hibernate off' -and $finalCheckSource -match 'Checkpoint-Computer' -and $finalCheckSource -match 'Did you clearly hear the speaker test') 'Final System Check keeps hibernation, restore-point, and technician-confirmed audio actions'
+Assert-AppTest ($finalCheckSource -match "Set-Service -Name 'BDESVC' -StartupType Manual") 'Final System Check repairs BitLocker service state left by older Pre-Clone versions'
+Assert-AppTest ($finalCheckSource -notmatch 'vssadmin\s+list' -and $finalCheckSource -match 'SystemRestorePointCreationFrequency' -and $finalCheckSource -match 'Get-ComputerRestorePoint') 'Final restore-point creation is language-neutral, bypasses the 24-hour skip, and verifies the new point'
+Assert-AppTest ($toolboxSource -match 'Get-BitLockerVolume' -and $toolboxSource -match 'Enable-BitLocker' -and $toolboxSource -notmatch 'manage-bde') 'Toolbox BitLocker enablement uses structured PowerShell status instead of localized console text'
+$toolboxSaveIndex = $toolboxSource.IndexOf('Save-ToolboxRecoveryPasswords -BitLockerVolume $current')
+$toolboxEnableIndex = $toolboxSource.IndexOf('Enable-BitLocker -MountPoint')
+Assert-AppTest ($toolboxSaveIndex -ge 0 -and $toolboxEnableIndex -gt $toolboxSaveIndex -and $toolboxSource -match 'Type ENABLE BITLOCKER') 'Toolbox verifies the recovery file and exact technician approval before enabling BitLocker'
+
+$preCloneTokens = $null
+$preCloneErrors = $null
+$preCloneAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\PreClone.ps1'),[ref]$preCloneTokens,[ref]$preCloneErrors)
+$recoveryFunctions = @($preCloneAst.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Get-CompuTekRecoveryProtectors','Save-CompuTekRecoveryPasswords')
+},$true))
+foreach ($functionAst in $recoveryFunctions) { Invoke-Expression $functionAst.Extent.Text }
+$preCloneTestDirectory = Join-Path $repoRoot 'artifacts\PreCloneFunctionTests'
+New-Item -Path $preCloneTestDirectory -ItemType Directory -Force | Out-Null
+$syntheticPassword = '111111-222222-333333-444444-555555-666666-777777-888888'
+$syntheticVolume = [pscustomobject]@{
+    MountPoint = 'C:'
+    KeyProtector = @([pscustomobject]@{
+        KeyProtectorType = 'RecoveryPassword'
+        KeyProtectorId = '{11111111-2222-3333-4444-555555555555}'
+        RecoveryPassword = $syntheticPassword
+    })
+}
+$syntheticBackup = Save-CompuTekRecoveryPasswords -BitLockerVolume $syntheticVolume -DestinationDirectory $preCloneTestDirectory -ComputerName 'TEST-PC' -Timestamp '20000101_000000'
+$syntheticSavedText = Get-Content -LiteralPath $syntheticBackup.FilePath -Raw
+Assert-AppTest ($syntheticBackup.Verified -and $syntheticSavedText -match [regex]::Escape($syntheticPassword) -and $syntheticBackup.Sha256 -match '^[A-F0-9]{64}$') 'Recovery-password writer preserves the complete password and verifies the saved file'
+$partialRejected = $false
+try {
+    $partialVolume = [pscustomobject]@{ MountPoint = 'D:'; KeyProtector = @([pscustomobject]@{ KeyProtectorType = 'RecoveryPassword'; KeyProtectorId = '{BAD}'; RecoveryPassword = '123456' }) }
+    [void](Save-CompuTekRecoveryPasswords -BitLockerVolume $partialVolume -DestinationDirectory $preCloneTestDirectory -ComputerName 'TEST-PC' -Timestamp '20000101_000001')
+} catch { $partialRejected = $true }
+Assert-AppTest $partialRejected 'Recovery-password writer rejects partial or malformed keys'
 
 $promptTokens = $null
 $promptErrors = $null

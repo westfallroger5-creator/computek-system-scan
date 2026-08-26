@@ -245,9 +245,9 @@ namespace CompuTek.Scanner.App
             technicianPanel.Controls.Add(finalSystemCheckButton);
 
             Label finalCheckDescription = new Label();
-            finalCheckDescription.Text = "Readiness checks plus the original hibernation, restore-point, BitLocker, and audio-test actions.";
+            finalCheckDescription.Text = "Standard final-store check: disable hibernation, create a restore point, verify updates/devices/security, and confirm audible sound.";
             finalCheckDescription.Location = new Point(370, 68);
-            finalCheckDescription.Size = new Size(330, 42);
+            finalCheckDescription.Size = new Size(330, 55);
             technicianPanel.Controls.Add(finalCheckDescription);
 
             preCloneButton.Text = "Run Pre-Clone Preparation";
@@ -262,16 +262,16 @@ namespace CompuTek.Scanner.App
             technicianPanel.Controls.Add(preCloneButton);
 
             Label preCloneDescription = new Label();
-            preCloneDescription.Text = "Advanced: BitLocker decryption/key backup, Secure Boot check, disk check, and optional reboot.";
+            preCloneDescription.Text = "Acronis gate: verify complete BitLocker recovery keys on the USB, fully decrypt fixed drives, then pass CHKDSK.";
             preCloneDescription.Location = new Point(722, 68);
-            preCloneDescription.Size = new Size(330, 42);
+            preCloneDescription.Size = new Size(330, 55);
             technicianPanel.Controls.Add(preCloneDescription);
 
             Label technicianWarning = new Label();
-            technicianWarning.Text = "Advanced actions can change encryption, networking, files, disks, or reboot Windows. Review every prompt before continuing.";
+            technicianWarning.Text = "Pre-Clone and repair tools can change Windows or disks. The Final System Check intentionally performs the store's required finishing actions.";
             technicianWarning.ForeColor = Color.FromArgb(150, 60, 0);
-            technicianWarning.Location = new Point(18, 125);
-            technicianWarning.Size = new Size(1034, 24);
+            technicianWarning.Location = new Point(18, 135);
+            technicianWarning.Size = new Size(1034, 36);
             technicianPanel.Controls.Add(technicianWarning);
             technicianTab.Controls.Add(technicianPanel);
 
@@ -398,7 +398,7 @@ namespace CompuTek.Scanner.App
         {
             if (!ConfirmSensitiveTool(
                 "Run Final System Check",
-                "The original Final System Check is not read-only. It can disable hibernation, adjust readiness settings, create a restore point, and run an audio test.\r\n\r\nContinue?")) return;
+                "This is CompuTek's standard final-store workflow. It disables hibernation, checks activation, security, updates, devices and Splashtop, creates a restore point, sets speaker volume to 50%, and asks the technician to confirm the audio test was heard.\r\n\r\nRun it when preparing this computer to leave the store?")) return;
             StartEngine("Final System Check", engineLayout.FinalSystemCheckPath, new List<string>());
         }
 
@@ -406,7 +406,7 @@ namespace CompuTek.Scanner.App
         {
             if (!ConfirmSensitiveTool(
                 "Run Pre-Clone Preparation",
-                "Pre-Clone is an advanced workflow. It can back up BitLocker recovery information to this USB folder, decrypt fixed drives, change auto-encryption settings, run disk repair, and reboot Windows.\r\n\r\nContinue only on the intended computer.")) return;
+                "Pre-Clone is an Acronis readiness workflow. Before decryption, it must save the complete 48-digit BitLocker recovery password to this service USB and verify that file by reading it back. It then waits for full decryption and runs non-destructive CHKDSK scans.\r\n\r\nIt reports READY only when every required step passes. Continue only on the intended computer.")) return;
             StartEngine("Pre-Clone Preparation", engineLayout.PreClonePath, new List<string>());
         }
 
@@ -528,7 +528,13 @@ namespace CompuTek.Scanner.App
                 if (engineHost != null) engineHost.Dispose();
                 engineHost = null;
                 runningTimer.Stop();
-                string status = args.ExitCode == 0 ? runningDisplayName + " completed" : runningDisplayName + " stopped with exit code " + args.ExitCode;
+                string status;
+                if (args.ExitCode == 0)
+                    status = runningDisplayName + " completed";
+                else if (args.ExitCode == 4 && String.Equals(runningDisplayName, "Pre-Clone Preparation", StringComparison.Ordinal))
+                    status = runningDisplayName + " completed — NOT READY for Acronis";
+                else
+                    status = runningDisplayName + " stopped with exit code " + args.ExitCode;
                 SetRunningState(false, status);
                 AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : Color.Salmon);
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
