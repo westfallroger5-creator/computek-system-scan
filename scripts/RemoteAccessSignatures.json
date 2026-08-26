@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.26.7",
+  "catalogVersion": "2026.08.26.8",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "heuristicTerms": [
     "remote access", "remote desktop", "remote support", "remote control", "screen sharing",
@@ -22,12 +22,23 @@
       "id": "teamviewer",
       "name": "TeamViewer",
       "category": "remote-support",
-      "aliases": ["teamviewer"],
+      "aliases": ["teamviewer", "teamviewer remote", "teamviewer remote control"],
       "executables": ["teamviewer.exe", "teamviewer_service.exe", "teamviewerqs.exe"],
       "originalFilenames": ["teamviewer.exe", "teamviewer_service.exe", "teamviewerqs.exe"],
       "servicePatterns": ["TeamViewer*"],
-      "packagePatterns": ["*TeamViewer*"],
-      "pathPatterns": ["*\\teamviewer\\*"]
+      "packagePatterns": ["*TeamViewer*", "*TeamViewerRemoteControl*"],
+      "pathPatterns": ["*\\teamviewer\\*", "*\\teamviewer remote\\*"]
+    },
+    {
+      "id": "team-remote-desktop",
+      "name": "Team Remote Desktop (Microsoft Store)",
+      "category": "remote-support",
+      "aliases": ["team remote desktop"],
+      "executables": ["team remote desktop.exe", "teamremotedesktop.exe"],
+      "originalFilenames": ["team remote desktop.exe", "teamremotedesktop.exe"],
+      "servicePatterns": ["Team Remote Desktop*", "TeamRemoteDesktop*"],
+      "packagePatterns": ["YellowElephantProductions.TeamRemoteDesktop*", "*TeamRemoteDesktop*"],
+      "pathPatterns": ["*\\yellowelephantproductions.teamremotedesktop_*", "*\\team remote desktop\\*"]
     },
     {
       "id": "anydesk",
@@ -86,6 +97,28 @@
       "servicePatterns": ["RescueCallingCard*", "LMIRfsClientNP*"],
       "packagePatterns": ["*LogMeIn Rescue*", "*Rescue Calling Card*"],
       "pathPatterns": ["*\\logmein rescue*", "*\\rescue calling card*"]
+    },
+    {
+      "id": "gotoassist",
+      "name": "GoToAssist Remote Support / GoToManage",
+      "category": "remote-support",
+      "aliases": ["gotoassist", "goto assist", "goto manage", "gotomanage"],
+      "executables": ["g2ax_service.exe", "g2ax_user_customer.exe", "g2ax_comm_customer.exe", "g2ax_process_customer.exe", "g2ax_system_customer.exe", "gotoassist.exe"],
+      "originalFilenames": ["g2ax_service.exe", "g2ax_user_customer.exe", "g2ax_comm_customer.exe", "g2ax_process_customer.exe", "g2ax_system_customer.exe", "gotoassist.exe"],
+      "servicePatterns": ["GoToAssist*", "GoToManage*", "g2ax*"],
+      "packagePatterns": ["*GoToAssist*", "*GoToManage*"],
+      "pathPatterns": ["*\\gotoassist\\*", "*\\gotoassist remote support\\*", "*\\gotomanage\\*", "*\\logmeininc\\gotomanage\\*"]
+    },
+    {
+      "id": "goto-opener",
+      "name": "GoTo Opener / Citrix Online Launcher (dual-use GoTo launcher)",
+      "category": "remote-support-launcher",
+      "aliases": ["goto opener", "gotoopener", "citrix online launcher", "citrixonline launcher"],
+      "executables": ["gotoopener.exe", "citrixonlinelauncher.exe"],
+      "originalFilenames": ["gotoopener.exe", "citrixonlinelauncher.exe"],
+      "servicePatterns": ["GoTo Opener*", "Citrix Online Launcher*"],
+      "packagePatterns": ["*GoToOpener*", "*CitrixOnlineLauncher*"],
+      "pathPatterns": ["*\\gotoopener\\*", "*\\citrixonline\\*", "*\\gotoopener*", "*\\citrix online launcher\\*"]
     },
     {
       "id": "goto-resolve",

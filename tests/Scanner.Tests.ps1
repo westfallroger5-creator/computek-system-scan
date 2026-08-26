@@ -44,9 +44,9 @@ Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
 Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
-Assert-True ($remediationSource -match 'Which agent numbers should be kept' -and $remediationSource -match 'Which agent numbers should be removed' -and $remediationSource -match 'Every agent must be classified' -and $remediationSource -match 'CONFIRM DECISIONS') 'Technician must explicitly classify and confirm every numbered agent'
+Assert-True ($remediationSource -match 'Which agent numbers should be kept' -and $remediationSource -match 'KEEP NONE' -and $remediationSource -match 'Which agent numbers should be removed' -and $remediationSource -match 'Every agent must be classified') 'Technician must explicitly classify every numbered agent and is shown the KEEP NONE option'
 Assert-True ($remediationSource -match 'OPEN 1' -and $remediationSource -match 'Open-CandidateInstallerFiles' -and $remediationSource -match '/select,' -and $remediationSource -match "Start-Process -FilePath 'explorer\.exe'") 'Technicians can show a numbered agent downloaded installer file in File Explorer before deciding'
-Assert-True ($remediationSource -match "APPLY REMOVALS" -and $remediationSource -notmatch 'A for all') 'Bulk removal cannot start without a final typed confirmation'
+Assert-True ($remediationSource -match "decisionConfirmation -ieq 'YES'" -and $remediationSource -notmatch 'CONFIRM DECISIONS|APPLY REMOVALS' -and $remediationSource -notmatch 'A for all') 'One simple typed YES authorizes only the technician-selected removals'
 Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
 Assert-True ($remediationSource -match 'PortableMedia-\$fileSystem-NormalPermissions' -and $remediationSource -notmatch '\bSet-Acl\b' -and $remediationSource -notmatch 'SetAccessRuleProtection') 'USB evidence keeps normal inherited permissions so technicians can remove old scan folders without elevation'
 Assert-True ($remediationSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remediationSource -match 'CompuTekData' -and $remediationSource -match 'EvidenceStorageSecurity') 'Cases, decisions, and quarantine evidence are stored and labeled on the service USB'
@@ -62,6 +62,7 @@ Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or 
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
+Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match 'current-user Store apps were still checked') 'Store-app collection falls back to the current user while reporting an all-user collection gap'
 Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
 Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
 
@@ -189,6 +190,9 @@ $keepSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'KEEP 1,3-5' -Maxi
 $removeSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 2,6-7' -Maximum 7 -ExpectedAction REMOVE)
 $openSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'OPEN 1,4-5' -Maximum 7 -ExpectedAction OPEN)
 Assert-True (($keepSelection -join ',') -eq '1,3,4,5' -and ($removeSelection -join ',') -eq '2,6,7' -and ($openSelection -join ',') -eq '1,4,5') 'Batch decisions and folder opening accept comma-separated numbers and ranges'
+$keepNoneSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'KEEP NONE' -Maximum 7 -ExpectedAction KEEP)
+$removeAllSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'REMOVE ALL' -Maximum 7 -ExpectedAction REMOVE)
+Assert-True ($keepNoneSelection.Count -eq 0 -and ($removeAllSelection -join ',') -eq '1,2,3,4,5,6,7') 'KEEP NONE and REMOVE ALL explicitly classify every finding for removal'
 $invalidSelectionRejected = $false
 try { ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 8' -Maximum 7 -ExpectedAction REMOVE | Out-Null } catch { $invalidSelectionRejected = $true }
 Assert-True $invalidSelectionRejected 'Batch decisions reject unavailable agent numbers'
@@ -238,6 +242,38 @@ $legacyNable = New-TestEvidence @{
 }
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $legacyNable)
 Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'n-able-rmm') 'A legacy N-able Windows Agent is detected from its vendor-specific installation path without treating every agent.exe as RMM'
+
+$teamViewerStore = New-TestEvidence @{
+    ArtifactType='InstalledProgram';Name='TeamViewer Remote';DisplayName='TeamViewer Remote';Path='C:\Program Files\TeamViewer\TeamViewer.exe'
+    ProductName='TeamViewer Remote';Publisher='TeamViewer';FileName='TeamViewer.exe';OriginalFilename='TeamViewer.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $teamViewerStore)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'teamviewer') 'TeamViewer Remote installed through the Microsoft Store is detected'
+$teamRemoteDesktopStore = New-TestEvidence @{
+    ArtifactType='AppxPackage';Name='YellowElephantProductions.TeamRemoteDesktop';DisplayName='YellowElephantProductions.TeamRemoteDesktop'
+    PackageName='YellowElephantProductions.TeamRemoteDesktop';Path='C:\Program Files\WindowsApps\YellowElephantProductions.TeamRemoteDesktop_1.0.0.0_x64__p3e1zgp7z7szg'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $teamRemoteDesktopStore)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'team-remote-desktop') 'The exact Team Remote Desktop Microsoft Store package is detected'
+
+$goToAssistService = New-TestEvidence @{
+    ArtifactType='Service';Name='GoToAssist Remote Support Customer';DisplayName='GoToAssist Remote Support Customer'
+    Path='C:\Program Files (x86)\LogMeInInc\GoToAssist Remote Support Customer\g2ax_service.exe';FileName='g2ax_service.exe';OriginalFilename='g2ax_service.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $goToAssistService)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'gotoassist') 'GoToAssist Remote Support and its g2ax service are detected'
+$goToOpener = New-TestEvidence @{
+    ArtifactType='InstalledProgram';Name='GoTo Opener';DisplayName='GoTo Opener';Path='C:\Users\Victim\AppData\Local\GoToOpener\GoToOpener.exe'
+    ProductName='GoTo Opener';Publisher='GoTo Technologies USA, LLC';FileName='GoToOpener.exe';OriginalFilename='GoToOpener.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $goToOpener)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'goto-opener') 'GoTo Opener is detected separately from the GoToAssist agent'
+$ordinaryGoToApp = New-TestEvidence @{
+    ArtifactType='InstalledProgram';Name='GoTo';DisplayName='GoTo';Path='C:\Users\Victim\AppData\Local\Programs\GoTo\GoTo.exe'
+    ProductName='GoTo';Publisher='GoTo Technologies USA, LLC';FileName='GoTo.exe';OriginalFilename='GoTo.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $ordinaryGoToApp)
+Assert-True ($matches.Product.id -notcontains 'gotoassist' -and $matches.Product.id -notcontains 'goto-opener') 'The ordinary GoTo meeting/communications app is not mislabeled as GoToAssist or GoTo Opener'
 
 $genericVncViewer = New-TestEvidence @{
     ArtifactType='File';Name='vncviewer.exe';DisplayName='vncviewer.exe';Path='C:\Temp\vncviewer.exe';FileName='vncviewer.exe';OriginalFilename='vncviewer.exe'

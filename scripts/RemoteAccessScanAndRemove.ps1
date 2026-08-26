@@ -1138,13 +1138,13 @@ $decisions = @()
 $decisionById = @{}
 
 Write-Host "`nClassify the numbered agents in two batches. Every number must be placed in KEEP or REMOVE before continuing." -ForegroundColor Cyan
-Write-Host 'Examples: KEEP 1,3-5    REMOVE 2,6-8    OPEN 1    KEEP ALL    REMOVE NONE' -ForegroundColor Gray
+Write-Host 'Examples: KEEP 1,3-5    KEEP NONE    REMOVE 2,6-8    REMOVE ALL    OPEN 1' -ForegroundColor Gray
 Write-Host 'At either decision prompt, type OPEN followed by agent numbers to show detected installer/portable files in Downloads, Desktop, Temp, or another non-installed location. The prompt will then repeat.' -ForegroundColor Green
 $keepNumbers = @()
 $removeNumbers = @()
 while ($true) {
     try {
-        $keepAnswer = Read-CompuTekInput 'Which agent numbers should be kept? Type KEEP numbers, OPEN numbers, or Q to abort'
+        $keepAnswer = Read-CompuTekInput 'Which agent numbers should be kept? Type KEEP numbers, KEEP NONE, OPEN numbers, or Q to abort'
         if ($keepAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
         if ($keepAnswer -match '(?i)^\s*OPEN\b') {
             $openNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $keepAnswer -Maximum $candidates.Count -ExpectedAction OPEN)
@@ -1154,7 +1154,7 @@ while ($true) {
         $keepNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $keepAnswer -Maximum $candidates.Count -ExpectedAction KEEP)
 
         while ($true) {
-            $removeAnswer = Read-CompuTekInput 'Which agent numbers should be removed? Type REMOVE numbers, OPEN numbers, or Q to abort'
+            $removeAnswer = Read-CompuTekInput 'Which agent numbers should be removed? Type REMOVE numbers, REMOVE ALL, REMOVE NONE, OPEN numbers, or Q to abort'
             if ($removeAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
             if ($removeAnswer -match '(?i)^\s*OPEN\b') {
                 $openNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $removeAnswer -Maximum $candidates.Count -ExpectedAction OPEN)
@@ -1188,9 +1188,14 @@ while ($true) {
         $versionLabel = if ($candidate.DetectedVersion) { "version $($candidate.DetectedVersion)" } else { 'version unavailable' }
         Write-Host ("{0,2}. [{1,-6}] {2} - {3}" -f $candidate.Index,$choice,$candidate.Name,$versionLabel) -ForegroundColor $(if($choice -eq 'KEEP'){'Green'}else{'Yellow'})
     }
-    $decisionConfirmation = Read-CompuTekInput 'Type CONFIRM DECISIONS to accept, R to re-enter them, or Q to abort'
+    $confirmationPrompt = if ($removeNumbers.Count -gt 0) {
+        'Type YES to approve these decisions and remove the selected agents, R to re-enter them, or Q to abort'
+    } else {
+        'Type YES to approve keeping all selected agents, R to re-enter them, or Q to abort'
+    }
+    $decisionConfirmation = Read-CompuTekInput $confirmationPrompt
     if ($decisionConfirmation -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
-    if ($decisionConfirmation -ceq 'CONFIRM DECISIONS') { break }
+    if ($decisionConfirmation -ieq 'YES') { break }
     Write-Host 'Selections were not confirmed. Re-enter both lists.' -ForegroundColor Yellow
 }
 
@@ -1247,11 +1252,7 @@ if ($selected.Count -eq 0) {
 
 Write-Host "`n$($selected.Count) installation(s) are authorized for full removal." -ForegroundColor Yellow
 Write-Host 'Logs and configuration will be preserved first. Then uninstallers, services, tasks, autoruns, packages, registrations, and residual files will be removed or quarantined.' -ForegroundColor Yellow
-$finalConfirmation = Read-CompuTekInput 'Type APPLY REMOVALS to begin, or anything else to quit without changes'
-if ($finalConfirmation -cne 'APPLY REMOVALS') {
-    Write-Host 'Final confirmation was not provided. Nothing was changed.' -ForegroundColor Yellow
-    exit 0
-}
+Write-Host 'The technician confirmed these removals with YES. Starting the approved work now.' -ForegroundColor Cyan
 
 foreach ($candidate in $selected) {
     Write-Host "`nRemoving $($candidate.Name) from $(Get-CandidateLocationLabel $candidate)..." -ForegroundColor Magenta

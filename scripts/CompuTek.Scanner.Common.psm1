@@ -449,7 +449,18 @@ function Get-CompuTekAppxArtifacts {
     param()
     if (-not (Get-Command Get-AppxPackage -ErrorAction SilentlyContinue)) { return @() }
     $items = @()
-    foreach ($pkg in Get-AppxPackage -AllUsers -ErrorAction Stop) {
+    $packages = @()
+    try {
+        $packages = @(Get-AppxPackage -AllUsers -ErrorAction Stop)
+    } catch {
+        Add-CompuTekCollectorWarning "All-user AppX inventory failed; current-user Store apps were still checked: $($_.Exception.Message)"
+        try {
+            $packages = @(Get-AppxPackage -ErrorAction Stop)
+        } catch {
+            throw "AppX inventory failed for all users and the current user: $($_.Exception.Message)"
+        }
+    }
+    foreach ($pkg in $packages) {
         $items += New-CompuTekArtifact @{
             ArtifactType = 'AppxPackage'; Source = 'Appx'; Name = $pkg.Name; DisplayName = $pkg.Name
             Path = $pkg.InstallLocation; Publisher = $pkg.Publisher; PackageName = $pkg.Name
