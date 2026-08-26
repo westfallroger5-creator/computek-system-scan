@@ -227,6 +227,18 @@ $renamedAnyDesk = New-TestEvidence @{
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $renamedAnyDesk)
 Assert-True ($matches.Product.id -contains 'anydesk') 'Renamed AnyDesk executable is detected from original filename/product metadata'
 
+$modernNable = New-TestEvidence @{
+    ArtifactType='Service';Name='MSPAgent';DisplayName='MSP Agent';Path='C:\Program Files (x86)\Msp Agent\msp-agent-core.exe'
+    ProductName='MSP Agent by N-able';OriginalFilename='msp-agent-core.exe';FileName='msp-agent-core.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $modernNable)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'n-able-rmm') 'The current N-able MSPAgent service and executable are detected as N-central/N-sight RMM'
+$legacyNable = New-TestEvidence @{
+    ArtifactType='Service';Name='Windows Agent Service';DisplayName='Windows Agent Service';Path='C:\Program Files (x86)\N-able Technologies\Windows Agent\bin\agent.exe';FileName='agent.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $legacyNable)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'n-able-rmm') 'A legacy N-able Windows Agent is detected from its vendor-specific installation path without treating every agent.exe as RMM'
+
 $genericVncViewer = New-TestEvidence @{
     ArtifactType='File';Name='vncviewer.exe';DisplayName='vncviewer.exe';Path='C:\Temp\vncviewer.exe';FileName='vncviewer.exe';OriginalFilename='vncviewer.exe'
 }
