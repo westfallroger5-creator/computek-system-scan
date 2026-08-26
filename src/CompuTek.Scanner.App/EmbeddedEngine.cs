@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Security.AccessControl;
@@ -22,6 +21,7 @@ namespace CompuTek.Scanner.App
         private const string PostScamResource = "CompuTek.Scanner.Engine.PostScam_SystemIntegrityScanner.ps1";
         private const string ModuleResource = "CompuTek.Scanner.Engine.CompuTek.Scanner.Common.psm1";
         private const string CatalogResource = "CompuTek.Scanner.Engine.RemoteAccessSignatures.json";
+        private const string ThreatIntelCatalogResource = "CompuTek.Scanner.Engine.RemoteAccessSignatures.2026-ThreatIntel.json";
 
         public static EngineLayout Prepare()
         {
@@ -45,6 +45,10 @@ namespace CompuTek.Scanner.App
             WriteResource(assembly, ModuleResource, modulePath);
 
             CatalogInfo catalog = LoadCatalog(assembly, programDataRoot);
+            catalog = CatalogValidator.Merge(
+                catalog,
+                ReadResource(assembly, ThreatIntelCatalogResource),
+                "embedded 2026 threat-intel supplement");
             WriteAtomic(catalogPath, catalog.Content);
 
             return new EngineLayout
