@@ -841,14 +841,25 @@ function Test-ProtectedRemediationPath {
         (Join-Path $env:SystemRoot 'System32'),
         (Join-Path $env:SystemRoot 'SysWOW64'),
         $env:ProgramData,
+        (Join-Path $env:ProgramData 'Microsoft'),
         $env:ProgramFiles,
+        (Join-Path $env:ProgramFiles 'Common Files'),
         ${env:ProgramFiles(x86)},
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'Common Files' }),
         (Join-Path $env:SystemDrive 'Users')
     ) | Where-Object {$_} | ForEach-Object {([string]$_).TrimEnd('\').ToLowerInvariant()}
     if ($protectedExact -contains $lower) { return $true }
     if ($lower.StartsWith(([string]$caseRoot).ToLowerInvariant()) -or $lower.StartsWith(([string]$quarantineRoot).ToLowerInvariant())) { return $true }
     if ($lower.StartsWith(([string]$env:SystemRoot).TrimEnd('\').ToLowerInvariant() + '\') -and -not $lower.StartsWith((Join-Path $env:SystemRoot 'Temp').ToLowerInvariant() + '\')) { return $true }
+    $protectedTrees = @(
+        (Join-Path $env:ProgramData 'Microsoft'),
+        (Join-Path $env:ProgramFiles 'Common Files'),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'Common Files' })
+    ) | Where-Object {$_} | ForEach-Object {([string]$_).TrimEnd('\').ToLowerInvariant() + '\'}
+    if (@($protectedTrees | Where-Object {$lower.StartsWith($_)}).Count -gt 0) { return $true }
+    if ($Directory -and $lower -match '\\users\\[^\\]+$') { return $true }
     if ($Directory -and $lower -match '\\users\\[^\\]+\\appdata\\(local|locallow|roaming)$') { return $true }
+    if ($Directory -and $lower -match '\\users\\[^\\]+\\(desktop|documents|downloads|pictures|music|videos|onedrive)$') { return $true }
     return $false
 }
 
@@ -858,6 +869,16 @@ function Move-ToCandidateQuarantine {
     $isDirectory = Test-Path -LiteralPath $Path -PathType Container -ErrorAction SilentlyContinue
     if (Test-ProtectedRemediationPath -Path $Path -Directory:$isDirectory) {
         Write-RemediationLog "Protected path was not moved automatically: $Path" 'Red'
+        return $false
+    }
+    try {
+        $pathItem = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if (($pathItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Write-RemediationLog "Linked or redirected path was not moved automatically: $Path" 'Red'
+            return $false
+        }
+    } catch {
+        Write-RemediationLog "Path could not be safety-checked and was not moved automatically: $Path" 'Red'
         return $false
     }
     if ($Candidate.IsUnknown -and -not $AllowExactStartupItem -and ($isDirectory -or -not (Test-CompuTekUserWritablePath $Path))) {
@@ -1084,8 +1105,12 @@ if ($candidates.Count -eq 0) {
     Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
     Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
     Write-Host "Startup inventory: $($reportPaths.StartupCsv)" -ForegroundColor DarkGray
-    Complete-CompuTekRun 'Scan complete.'
-    exit 0
+    if ($scan.IsComplete) {
+        Complete-CompuTekRun 'Scan complete.'
+        exit 0
+    }
+    Complete-CompuTekRun 'Scan incomplete — technician attention is required.'
+    exit 3
 }
 
 Write-Host "`n===================== FINDINGS ======================" -ForegroundColor Cyan
@@ -1212,8 +1237,12 @@ Write-Host "Decision record: $decisionPath" -ForegroundColor DarkGray
 $selected = @($candidates | Where-Object {$decisionById[$_.Id] -eq 'Remove'})
 if ($selected.Count -eq 0) {
     Write-Host 'All detected installations were approved to keep. Nothing was changed.' -ForegroundColor Green
-    Complete-CompuTekRun 'Technician review complete. No removals were selected.'
-    exit 0
+    if ($scan.IsComplete) {
+        Complete-CompuTekRun 'Technician review complete. No removals were selected.'
+        exit 0
+    }
+    Complete-CompuTekRun 'Technician review complete, but the scan was incomplete — attention is required.'
+    exit 3
 }
 
 Write-Host "`n$($selected.Count) installation(s) are authorized for full removal." -ForegroundColor Yellow
@@ -1238,6 +1267,7 @@ foreach ($candidate in $selected) {
 
 Write-Host "`nRe-scanning to verify the result..." -ForegroundColor Cyan
 $manualRemovalItems = @()
+$attentionRequired = $false
 try {
     $verification = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeHashes
     $verificationPaths = Export-CompuTekScanReport -Scan $verification -Directory $caseRoot -BaseName 'AfterRemediation'
@@ -1253,6 +1283,7 @@ try {
         }
         $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
         $decisionRecord.RemovalOutcome = $status
+        if ($status -ne 'RemovalVerified') { $attentionRequired = $true }
         $remainingLocations = @($remaining | ForEach-Object {
             if ($_.ArtifactType -eq 'StartupFile' -and $_.SourcePath) { [string]$_.SourcePath }
             elseif ($_.Path) { [string]$_.Path }
@@ -1273,7 +1304,7 @@ try {
             RemainingLocations = $remainingLocations -join '; '
         }
         Write-Host ("{0}: {1} ({2} remaining finding(s))" -f $candidate.Id,$status,$remaining.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
-        if ($status -eq 'RemovalIncomplete') {
+        if ($status -ne 'RemovalVerified') {
             $manualRemovalItems += [pscustomobject][ordered]@{
                 CandidateId = $candidate.Id
                 ProductName = $candidate.Name
@@ -1282,6 +1313,7 @@ try {
                 Services = $remainingServices
                 StartupItems = $remainingStartupItems
                 RemainingFindings = $remaining.Count
+                Status = $status
             }
         }
     }
@@ -1298,6 +1330,19 @@ try {
     }
 } catch {
     foreach ($record in @($decisions | Where-Object {$_.Decision -eq 'Remove'})) { $record.RemovalOutcome = 'NotVerified-ScanFailed' }
+    $attentionRequired = $true
+    foreach ($candidate in $selected) {
+        $manualRemovalItems += [pscustomobject][ordered]@{
+            CandidateId = $candidate.Id
+            ProductName = $candidate.Name
+            DetectedVersion = $candidate.DetectedVersion
+            Locations = @()
+            Services = @()
+            StartupItems = @()
+            RemainingFindings = $null
+            Status = 'NotVerified-ScanFailed'
+        }
+    }
     Write-RemediationLog "Verification scan failed: $($_.Exception.Message)" 'Red'
 }
 
@@ -1306,15 +1351,16 @@ $manualRemovalText = Join-Path $caseRoot 'ManualRemovalRequired.txt'
 if ($manualRemovalItems.Count -gt 0) {
     $manualRemovalItems | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manualRemovalJson -Encoding UTF8
     $manualLines = @(
-        'COMPUTEK MANUAL TECHNICIAN REMOVAL REQUIRED',
+        'COMPUTEK TECHNICIAN FOLLOW-UP REQUIRED',
         '',
-        'Automatic uninstall, blocker handling, residual cleanup, and verification did not fully remove the following version group(s).',
-        'Reboot and run the scanner again first. If the same items remain, a technician may need to remove only the listed locations manually or in Safe Mode.',
+        'One or more approved removals could not be conclusively verified.',
+        'Reboot and run the scanner again first. Only entries marked RemovalIncomplete with listed locations may require manual or Safe Mode removal.',
+        'If status is NotVerified-ScanIncomplete or NotVerified-ScanFailed, do not manually delete files based on this report; repair the scan problem and verify again.',
         'Do not remove another approved version or an unlisted system location.',
         ''
     )
     foreach ($item in $manualRemovalItems) {
-        $manualLines += ("{0} - version {1} - review ID {2}" -f $item.ProductName,$(if($item.DetectedVersion){$item.DetectedVersion}else{'unavailable'}),$item.CandidateId)
+        $manualLines += ("{0} - version {1} - review ID {2} - status {3}" -f $item.ProductName,$(if($item.DetectedVersion){$item.DetectedVersion}else{'unavailable'}),$item.CandidateId,$item.Status)
         foreach ($location in @($item.Locations)) { $manualLines += ("  Location: {0}" -f $location) }
         foreach ($service in @($item.Services)) { $manualLines += ("  Service: {0}" -f $service) }
         foreach ($startupItem in @($item.StartupItems)) { $manualLines += ("  Startup item: {0}" -f $startupItem) }
@@ -1323,7 +1369,7 @@ if ($manualRemovalItems.Count -gt 0) {
     $manualLines | Set-Content -LiteralPath $manualRemovalText -Encoding UTF8
 
     Write-Host "`n================ TECHNICIAN ACTION REQUIRED ================" -ForegroundColor Red
-    Write-Host 'Automatic removal was incomplete. Reboot and scan again; if these items remain, have a technician remove only the listed locations.' -ForegroundColor Red
+    Write-Host 'One or more removals were incomplete or could not be verified. Reboot and scan again before any manual file removal.' -ForegroundColor Red
     foreach ($item in $manualRemovalItems) {
         Write-Host ("{0} version {1}:" -f $item.ProductName,$(if($item.DetectedVersion){$item.DetectedVersion}else{'unavailable'})) -ForegroundColor Yellow
         foreach ($location in @($item.Locations | Select-Object -First 10)) { Write-Host ("    {0}" -f $location) -ForegroundColor Yellow }
@@ -1340,4 +1386,4 @@ $decisionDocument | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $decision
 Write-Host "Remediation log: $remediationLog" -ForegroundColor DarkGray
 Write-Host 'Reboot if requested by an uninstaller, then run this scanner again.' -ForegroundColor Yellow
 Complete-CompuTekRun 'Remediation workflow complete.'
-exit 0
+exit $(if($attentionRequired){3}else{0})

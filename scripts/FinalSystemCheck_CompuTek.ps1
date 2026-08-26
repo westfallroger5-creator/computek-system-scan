@@ -3,6 +3,13 @@
 # =====================================================
 try { $Host.UI.RawUI.WindowTitle = "Final System Readiness Check - Compu-TEK" } catch {}
 
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+ ).IsInRole([Security.Principal.WindowsBuiltInRole] 'Administrator')) {
+    Write-Host 'Requesting administrator rights...' -ForegroundColor Yellow
+    Start-Process powershell.exe "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit 1
+}
+
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
     if ($env:COMPUTEK_SCANNER_APP -eq '1') {
@@ -13,6 +20,68 @@ function Read-CompuTekInput {
     return Read-Host $Prompt
 }
 
+function Restore-CompuTekPreClonePolicy {
+    $regPaths = @(
+        'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker',
+        'HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'
+    )
+    $policyRestoredFromBackup = $false
+    $policyBackup = $null
+    $policyBackups = @()
+    $pendingPolicyBackups = @()
+    try {
+        if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) {
+            $backupRoot = Join-Path $env:COMPUTEK_SCANNER_PORTABLE_ROOT ("BitLockerKeys\{0}" -f $env:COMPUTERNAME)
+            $policyBackups = @(Get-ChildItem -LiteralPath $backupRoot -Filter 'PreClonePolicyBackup.json' -File -Recurse -ErrorAction Stop | Sort-Object LastWriteTimeUtc)
+            $pendingPolicyBackups = @($policyBackups | Where-Object {
+                -not (Test-Path -LiteralPath (Join-Path $_.DirectoryName 'PreClonePolicyRestored.json'))
+            })
+            # If Pre-Clone ran more than once before Final Check, the oldest
+            # pending backup contains the true pre-workflow policy state.
+            $policyBackup = $pendingPolicyBackups | Select-Object -First 1
+        }
+    } catch {}
+
+    if ($policyBackup) {
+        $savedPolicy = @(Get-Content -LiteralPath $policyBackup.FullName -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop)
+        foreach ($setting in $savedPolicy) {
+            if ($setting.WasPresent) {
+                if (-not (Test-Path -LiteralPath $setting.Path)) { New-Item -Path $setting.Path -Force | Out-Null }
+                New-ItemProperty -LiteralPath $setting.Path -Name $setting.Name -PropertyType DWord -Value ([int]$setting.PreviousValue) -Force | Out-Null
+            } elseif (Test-Path -LiteralPath $setting.Path) {
+                Remove-ItemProperty -LiteralPath $setting.Path -Name $setting.Name -ErrorAction SilentlyContinue
+            }
+        }
+        $policyRestoredFromBackup = $true
+        Write-Host "[OK] Restored the pre-clone BitLocker policy state from $($policyBackup.FullName)." -ForegroundColor Green
+        foreach ($pendingBackup in $pendingPolicyBackups) {
+            [pscustomobject]@{
+                RestoredAtUtc = [DateTime]::UtcNow.ToString('o')
+                ComputerName = $env:COMPUTERNAME
+                RestoredFrom = $policyBackup.FullName
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $pendingBackup.DirectoryName 'PreClonePolicyRestored.json') -Encoding UTF8 -Force
+        }
+    }
+
+    if (-not $policyRestoredFromBackup -and $policyBackups.Count -eq 0) {
+        $unexplainedFlags = @()
+        foreach ($path in $regPaths) {
+            if (Test-Path $path) {
+                foreach ($name in @('PreventDeviceEncryption','PreventAutoEncryption','DisableAutoEncryption')) {
+                    $val = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).$name
+                    if ($val -eq 1) { $unexplainedFlags += "$path -> $name" }
+                }
+            }
+        }
+        if ($unexplainedFlags.Count -gt 0) {
+            throw "Encryption-prevention policy is set but no Pre-Clone policy backup is available. Review rather than deleting possible customer policy: $($unexplainedFlags -join '; ')"
+        }
+        Write-Host '[OK] No unexplained BitLocker prevention policy is active.' -ForegroundColor Green
+    } elseif (-not $policyRestoredFromBackup) {
+        Write-Host '[OK] No pending Pre-Clone BitLocker policy restore was found.' -ForegroundColor Green
+    }
+}
+
 Write-Host "`n===================================================" -ForegroundColor Cyan
 Write-Host "      FINAL SYSTEM READINESS CHECK - COMPU-TEK" -ForegroundColor Cyan
 Write-Host "===================================================`n" -ForegroundColor Cyan
@@ -21,6 +90,12 @@ $BitLockerSkipped = $false
 $SpeakerTestFailed = $false
 $HibernationFailed = $false
 $RestorePointFailed = $false
+$ActivationFailed = $true
+$BitLockerFailed = $false
+$AntivirusFailed = $true
+$SplashtopFailed = $true
+$UpdatesFailed = $true
+$DeviceCheckFailed = $true
 
 # --- 1. Windows Edition & Activation ---
 $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").EditionID
@@ -31,6 +106,7 @@ try {
          Where-Object { $_.PartialProductKey -and $_.LicenseStatus -eq 1 }
     if ($l) {
         Write-Host "[OK] Windows is activated." -ForegroundColor Green
+        $ActivationFailed = $false
     } else {
         Write-Host "[WARN] Windows not activated!" -ForegroundColor Yellow
     }
@@ -63,29 +139,17 @@ try {
 if ($edition -match 'Home' -or $edition -match 'Core' -or $edition -match 'SingleLanguage') {
     Write-Host "[INFO] BitLocker check skipped: Windows Home/Core edition detected." -ForegroundColor Cyan
     $BitLockerSkipped = $true
+    try { Restore-CompuTekPreClonePolicy } catch {
+        Write-Host "[WARN] Unable to restore the saved Pre-Clone encryption policy: $($_.Exception.Message)" -ForegroundColor Yellow
+        $BitLockerFailed = $true
+    }
 }
 else {
     try {
         Write-Host "`n[INFO] Checking and repairing BitLocker configuration..." -ForegroundColor Cyan
 
-        # --- Step 1: Remove prevention flags that could block encryption ---
-        $regPaths = @(
-            "HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker",
-            "HKLM:\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE"
-        )
-
-        foreach ($path in $regPaths) {
-            if (Test-Path $path) {
-                foreach ($name in @("PreventDeviceEncryption", "PreventAutoEncryption", "DisableAutoEncryption")) {
-                    $val = (Get-ItemProperty -Path $path -ErrorAction SilentlyContinue).$name
-                    if ($val -eq 1) {
-                        Write-Host "[FIX] Removing BitLocker restriction flag: $name" -ForegroundColor Yellow
-                        Remove-ItemProperty -Path $path -Name $name -ErrorAction SilentlyContinue
-                    }
-                }
-            }
-        }
-        Write-Host "[OK] BitLocker policy flags verified." -ForegroundColor Green
+        # --- Step 1: Restore the policy state saved by Pre-Clone. ---
+        Restore-CompuTekPreClonePolicy
 
         # Older Pre-Clone versions disabled BDESVC. Repair that state so the
         # final computer can manage BitLocker normally again.
@@ -102,8 +166,15 @@ else {
         $WarningPreference = $oldPref
 
         $vols = Get-BitLockerVolume -ErrorAction Stop
+        $serviceDrive = $null
+        try {
+            if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) {
+                $serviceDrive = [string](Get-Item -LiteralPath $env:COMPUTEK_SCANNER_PORTABLE_ROOT -ErrorAction Stop).PSDrive.Name
+            }
+        } catch {}
         if ($vols) {
             foreach ($v in $vols) {
+                if ($serviceDrive -and $v.MountPoint.TrimEnd(':') -ieq $serviceDrive) { continue }
                 $label = (Get-Volume -DriveLetter $v.MountPoint.TrimEnd(':') -ErrorAction SilentlyContinue).FileSystemLabel
                 if ($label -match 'Ventoy' -or $label -match 'VTOYEFI' -or
                     $v.MountPoint -match 'Ventoy' -or $v.MountPoint -match 'VTOYEFI') { continue }
@@ -117,17 +188,21 @@ else {
                 }
                 elseif ($prot -eq 'Off' -or $state -match "FullyDecrypted") {
                     Write-Host "[WARN] BitLocker off on drive $($v.MountPoint)" -ForegroundColor Yellow
+                    $BitLockerFailed = $true
                 }
                 else {
                     Write-Host "[INFO] BitLocker unknown state on $($v.MountPoint) ($state)" -ForegroundColor Cyan
+                    $BitLockerFailed = $true
                 }
             }
         } else {
             Write-Host "[INFO] No BitLocker volumes found." -ForegroundColor Cyan
+            $BitLockerFailed = $true
         }
     }
     catch {
         Write-Host "[WARN] Unable to query BitLocker status or clear flags." -ForegroundColor Yellow
+        $BitLockerFailed = $true
     }
 }
 
@@ -142,10 +217,12 @@ try {
 
     if ($defender -and $defender.AntivirusEnabled -and $defender.RealTimeProtectionEnabled) {
         Write-Host "[OK] Microsoft Defender active and protecting." -ForegroundColor Green
+        $AntivirusFailed = $false
     }
     elseif ($avProducts -and ($avProducts.productState -ne $null)) {
         $names = ($avProducts.displayName | Sort-Object -Unique) -join ", "
         Write-Host "[INFO] Third-party AV detected: $names (Defender off)" -ForegroundColor Cyan
+        $AntivirusFailed = $false
     }
     else {
         Write-Host "[WARN] No active antivirus protection detected!" -ForegroundColor Yellow
@@ -159,6 +236,7 @@ try {
     $svc = Get-Service -Name "SplashtopRemoteService" -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -eq "Running") {
         Write-Host "[OK] Splashtop Streamer running." -ForegroundColor Green
+        $SplashtopFailed = $false
     } else {
         Write-Host "[WARN] Splashtop Streamer not detected or not running!" -ForegroundColor Yellow
     }
@@ -176,6 +254,7 @@ try {
         Write-Host "[WARN] Pending Windows Updates: $count" -ForegroundColor Yellow
     } else {
         Write-Host "[OK] Windows is up to date." -ForegroundColor Green
+        $UpdatesFailed = $false
     }
 } catch {
     if ($_.Exception.HResult -eq -2145124318) {
@@ -187,13 +266,14 @@ try {
 
 # --- 6. Device Manager ---
 try {
-    $e = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Error' }
+    $e = Get-PnpDevice -ErrorAction Stop | Where-Object { $_.Status -eq 'Error' }
     if ($null -ne $e -and $e.Count -gt 0) {
         foreach ($i in $e) {
             Write-Host "[WARN] Device Issue: $($i.FriendlyName) ($($i.InstanceId))" -ForegroundColor Yellow
         }
     } else {
         Write-Host "[OK] No device issues found." -ForegroundColor Green
+        $DeviceCheckFailed = $false
     }
 } catch {
     Write-Host "[WARN] Unable to query Device Manager." -ForegroundColor Yellow
@@ -286,7 +366,12 @@ try {
     }
     else {
         $device = $activeAudio | Select-Object -First 1
-        $driver = $device.DriverProviderName
+        $driver = $null
+        try {
+            $signedDriver = Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {$_.DeviceID -eq $device.DeviceID} | Select-Object -First 1
+            $driver = [string]$signedDriver.DriverProviderName
+        } catch {}
+        if ([string]::IsNullOrWhiteSpace($driver)) { $driver = [string]$device.Manufacturer }
         $name   = $device.Name
 
         Write-Host ("[OK] Active audio device detected: " + $name) -ForegroundColor Green
@@ -362,43 +447,16 @@ public class VolumeControl {
         }
 
         try {
-            Write-Host "[INFO] Playing Compu-Tek test melody..." -ForegroundColor Cyan
-
-            function Play-Note {
-                param ([int]$freq, [int]$dur)
-                if ($dur -lt 150) { $dur = 150 }
-                Start-Sleep -Milliseconds 30
-                [console]::Beep($freq, $dur)
-                Start-Sleep -Milliseconds ($dur + 150)
+            Write-Host "[INFO] Playing the Windows speaker test through the default audio output..." -ForegroundColor Cyan
+            foreach ($sound in @(
+                [System.Media.SystemSounds]::Asterisk,
+                [System.Media.SystemSounds]::Exclamation,
+                [System.Media.SystemSounds]::Hand
+            )) {
+                $sound.Play()
+                Start-Sleep -Milliseconds 900
             }
-
-            $notes = @{
-                "G" = 392; "A" = 440; "B" = 494;
-                "C" = 522; "D" = 588; "E" = 658
-            }
-
-            $melody = @(
-                @("G",200),@("G",200),@("G",200),
-                @("C",600),@("E",200),
-                @("G",200),@("G",200),@("G",200),
-                @("C",600),@("E",200),
-                @("C",200),@("C",200),
-                @("B",200),@("B",200),
-                @("A",200),@("A",200),
-                @("G",600)
-            )
-
-            foreach ($note in $melody) {
-                try {
-                    $freq = $notes[$note[0]]
-                    $dur  = $note[1]
-                    Play-Note -freq $freq -dur $dur
-                } catch {
-                    Start-Sleep -Milliseconds 300
-                }
-            }
-
-            Write-Host "[INFO] Speaker test melody finished." -ForegroundColor Cyan
+            Write-Host "[INFO] Speaker test finished." -ForegroundColor Cyan
             $heardResponse = Read-CompuTekInput 'Did you clearly hear the speaker test? (Y/N)'
             if ($heardResponse -match '^[Yy]$') {
                 Write-Host "[OK] Technician confirmed audible speaker output." -ForegroundColor Green
@@ -407,7 +465,7 @@ public class VolumeControl {
                 $SpeakerTestFailed = $true
             }
         } catch {
-            Write-Host "[WARN] Speaker test failed during melody playback." -ForegroundColor Yellow
+            Write-Host "[WARN] Speaker test failed during playback." -ForegroundColor Yellow
             $SpeakerTestFailed = $true
         }
     }
@@ -439,15 +497,32 @@ if ($HibernationFailed) {
 if ($RestorePointFailed) {
     Write-Host "[WARN] Required final action failed: a restore point was not confirmed." -ForegroundColor Yellow
 }
+$readinessIssues = @()
+if ($ActivationFailed) { $readinessIssues += 'Windows activation was not confirmed.' }
+if ($HibernationFailed) { $readinessIssues += 'Hibernation is not confirmed off.' }
+if ($BitLockerFailed) { $readinessIssues += 'BitLocker readiness needs review.' }
+if ($AntivirusFailed) { $readinessIssues += 'Active antivirus protection was not confirmed.' }
+if ($SplashtopFailed) { $readinessIssues += 'The CompuTek Splashtop service is not confirmed running.' }
+if ($UpdatesFailed) { $readinessIssues += 'Windows Update status is not confirmed current.' }
+if ($DeviceCheckFailed) { $readinessIssues += 'Device Manager is not confirmed clear.' }
+if ($RestorePointFailed) { $readinessIssues += 'The required restore point was not confirmed.' }
+if ($SpeakerTestFailed) { $readinessIssues += 'Audible speaker output was not confirmed.' }
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
-if ($env:COMPUTEK_SCANNER_APP -eq '1') {
-    Write-Host "Final System Check complete." -ForegroundColor Green
+if ($readinessIssues.Count -eq 0) {
+    Write-Host 'SYSTEM READY: YES' -ForegroundColor Green
+    Write-Host 'All required final-store checks passed.' -ForegroundColor Green
+    $finalExitCode = 0
 } else {
+    Write-Host 'SYSTEM READY: ATTENTION REQUIRED' -ForegroundColor Yellow
+    foreach ($issue in $readinessIssues) { Write-Host (" - {0}" -f $issue) -ForegroundColor Yellow }
+    $finalExitCode = 5
+}
+if ($env:COMPUTEK_SCANNER_APP -ne '1') {
     Write-Host "Press Enter to close this window..." -ForegroundColor Cyan
     [void][System.Console]::ReadLine()
 }
-exit
+exit $finalExitCode
 
 
 

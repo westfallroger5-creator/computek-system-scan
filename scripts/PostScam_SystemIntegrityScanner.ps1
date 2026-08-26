@@ -78,6 +78,16 @@ $remoteTerms = @($catalog.products | ForEach-Object { @($_.aliases) + @($_.execu
 $remoteRegex = if ($remoteTerms.Count -gt 0) { '(?i)(' + ($remoteTerms -join '|') + ')' } else { '(?!)' }
 $suspiciousCommandRegex = '(?i)(downloadstring|invoke-expression|\biex\b|frombase64string|encodedcommand|invoke-webrequest|\bcurl(?:\.exe)?\b|\bwget\b|bitsadmin|certutil|mshta|regsvr32|rundll32|comsvcs|installutil|wmic|psexec|procdump|mimikatz|nanodump|secretsdump|browserpassview|webbrowserpassview|rclone|megacmd|megasync|winscp|pscp|compress-archive|7z(?:\.exe)?|rar(?:\.exe)?|tar(?:\.exe)?)'
 
+function Test-CompuTekPostScamPersistenceText {
+    param([AllowNull()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return (
+        $Text -match $remoteRegex -or
+        $Text -match $suspiciousCommandRegex -or
+        $Text -match '(?i)\\users\\[^\\]+\\(appdata|downloads|desktop)\\|\\windows\\temp\\'
+    )
+}
+
 function Write-Audit {
     param([string]$Message, [string]$Color = 'Gray')
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$Message
@@ -262,9 +272,9 @@ Write-Audit "`n[2/12] Service, task, account, logon, and audit-log events" 'Cyan
 foreach ($event in Get-RecentEvents -LogName 'System' -Ids @(7040,7045) -Maximum 2000) {
     $data = Get-EventDataMap $event
     $eventText = (Get-EventMessage $event) + ' ' + (($data.Values | ForEach-Object {[string]$_}) -join ' ')
-    $include = ($event.Id -eq 7045 -or $eventText -match $remoteRegex -or $eventText -match $suspiciousCommandRegex -or $eventText -match '(?i)\\users\\[^\\]+\\appdata\\|\\windows\\temp\\')
-    if ($include) {
-        $severity = if ($event.Id -eq 7045) {'High'} else {'Medium'}
+    $suspiciousPersistence = Test-CompuTekPostScamPersistenceText $eventText
+    if ($suspiciousPersistence -or $event.Id -eq 7045) {
+        $severity = if ($suspiciousPersistence) {'High'} else {'Review'}
         Add-WindowsEventEvidence $event 'PersistenceEvent' $severity "System event $($event.Id): service installed or suspiciously changed" $data
     }
 }
@@ -275,6 +285,7 @@ foreach ($event in Get-RecentEvents -LogName 'Security' -Ids $securityIds -Maxim
     $include = $false
     $severity = 'Medium'
     $name = "Security event $($event.Id)"
+    $eventText = (Get-EventMessage $event) + ' ' + (($data.Values | ForEach-Object {[string]$_}) -join ' ')
     switch ($event.Id) {
         1102 { $include=$true; $severity='High'; $name='Windows audit log was cleared' }
         4624 {
@@ -294,8 +305,14 @@ foreach ($event in Get-RecentEvents -LogName 'Security' -Ids $securityIds -Maxim
             $include = ($command -match $remoteRegex -or $command -match $suspiciousCommandRegex -or (Test-CompuTekUserWritablePath $command))
             $severity = 'High'; $name='Suspicious process creation'
         }
-        4697 { $include=$true; $name='Service installed through Security auditing'; $severity='High' }
-        4698 { $include=$true; $name='Scheduled task created'; $severity='High' }
+        4697 {
+            $include=$true; $name='Service installed through Security auditing'
+            $severity=if(Test-CompuTekPostScamPersistenceText $eventText){'High'}else{'Review'}
+        }
+        4698 {
+            $include=$true; $name='Scheduled task created'
+            $severity=if(Test-CompuTekPostScamPersistenceText $eventText){'High'}else{'Review'}
+        }
         4720 { $include=$true; $name='Local/domain user account created'; $severity='High' }
         4722 { $include=$true; $name='User account enabled'; $severity='Medium' }
         4728 { $include=$true; $name='Member added to a global security group'; $severity='High' }
@@ -518,7 +535,8 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
             $content = Get-Content -LiteralPath $file.FullName -Raw -ErrorAction SilentlyContinue
             if ($file.LastWriteTime -ge $cutoff -or $content -match $remoteRegex -or $content -match $suspiciousCommandRegex) {
                 $fileEvidence = Get-CompuTekFileEvidence -Path $file.FullName -IncludeHash
-                Add-Evidence -Category 'Persistence' -Severity 'High' -Name 'PowerShell profile script' -Details ("modified={0:u}; SHA256={1}; suspicious-content={2}" -f $file.LastWriteTime,$fileEvidence.SHA256,[bool]($content -match $suspiciousCommandRegex)) -Path $file.FullName -User $profile.Name -Source 'FileSystem' -Data $fileEvidence
+                $suspiciousProfile = ($content -match $remoteRegex -or $content -match $suspiciousCommandRegex)
+                Add-Evidence -Category 'Persistence' -Severity $(if($suspiciousProfile){'High'}else{'Review'}) -Name 'PowerShell profile script' -Details ("modified={0:u}; SHA256={1}; suspicious-content={2}" -f $file.LastWriteTime,$fileEvidence.SHA256,$suspiciousProfile) -Path $file.FullName -User $profile.Name -Source 'FileSystem' -Data $fileEvidence
             }
         }
     }
@@ -655,7 +673,8 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
                 $risky = @($permissions | Where-Object {$highRiskPermissions -contains [string]$_})
                 $text = ([string]$manifest.name) + ' ' + ([string]$manifest.description)
                 if ($risky.Count -gt 0 -or $text -match $remoteRegex) {
-                    Add-Evidence -Category 'BrowserExtension' -Severity 'Medium' -Name ([string]$manifest.name) -Details ("version={0}; high-risk permissions={1}" -f $manifest.version,($risky -join ',')) -TimeCreated $manifestFile.LastWriteTime -Path $manifestFile.FullName -User $profile.Name -Source 'Chromium extension manifest' -Data @{Permissions=$permissions;Version=$manifest.version}
+                    $actionableExtension = ($text -match $remoteRegex -or ($risky.Count -gt 0 -and $manifestFile.LastWriteTime -ge $cutoff))
+                    Add-Evidence -Category 'BrowserExtension' -Severity $(if($actionableExtension){'Medium'}else{'Review'}) -Name ([string]$manifest.name) -Details ("version={0}; high-risk permissions={1}; recently changed={2}" -f $manifest.version,($risky -join ','),[bool]($manifestFile.LastWriteTime -ge $cutoff)) -TimeCreated $manifestFile.LastWriteTime -Path $manifestFile.FullName -User $profile.Name -Source 'Chromium extension manifest' -Data @{Permissions=$permissions;Version=$manifest.version}
                 }
             } catch {}
         }
