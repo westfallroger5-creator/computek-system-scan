@@ -653,11 +653,15 @@ function Get-CompuTekTargetedFileArtifacts {
     }
 
     $extensions = @('.exe','.com','.dll','.msi','.msix','.appx','.lnk','.bat','.cmd','.ps1','.vbs','.js','.zip','.rar','.7z')
+    $portableDataRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) {
+        Join-Path $env:COMPUTEK_SCANNER_PORTABLE_ROOT 'CompuTekData'
+    } else { $null }
     $excludedPrefixes = @(
         (Join-Path $env:ProgramData 'CompuTek\RemoteScanner\Quarantine'),
         (Join-Path $env:ProgramData 'CompuTek\RemoteScanner\Cases'),
-        (Join-Path $env:ProgramData 'CompuTek\PostScam\Cases')
-    ) | ForEach-Object { ([string]$_).TrimEnd('\').ToLowerInvariant() + '\' }
+        (Join-Path $env:ProgramData 'CompuTek\PostScam\Cases'),
+        $portableDataRoot
+    ) | Where-Object {$_} | ForEach-Object { ([string]$_).TrimEnd('\').ToLowerInvariant() + '\' }
     $items = @()
     $seen = @{}
     $maxDepth = if ($DeepScan) { -1 } else { 5 }

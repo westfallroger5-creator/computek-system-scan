@@ -15,19 +15,21 @@ The EXE contains known-good copies of both scanners, the technician tools, and t
 1. Double-click `CompuTekScanner.exe` and approve the Windows administrator prompt.
 2. Confirm the signature version shown in the upper-right corner.
 3. Choose the lookback period and optional full fixed-drive scan/file hashes. The normal scan uses a junction-safe, bounded search of high-risk user and shared-data folders. Full fixed-drive mode searches every fixed drive and can take considerably longer.
-4. Leave **Remote scan only** checked for reporting without removal, or clear it to enter technician-reviewed removal mode.
-5. Leave the application open while it reports the current collection stage and elapsed time. Large AppData or ProgramData folders can take several minutes; a visible **Still working** heartbeat confirms the scan has not frozen.
-6. For removal mode, classify each detected installation with the exact `KEEP <review-id>` or `REMOVE <review-id>` response shown by the application. This happens separately for different installation locations, including two copies of the same product.
-7. Review the decision summary and type `APPLY REMOVALS` only when the selections are correct.
-8. Use **Open last case folder** after completion to review the evidence, decisions, remediation log, and verification report.
+4. The remote scanner always displays its findings and offers technician-reviewed removal when findings exist. It never removes anything automatically.
+5. Leave the application open while it reports the current collection stage and elapsed time. Large AppData or ProgramData folders can take several minutes; security collectors may show a **Still working** heartbeat. The Technician Toolbox does not add these heartbeat lines, so its command output remains easy to read.
+6. Classify each detected installation with the exact `KEEP <review-id>` or `REMOVE <review-id>` response shown by the application. This happens separately for different installation locations, including two copies of the same product.
+7. Review the decision summary and type `APPLY REMOVALS` only when the selections are correct. Without that exact final phrase, nothing is removed.
+8. Use **Open last case folder** after completion to review the USB evidence, decisions, remediation log, and verification report.
 
 The post-scam collector is read-only. It gathers local evidence and collection gaps but cannot prove that no data was taken or that no custom/fileless backdoor exists.
+
+All application sessions save a readable log beside the EXE under `CompuTekData/<COMPUTERNAME>/ApplicationSessions`. Remote-scan cases, post-scam evidence, Toolbox logs and CHKDSK reports are also stored under that computer's `CompuTekData` folder on the service USB. Pre-Clone recovery material remains under `BitLockerKeys/<COMPUTERNAME>`.
 
 ## Technician tools
 
 The **Technician tools** tab restores the original entry points:
 
-- **IT Technician Toolbox** — system and network information, DNS/IP repair, internet testing, temporary-file cleanup, SFC, CHKDSK, DISM, Task Manager, print-queue cleanup, verified BitLocker enablement, and reboot. BitLocker requires exact technician approval and a complete recovery-password file that passes a service-USB read-back check before encryption starts.
+- **IT Technician Toolbox** — system and network information, DNS/IP repair, internet testing, temporary-file cleanup, SFC, CHKDSK, DISM, Task Manager, print-queue cleanup, verified BitLocker enablement, and reboot. CHKDSK begins read-only; `/F` or `/R` is offered only after the scan reports a problem and requires an exact technician phrase. BitLocker also requires exact approval and a complete recovery-password file that passes a service-USB read-back check before encryption starts.
 - **Final System Check** — the standard final-store workflow. It disables hibernation, checks activation, security, updates, devices and Splashtop, creates a restore point, un-mutes and sets speaker volume to 50%, plays the test melody, and asks the technician to confirm it was heard.
 - **Pre-Clone Preparation** — the Acronis readiness gate. It verifies complete BitLocker recovery-password files on the service USB before decryption, waits for full decryption, and runs non-destructive CHKDSK scans.
 

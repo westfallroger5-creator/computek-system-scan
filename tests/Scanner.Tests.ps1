@@ -40,10 +40,12 @@ Assert-True (@($catalog.products).Count -ge 60) 'Catalog contains at least 60 re
 Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.products).Count) 'Catalog product IDs are unique'
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
+Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-Finding') 'Every remote-access scan displays its findings and enters technician review'
 Assert-True ($remediationSource -match 'KEEP \$\(\$candidate\.Id\)' -and $remediationSource -match 'REMOVE \$\(\$candidate\.Id\)') 'Technician must explicitly keep or remove every installation scope'
 Assert-True ($remediationSource -match "APPLY REMOVALS" -and $remediationSource -notmatch 'A for all') 'Bulk removal cannot start without a final typed confirmation'
 Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
-Assert-True ($remediationSource -match 'Protect-CompuTekEvidenceDirectory' -and $remediationSource -match 'S-1-5-32-544') 'Case and quarantine evidence is restricted to SYSTEM and Administrators'
+Assert-True ($remediationSource -match 'Protect-CompuTekEvidenceDirectory' -and $remediationSource -match 'S-1-5-32-544' -and $remediationSource -match 'PortableMedia-\$fileSystem-NoAcl') 'Evidence uses administrator-only ACLs where supported and records the portable-media fallback for FAT/exFAT USB drives'
+Assert-True ($remediationSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remediationSource -match 'CompuTekData' -and $remediationSource -match 'EvidenceStorageSecurity') 'Cases, decisions, and quarantine evidence are stored and labeled on the service USB'
 Assert-True ($remediationSource -match 'sc\.exe delete' -and $remediationSource -match 'Unregister-ScheduledTask') 'Full removal deletes residual service and scheduled-task persistence'
 Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource -match 'NotVerified-ScanIncomplete') 'Removal is only verified after a complete follow-up scan'
 
