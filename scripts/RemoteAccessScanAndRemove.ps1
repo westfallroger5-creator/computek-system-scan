@@ -111,8 +111,8 @@ function Show-Finding {
 
 function Get-CandidateLocationLabel {
     param($Candidate)
-    if ($Candidate.GroupProductComponents) {
-        return ("{0} related location(s), grouped as one product" -f @($Candidate.Locations).Count)
+    if ($Candidate.GroupByVersion) {
+        return ("{0} related location(s), grouped for this version" -f @($Candidate.Locations).Count)
     }
     if ($Candidate.ScopePath) { return [string]$Candidate.ScopePath }
     return [string]$Candidate.ScopeKey
@@ -131,6 +131,11 @@ function Show-CandidateSummary {
     })
 
     Write-Host ("    Location: {0}" -f (Get-CandidateLocationLabel $Candidate)) -ForegroundColor Cyan
+    if ($Candidate.DetectedVersion) {
+        Write-Host ("    Detected version: {0}" -f $Candidate.DetectedVersion) -ForegroundColor Cyan
+    } else {
+        Write-Host '    Detected version: unavailable; kept separate by location for safety' -ForegroundColor DarkYellow
+    }
     Write-Host ("    Evidence: {0}" -f $typeText) -ForegroundColor Gray
     if ($runningServices -gt 0 -or $runningProcesses -gt 0) {
         Write-Host ("    Active now: {0} running service(s), {1} process(es)" -f $runningServices,$runningProcesses) -ForegroundColor Yellow
@@ -142,7 +147,7 @@ function Show-CandidateSummary {
         Write-Host ("    WARNING: {0} renamed-file indicator(s) require review." -f $renamed.Count) -ForegroundColor Red
     }
 
-    if ($Candidate.GroupProductComponents -and @($Candidate.Locations).Count -gt 1) {
+    if ($Candidate.GroupByVersion -and @($Candidate.Locations).Count -gt 1) {
         foreach ($location in @($Candidate.Locations | Select-Object -First 4)) {
             Write-Host ("      - {0}" -f $location) -ForegroundColor DarkGray
         }
@@ -187,13 +192,55 @@ function Get-FindingScopePath {
     try { return [IO.Path]::GetFullPath($path).TrimEnd('\') } catch { return $path }
 }
 
+function Get-FindingDetectedVersion {
+    param($Finding)
+    foreach ($propertyName in @('DisplayVersion','FileVersion')) {
+        $property = $Finding.PSObject.Properties[$propertyName]
+        if (-not $property) { continue }
+        $version = ([string]$property.Value).Trim()
+        if ($version) { return $version }
+    }
+    return $null
+}
+
+function Test-PathWithinVersionAnchor {
+    param([string]$Path, [string]$Anchor)
+    if (-not $Path -or -not $Anchor) { return $false }
+    $pathLower = $Path.TrimEnd('\').ToLowerInvariant()
+    $anchorLower = $Anchor.TrimEnd('\').ToLowerInvariant()
+    return ($pathLower -eq $anchorLower -or $pathLower.StartsWith($anchorLower + '\'))
+}
+
 function New-RemovalCandidates {
     param($Findings)
 
-    $groupedProducts = @{}
-    foreach ($product in @($catalog.products)) {
-        $groupProperty = $product.PSObject.Properties['groupProductComponents']
-        if ($groupProperty -and [bool]$groupProperty.Value) { $groupedProducts[[string]$product.id] = $true }
+    # Group every known product by its exact detected version. Supporting artifacts
+    # without version metadata join only when there is one unambiguous product version
+    # or their path belongs to a versioned installation. Ambiguous items stay separate.
+    $versionDataByProduct = @{}
+    foreach ($finding in @($Findings | Where-Object {$_.ProductId -ne 'unknown'})) {
+        $version = Get-FindingDetectedVersion $finding
+        if (-not $version) { continue }
+        $productId = [string]$finding.ProductId
+        if (-not $versionDataByProduct.ContainsKey($productId)) {
+            $versionDataByProduct[$productId] = [ordered]@{
+                Versions = New-Object System.Collections.Generic.List[string]
+                InstallVersions = New-Object System.Collections.Generic.List[string]
+                InstallAnchors = New-Object System.Collections.Generic.List[object]
+            }
+        }
+        if (-not $versionDataByProduct[$productId].Versions.Contains($version)) {
+            $versionDataByProduct[$productId].Versions.Add($version)
+        }
+        if ($finding.ArtifactType -eq 'InstalledProgram') {
+            if (-not $versionDataByProduct[$productId].InstallVersions.Contains($version)) {
+                $versionDataByProduct[$productId].InstallVersions.Add($version)
+            }
+            $anchor = Get-FindingScopePath $finding
+            if ($anchor) {
+                $versionDataByProduct[$productId].InstallAnchors.Add([pscustomobject]@{Path=$anchor;Version=$version})
+            }
+        }
     }
 
     $installAnchors = @{}
@@ -208,8 +255,22 @@ function New-RemovalCandidates {
     foreach ($finding in @($Findings)) {
         $scopePath = Get-FindingScopePath $finding
         $evidenceLocation = $scopePath
-        $groupProductComponents = $groupedProducts.ContainsKey([string]$finding.ProductId)
-        if (-not $groupProductComponents -and $scopePath -and $installAnchors.ContainsKey($finding.ProductId)) {
+        $resolvedVersion = $null
+        $productVersionData = if ($versionDataByProduct.ContainsKey([string]$finding.ProductId)) { $versionDataByProduct[[string]$finding.ProductId] } else { $null }
+        if ($scopePath -and $productVersionData) {
+            $matchingVersionAnchor = @($productVersionData.InstallAnchors | Where-Object {
+                Test-PathWithinVersionAnchor -Path $scopePath -Anchor $_.Path
+            } | Sort-Object @{Expression={$_.Path.Length};Descending=$true} | Select-Object -First 1)
+            if ($matchingVersionAnchor) { $resolvedVersion = [string]$matchingVersionAnchor[0].Version }
+        }
+        if (-not $resolvedVersion) { $resolvedVersion = Get-FindingDetectedVersion $finding }
+        if (-not $resolvedVersion -and $productVersionData) {
+            $fallbackVersions = if (@($productVersionData.InstallVersions).Count -gt 0) { @($productVersionData.InstallVersions) } else { @($productVersionData.Versions) }
+            if ($fallbackVersions.Count -eq 1) { $resolvedVersion = [string]$fallbackVersions[0] }
+        }
+        $groupByVersion = ($finding.ProductId -ne 'unknown' -and -not [string]::IsNullOrWhiteSpace($resolvedVersion))
+
+        if (-not $groupByVersion -and $scopePath -and $installAnchors.ContainsKey($finding.ProductId)) {
             $scopeLower = $scopePath.TrimEnd('\').ToLowerInvariant()
             $matchingAnchor = @($installAnchors[$finding.ProductId] | Where-Object {
                 $anchorLower = ([string]$_).TrimEnd('\').ToLowerInvariant()
@@ -217,8 +278,8 @@ function New-RemovalCandidates {
             } | Sort-Object Length -Descending | Select-Object -First 1)
             if ($matchingAnchor) { $scopePath = [string]$matchingAnchor[0] }
         }
-        $scopeKey = if ($groupProductComponents) {
-            "product-components:$($finding.ProductId)"
+        $scopeKey = if ($groupByVersion) {
+            "product-version:$($finding.ProductId):$($resolvedVersion.ToLowerInvariant())"
         } elseif ($finding.Category -eq 'native-feature') {
             "native:$($finding.ProductId)"
         } elseif ($finding.ArtifactType -eq 'AppxPackage' -and $finding.PackageFullName) {
@@ -235,8 +296,9 @@ function New-RemovalCandidates {
                 ProductName = [string]$finding.ProductName
                 Category = [string]$finding.Category
                 ScopeKey = $scopeKey
-                ScopePath = if ($groupProductComponents) { $null } else { $scopePath }
-                GroupProductComponents = $groupProductComponents
+                ScopePath = if ($groupByVersion) { $null } else { $scopePath }
+                GroupByVersion = $groupByVersion
+                DetectedVersion = $resolvedVersion
                 Locations = New-Object System.Collections.Generic.List[string]
                 Findings = New-Object System.Collections.Generic.List[object]
             }
@@ -269,7 +331,8 @@ function New-RemovalCandidates {
             Category = $entry.Category
             ScopeKey = $entry.ScopeKey
             ScopePath = $entry.ScopePath
-            GroupProductComponents = [bool]$entry.GroupProductComponents
+            GroupByVersion = [bool]$entry.GroupByVersion
+            DetectedVersion = [string]$entry.DetectedVersion
             Locations = @($entry.Locations | Sort-Object)
             Findings = @($entry.Findings | ForEach-Object {$_})
             IsUnknown = ($entry.ProductId -eq 'unknown')
@@ -468,14 +531,14 @@ function Remove-NativeRemoteFeature {
 }
 
 function Invoke-OfficialUninstall {
-    param($Candidate)
+    param($Candidate, [string]$AttemptLabel = 'initial attempt')
     $entries = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'InstalledProgram' -and ($_.QuietUninstallString -or $_.UninstallString)} | Sort-Object RegistryPath -Unique)
     $attempted = $false
     $allSucceeded = $true
     foreach ($entry in $entries) {
         $attempted = $true
         $command = if ($entry.QuietUninstallString) { $entry.QuietUninstallString } else { $entry.UninstallString }
-        Write-RemediationLog "Running registered uninstaller for $($entry.DisplayName): $command" 'Yellow'
+        Write-RemediationLog "Running registered uninstaller for $($entry.DisplayName) ($AttemptLabel): $command" 'Yellow'
         try {
             $result = Invoke-CompuTekUninstallCommand -Command $command
             Write-RemediationLog ("Uninstaller exit code: {0}" -f $result.ExitCode) $(if($result.Success){'Green'}else{'Red'})
@@ -518,6 +581,10 @@ function Remove-CandidateAppxPackages {
 
 function Stop-CandidateProcesses {
     param($Candidate)
+    $candidatePaths = @($Candidate.Findings | Where-Object {
+        $_.Path -and ([string]$_.Path) -match '(?i)\.(exe|com)$'
+    } | ForEach-Object {[Environment]::ExpandEnvironmentVariables(([string]$_.Path).Trim('"'))} | Sort-Object -Unique)
+    $stoppedProcessIds = New-Object System.Collections.Generic.List[int]
     foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Process' -and $_.ProcessId} | Sort-Object ProcessId -Unique)) {
         try {
             $current = Get-CimInstance Win32_Process -Filter "ProcessId = $($finding.ProcessId)" -ErrorAction SilentlyContinue
@@ -528,18 +595,48 @@ function Stop-CandidateProcesses {
                 continue
             }
             Stop-Process -Id $finding.ProcessId -Force -ErrorAction Stop
+            $stoppedProcessIds.Add([int]$finding.ProcessId)
             Write-RemediationLog "Stopped process $($finding.Name) (PID $($finding.ProcessId))." 'Green'
         } catch { Write-RemediationLog "Could not stop PID $($finding.ProcessId): $($_.Exception.Message)" 'Red' }
     }
+
+    # A protecting service may restart a process with a new PID after the scan. Stop
+    # only processes whose current executable path exactly matches version-group evidence.
+    if ($candidatePaths.Count -gt 0) {
+        foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
+            if ($stoppedProcessIds.Contains([int]$process.ProcessId)) { continue }
+            $currentPath = if ($process.ExecutablePath) { [string]$process.ExecutablePath } else { Get-CompuTekExecutablePath $process.CommandLine }
+            if (-not $currentPath -or @($candidatePaths | Where-Object {$_ -ieq $currentPath}).Count -eq 0) { continue }
+            try {
+                Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+                Write-RemediationLog "Stopped restarted/related process $($process.Name) (PID $($process.ProcessId))." 'Green'
+            } catch { Write-RemediationLog "Could not stop related PID $($process.ProcessId): $($_.Exception.Message)" 'Red' }
+        }
+    }
 }
 
-function Remove-CandidateServices {
+function Stop-CandidateServices {
     param($Candidate)
     foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Sort-Object Name -Unique)) {
         try {
             $service = Get-Service -Name $finding.Name -ErrorAction SilentlyContinue
             if (-not $service) { continue }
-            Stop-Service -Name $finding.Name -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $finding.Name -StartupType Disabled -ErrorAction SilentlyContinue
+            Stop-Service -Name $finding.Name -Force -ErrorAction Stop
+            $service = Get-Service -Name $finding.Name -ErrorAction SilentlyContinue
+            if ($service) { $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(20)) }
+            Write-RemediationLog "Stopped and disabled blocking service $($finding.Name)." 'Green'
+        } catch { Write-RemediationLog "Could not stop blocking service $($finding.Name): $($_.Exception.Message)" 'Red' }
+    }
+}
+
+function Remove-CandidateServices {
+    param($Candidate)
+    Stop-CandidateServices $Candidate
+    foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Sort-Object Name -Unique)) {
+        try {
+            $service = Get-Service -Name $finding.Name -ErrorAction SilentlyContinue
+            if (-not $service) { continue }
             & sc.exe delete $finding.Name 2>$null | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "sc.exe returned exit code $LASTEXITCODE" }
             Write-RemediationLog "Removed service definition $($finding.Name)." 'Green'
@@ -687,7 +784,13 @@ function Invoke-FullCandidateRemoval {
     if (-not $uninstallResult.Attempted) {
         Write-RemediationLog 'No registered vendor uninstaller was found; continuing with exact residual removal.' 'Yellow'
     } elseif (-not $uninstallResult.Success) {
-        Write-RemediationLog 'The registered uninstaller did not report success; continuing with exact residual removal.' 'Yellow'
+        Write-RemediationLog 'The registered uninstaller failed. Stopping related services/processes, then retrying it once.' 'Yellow'
+        Stop-CandidateServices $Candidate
+        Stop-CandidateProcesses $Candidate
+        $retryResult = Invoke-OfficialUninstall -Candidate $Candidate -AttemptLabel 'retry after blockers were stopped'
+        if (-not $retryResult.Success) {
+            Write-RemediationLog 'The registered uninstaller retry also failed; continuing with exact residual removal and verification.' 'Red'
+        }
     }
 
     Stop-CandidateProcesses $Candidate
@@ -701,7 +804,26 @@ function Invoke-FullCandidateRemoval {
 function Test-FindingBelongsToCandidate {
     param($Finding, $Candidate)
     if ($Finding.ProductId -ne $Candidate.ProductId) { return $false }
-    if ($Candidate.GroupProductComponents) { return $true }
+    if ($Candidate.GroupByVersion) {
+        $findingVersion = Get-FindingDetectedVersion $Finding
+        if ($findingVersion) {
+            if ($findingVersion -ieq $Candidate.DetectedVersion) { return $true }
+            foreach ($original in @($Candidate.Findings)) {
+                $sameIdentity = ($original.ArtifactType -eq $Finding.ArtifactType -and $original.Name -and $original.Name -ieq $Finding.Name)
+                if ($sameIdentity -and $original.Path -and $Finding.Path) { $sameIdentity = ($original.Path -ieq $Finding.Path) }
+                if (-not $sameIdentity) { continue }
+                $originalVersion = Get-FindingDetectedVersion $original
+                if ($originalVersion -and $originalVersion -ieq $findingVersion) { return $true }
+            }
+            return $false
+        }
+        $findingScope = Get-FindingScopePath $Finding
+        if ($findingScope -and @($Candidate.Locations | Where-Object {$_ -and $_ -ieq $findingScope}).Count -gt 0) { return $true }
+        foreach ($original in @($Candidate.Findings)) {
+            if ($original.ArtifactType -eq $Finding.ArtifactType -and $original.Name -and $original.Name -ieq $Finding.Name) { return $true }
+        }
+        return $false
+    }
     if ($Candidate.Category -eq 'native-feature') { return $true }
     if ($Candidate.ScopeKey -like 'appx:*') { return ("appx:$($Finding.PackageFullName)" -ieq $Candidate.ScopeKey) }
 
@@ -800,6 +922,7 @@ foreach ($candidate in $candidates) {
         CandidateId = $candidate.Id
         ProductId = $candidate.ProductId
         ProductName = $candidate.Name
+        DetectedVersion = $candidate.DetectedVersion
         InstallationScope = Get-CandidateLocationLabel $candidate
         Decision = $decision
         Technician = $technicianName
@@ -858,6 +981,7 @@ foreach ($candidate in $selected) {
 }
 
 Write-Host "`nRe-scanning to verify the result..." -ForegroundColor Cyan
+$manualRemovalItems = @()
 try {
     $verification = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeHashes
     $verificationPaths = Export-CompuTekScanReport -Scan $verification -Directory $caseRoot -BaseName 'AfterRemediation'
@@ -873,14 +997,33 @@ try {
         }
         $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
         $decisionRecord.RemovalOutcome = $status
+        $remainingLocations = @($remaining | ForEach-Object {
+            if ($_.Path) { [string]$_.Path }
+            elseif ($_.InstallLocation) { [string]$_.InstallLocation }
+            elseif ($_.SourcePath) { [string]$_.SourcePath }
+            elseif ($_.RegistryPath) { [string]$_.RegistryPath }
+        } | Where-Object {$_} | Sort-Object -Unique)
+        $remainingServices = @($remaining | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Select-Object -ExpandProperty Name -Unique)
         $verificationSummary += [pscustomobject]@{
             CandidateId = $candidate.Id
             ProductName = $candidate.Name
+            DetectedVersion = $candidate.DetectedVersion
             InstallationScope = Get-CandidateLocationLabel $candidate
             Status = $status
             RemainingFindings = $remaining.Count
+            RemainingLocations = $remainingLocations -join '; '
         }
         Write-Host ("{0}: {1} ({2} remaining finding(s))" -f $candidate.Id,$status,$remaining.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
+        if ($status -eq 'RemovalIncomplete') {
+            $manualRemovalItems += [pscustomobject][ordered]@{
+                CandidateId = $candidate.Id
+                ProductName = $candidate.Name
+                DetectedVersion = $candidate.DetectedVersion
+                Locations = $remainingLocations
+                Services = $remainingServices
+                RemainingFindings = $remaining.Count
+            }
+        }
     }
     $verificationSummary | Export-Csv -LiteralPath (Join-Path $caseRoot 'RemovalVerification.csv') -NoTypeInformation -Encoding UTF8
     $verificationSummary | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $caseRoot 'RemovalVerification.json') -Encoding UTF8
@@ -890,6 +1033,38 @@ try {
 } catch {
     foreach ($record in @($decisions | Where-Object {$_.Decision -eq 'Remove'})) { $record.RemovalOutcome = 'NotVerified-ScanFailed' }
     Write-RemediationLog "Verification scan failed: $($_.Exception.Message)" 'Red'
+}
+
+$manualRemovalJson = Join-Path $caseRoot 'ManualRemovalRequired.json'
+$manualRemovalText = Join-Path $caseRoot 'ManualRemovalRequired.txt'
+if ($manualRemovalItems.Count -gt 0) {
+    $manualRemovalItems | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manualRemovalJson -Encoding UTF8
+    $manualLines = @(
+        'COMPUTEK MANUAL TECHNICIAN REMOVAL REQUIRED',
+        '',
+        'Automatic uninstall, blocker handling, residual cleanup, and verification did not fully remove the following version group(s).',
+        'Reboot and run the scanner again first. If the same items remain, a technician may need to remove only the listed locations manually or in Safe Mode.',
+        'Do not remove another approved version or an unlisted system location.',
+        ''
+    )
+    foreach ($item in $manualRemovalItems) {
+        $manualLines += ("{0} - version {1} - review ID {2}" -f $item.ProductName,$(if($item.DetectedVersion){$item.DetectedVersion}else{'unavailable'}),$item.CandidateId)
+        foreach ($location in @($item.Locations)) { $manualLines += ("  Location: {0}" -f $location) }
+        foreach ($service in @($item.Services)) { $manualLines += ("  Service: {0}" -f $service) }
+        $manualLines += ''
+    }
+    $manualLines | Set-Content -LiteralPath $manualRemovalText -Encoding UTF8
+
+    Write-Host "`n================ TECHNICIAN ACTION REQUIRED ================" -ForegroundColor Red
+    Write-Host 'Automatic removal was incomplete. Reboot and scan again; if these items remain, have a technician remove only the listed locations.' -ForegroundColor Red
+    foreach ($item in $manualRemovalItems) {
+        Write-Host ("{0} version {1}:" -f $item.ProductName,$(if($item.DetectedVersion){$item.DetectedVersion}else{'unavailable'})) -ForegroundColor Yellow
+        foreach ($location in @($item.Locations | Select-Object -First 10)) { Write-Host ("    {0}" -f $location) -ForegroundColor Yellow }
+        if (@($item.Locations).Count -gt 10) { Write-Host '    Additional locations are saved in the manual-removal report.' -ForegroundColor Yellow }
+    }
+    Write-Host "Manual-removal report: $manualRemovalText" -ForegroundColor Cyan
+} else {
+    @('No verified manual-removal actions are currently required.') | Set-Content -LiteralPath $manualRemovalText -Encoding UTF8
 }
 
 $decisionDocument.RecordedAtUtc = (Get-Date).ToUniversalTime()

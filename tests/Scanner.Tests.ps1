@@ -48,10 +48,13 @@ Assert-True ($remediationSource -match 'PortableMedia-\$fileSystem-NormalPermiss
 Assert-True ($remediationSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remediationSource -match 'CompuTekData' -and $remediationSource -match 'EvidenceStorageSecurity') 'Cases, decisions, and quarantine evidence are stored and labeled on the service USB'
 Assert-True ($remediationSource -match 'sc\.exe delete' -and $remediationSource -match 'Unregister-ScheduledTask') 'Full removal deletes residual service and scheduled-task persistence'
 Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource -match 'NotVerified-ScanIncomplete') 'Removal is only verified after a complete follow-up scan'
+Assert-True ($remediationSource -match 'retry after blockers were stopped' -and $remediationSource -match 'Stop-CandidateServices' -and $remediationSource -match 'Stop-CandidateProcesses') 'A failed vendor uninstall is retried once after exact related blockers are stopped'
+Assert-True ($remediationSource -match 'ManualRemovalRequired\.txt' -and $remediationSource -match 'TECHNICIAN ACTION REQUIRED' -and $remediationSource -match 'RemainingLocations') 'Incomplete removals show and save exact locations for manual technician work'
 
 $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
 Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or invalidly signed executable") 'Unsigned Temp files alone are not treated as remote-access removal candidates'
+Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 
 $singleEndpointArtifacts = @(& $scannerModule {
     function Get-CimInstance {
@@ -92,24 +95,30 @@ try {
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-FindingScopePath','New-RemovalCandidates')) {
+foreach ($functionName in @('Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
-$legitimateInstall = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='InstalledProgram';Name='Company Support';Path='C:\Program Files\ScreenConnect';InstallLocation='C:\Program Files\ScreenConnect';RegistryPath='HKLM:\Software\Uninstall\CompanySupport';PackageFullName=$null}
-$legitimateService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
-$hiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden';Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
-$secondHiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Second Hidden';Path='C:\Users\Victim\AppData\Local\Support\Client.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
-$scopes = @(New-RemovalCandidates @($legitimateInstall,$legitimateService,$hiddenService,$secondHiddenService))
-Assert-True ($scopes.Count -eq 3) 'Three ScreenConnect installation paths remain three separate technician decisions'
-Assert-True (@($scopes | Where-Object {$_.ScopePath -eq 'C:\Program Files\ScreenConnect'}).Findings.Count -eq 2) 'Subfolder services are grouped with their registered installation'
-Assert-True (@($scopes | Where-Object {$_.ScopePath -eq 'C:\Users\Victim\AppData\Roaming\Adobe'}).Count -eq 1) 'Hidden AppData copy remains isolated from the approved installation'
+$legitimateInstall = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='InstalledProgram';Name='Company Support';Path='C:\Program Files\ScreenConnect';InstallLocation='C:\Program Files\ScreenConnect';RegistryPath='HKLM:\Software\Uninstall\CompanySupport';PackageFullName=$null;DisplayVersion='24.1.0';FileVersion=$null}
+$legitimateService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='24.1.0.123'}
+$hiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden';Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
+$hiddenGuardian = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden Guardian';Path='C:\ProgramData\HiddenSupport\Guardian.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
+$secondHiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Second Hidden';Path='C:\Users\Victim\AppData\Local\Support\Client.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='22.8.0'}
+$scopes = @(New-RemovalCandidates @($legitimateInstall,$legitimateService,$hiddenService,$hiddenGuardian,$secondHiddenService))
+Assert-True ($scopes.Count -eq 3) 'Three detected ScreenConnect versions remain three separate technician decisions'
+Assert-True (@($scopes | Where-Object {$_.DetectedVersion -eq '24.1.0'}).Findings.Count -eq 2) 'Installed program and service for the same ScreenConnect version are grouped together'
+Assert-True (@($scopes | Where-Object {$_.DetectedVersion -eq '23.9.0'}).Locations.Count -eq 2) 'Protecting copies of the same ScreenConnect version across locations are grouped together'
+Assert-True (@($scopes | Where-Object {$_.DetectedVersion -eq '22.8.0'}).Count -eq 1) 'A different hidden ScreenConnect version stays independently removable'
+$version24Candidate = @($scopes | Where-Object {$_.DetectedVersion -eq '24.1.0'})[0]
+Assert-True (Test-FindingBelongsToCandidate -Finding $legitimateService -Candidate $version24Candidate) 'Verification keeps an anchored component build with its installed product version'
+$differentVersionSameName = [pscustomobject]@{ProductId='screenconnect';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
+Assert-True (-not (Test-FindingBelongsToCandidate -Finding $differentVersionSameName -Candidate $version24Candidate)) 'Verification does not confuse a remaining different version with the version that was removed'
 
-$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
-$syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
-$syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null}
+$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='6.2.0'}
+$syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='6.2.0'}
+$syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null;DisplayVersion='6.2.0';FileVersion=$null}
 $syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall))
-Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].GroupProductComponents -and $syncroScopes[0].Locations.Count -eq 3) 'Related Syncro services, live agent, and installed program are presented as one product decision'
+Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].GroupByVersion -and $syncroScopes[0].DetectedVersion -eq '6.2.0' -and $syncroScopes[0].Locations.Count -eq 3) 'Related Syncro components of one version are presented as one product decision'
 
 $hiddenScreenConnect = New-TestEvidence @{
     ArtifactType='Service';Name='ScreenConnect Client 0123456789abcdef';DisplayName='ScreenConnect Client 0123456789abcdef'

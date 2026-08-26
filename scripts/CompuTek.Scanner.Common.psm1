@@ -343,6 +343,7 @@ function New-CompuTekArtifact {
         LastWriteTimeUtc   = $null
         SHA256             = $null
         Publisher          = $null
+        DisplayVersion     = $null
         RegistryPath       = $null
         RegistryValueName  = $null
         UninstallString    = $null
@@ -407,6 +408,7 @@ function Get-CompuTekUninstallArtifacts {
                 $installLocation = Get-CompuTekPropertyValue $p 'InstallLocation'
                 $displayIcon = Get-CompuTekPropertyValue $p 'DisplayIcon'
                 $publisher = Get-CompuTekPropertyValue $p 'Publisher'
+                $displayVersion = Get-CompuTekPropertyValue $p 'DisplayVersion'
                 $uninstallString = Get-CompuTekPropertyValue $p 'UninstallString'
                 $quietUninstallString = Get-CompuTekPropertyValue $p 'QuietUninstallString'
                 if (-not $p -or (-not $displayName -and -not $installLocation)) { continue }
@@ -420,6 +422,7 @@ function Get-CompuTekUninstallArtifacts {
                 $artifact = New-CompuTekArtifact @{
                     ArtifactType = 'InstalledProgram'; Source = 'UninstallRegistry'; Name = $displayName
                     DisplayName = $displayName; Path = $candidatePath; Publisher = $publisher
+                    DisplayVersion = $displayVersion
                     RegistryPath = $key.PSPath; UninstallString = $uninstallString
                     QuietUninstallString = $quietUninstallString; InstallLocation = $installLocation
                     RemediationKind = 'Uninstall'
@@ -445,7 +448,8 @@ function Get-CompuTekAppxArtifacts {
         $items += New-CompuTekArtifact @{
             ArtifactType = 'AppxPackage'; Source = 'Appx'; Name = $pkg.Name; DisplayName = $pkg.Name
             Path = $pkg.InstallLocation; Publisher = $pkg.Publisher; PackageName = $pkg.Name
-            PackageFullName = $pkg.PackageFullName; RemediationKind = 'RemoveAppx'
+            PackageFullName = $pkg.PackageFullName; DisplayVersion = [string]$pkg.Version
+            RemediationKind = 'RemoveAppx'
         }
     }
     return @($items)
@@ -772,6 +776,7 @@ function ConvertTo-CompuTekFinding {
         FileVersion          = $Artifact.FileVersion
         SHA256               = $Artifact.SHA256
         Publisher            = $Artifact.Publisher
+        DisplayVersion       = $Artifact.DisplayVersion
         RegistryPath         = $Artifact.RegistryPath
         RegistryValueName    = $Artifact.RegistryValueName
         UninstallString      = $Artifact.UninstallString
@@ -925,7 +930,7 @@ function Export-CompuTekScanReport {
     $jsonPath = Join-Path $Directory ($BaseName + '.json')
     $csvPath = Join-Path $Directory ($BaseName + '.csv')
     $Scan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
-    @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,SourcePath,TaskPath,CommandLine,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
+    @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,SourcePath,TaskPath,CommandLine,DisplayVersion,FileVersion,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
     return [pscustomobject]@{Json=$jsonPath;Csv=$csvPath}
 }
 
