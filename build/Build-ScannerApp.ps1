@@ -38,6 +38,9 @@ foreach ($sourceFile in $sourceFiles) {
 $engineResources = [ordered]@{
     (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') = 'CompuTek.Scanner.Engine.RemoteAccessScanAndRemove.ps1'
     (Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1') = 'CompuTek.Scanner.Engine.PostScam_SystemIntegrityScanner.ps1'
+    (Join-Path $repoRoot 'scripts\IT_Technician_Toolbox.ps1') = 'CompuTek.Scanner.Engine.IT_Technician_Toolbox.ps1'
+    (Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1') = 'CompuTek.Scanner.Engine.FinalSystemCheck_CompuTek.ps1'
+    (Join-Path $repoRoot 'scripts\PreClone.ps1') = 'CompuTek.Scanner.Engine.PreClone.ps1'
     (Join-Path $repoRoot 'scripts\CompuTek.Scanner.Common.psm1') = 'CompuTek.Scanner.Engine.CompuTek.Scanner.Common.psm1'
     (Join-Path $repoRoot 'scripts\RemoteAccessSignatures.json') = 'CompuTek.Scanner.Engine.RemoteAccessSignatures.json'
 }

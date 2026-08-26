@@ -17,6 +17,9 @@ foreach ($relativePath in @(
     'scripts\RemoteAccessScanAndRemove.ps1',
     'scripts\PostScam_SystemIntegrityScanner.ps1',
     'scripts\CompuTek.Scanner.Common.psm1',
+    'scripts\IT_Technician_Toolbox.ps1',
+    'scripts\FinalSystemCheck_CompuTek.ps1',
+    'scripts\PreClone.ps1',
     'build\Build-ScannerApp.ps1'
 )) {
     $tokens = $null
@@ -29,14 +32,22 @@ $remoteSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAcc
 $postScamSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1') -Raw
 Assert-AppTest ($remoteSource -match '__COMPUTEK_PROMPT__:' -and $postScamSource -match '__COMPUTEK_PROMPT__:') 'Both scanner engines expose application-safe input prompts'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_APP' -and $remoteSource -match 'Read-CompuTekInput') 'The remote scanner remains interactive in both EXE and direct-script modes'
+Assert-AppTest ($remoteSource -match "Complete-CompuTekRun 'Scan-only mode complete\.'" -and $postScamSource -match "Complete-CompuTekRun 'Post-scam evidence collection complete\.'") 'Completed EXE scans exit automatically instead of waiting forever for Enter'
 
 $moduleSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\CompuTek.Scanner.Common.psm1') -Raw
 $mainFormSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\MainForm.cs') -Raw
+$toolboxSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\IT_Technician_Toolbox.ps1') -Raw
+$preCloneSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PreClone.ps1') -Raw
 Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
 Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'Still working' -and $mainFormSource -match 'elapsedText') 'The Windows application shows elapsed-time heartbeats during quiet collectors'
 Assert-AppTest ($moduleSource -match 'Get-CompuTekCandidateFilesSafe' -and $moduleSource -match 'FileAttributes\]::ReparsePoint' -and $moduleSource -notmatch 'Get-ChildItem -LiteralPath \$root -Recurse') 'Default file discovery uses a junction-safe bounded traversal'
 Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} else \{ 5 \}') 'Full-depth file traversal is reserved for explicit Deep Scan mode'
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
+Assert-AppTest ($moduleSource -match '\[string\[\]\]\$endpoints = @\(\)' -and $moduleSource -match '\$file\.Name -ieq ''desktop\.ini''') 'Process endpoint counting and Startup-folder noise from the field report are corrected'
+Assert-AppTest ($mainFormSource -match 'Technician tools' -and $mainFormSource -match 'StartTechnicianToolbox' -and $mainFormSource -match 'StartFinalSystemCheck' -and $mainFormSource -match 'StartPreClone') 'The Windows application restores the legacy technician tool entry points'
+Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSource -match '__COMPUTEK_PROMPT__:') 'Interactive legacy tools use the EXE technician-response bridge'
+Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
+Assert-AppTest ($mainFormSource -match 'ConfirmSensitiveTool' -and $mainFormSource -match 'MessageBoxDefaultButton\.Button2') 'Advanced technician workflows require a warning with safe default cancellation'
 
 $promptTokens = $null
 $promptErrors = $null
@@ -99,6 +110,9 @@ try {
     foreach ($resource in @(
         'CompuTek.Scanner.Engine.RemoteAccessScanAndRemove.ps1',
         'CompuTek.Scanner.Engine.PostScam_SystemIntegrityScanner.ps1',
+        'CompuTek.Scanner.Engine.IT_Technician_Toolbox.ps1',
+        'CompuTek.Scanner.Engine.FinalSystemCheck_CompuTek.ps1',
+        'CompuTek.Scanner.Engine.PreClone.ps1',
         'CompuTek.Scanner.Engine.CompuTek.Scanner.Common.psm1',
         'CompuTek.Scanner.Engine.RemoteAccessSignatures.json'
     )) {

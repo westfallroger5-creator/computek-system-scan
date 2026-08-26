@@ -9,9 +9,19 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit
 }
 
+function Read-CompuTekInput {
+    param([Parameter(Mandatory)][string]$Prompt)
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
+        [Console]::Out.Flush()
+        return [Console]::In.ReadLine()
+    }
+    return Read-Host $Prompt
+}
+
 # --- Console Setup ---
-$host.UI.RawUI.WindowTitle = "IT Technician Toolbox"
-Clear-Host
+try { $host.UI.RawUI.WindowTitle = "IT Technician Toolbox" } catch {}
+if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
 Write-Host "`n=== IT TECHNICIAN TOOLBOX ===`n" -ForegroundColor Cyan
 
 # --- Log file path ---
@@ -39,7 +49,7 @@ do {
     Write-Host "[11] Enable BitLocker Encryption"
     Write-Host "[0] Reboot System"
     Write-Host "[X] Exit Toolbox"
-    $choice = Read-Host "`nChoose an option"
+    $choice = Read-CompuTekInput "Choose an option"
 
     switch ($choice.ToUpper()) {
         "1" {
@@ -68,7 +78,7 @@ do {
             Log "Tested internet connection"
         }
         "5" {
-            $confirm = Read-Host "Are you sure you want to clear temp files? (Y/N)"
+            $confirm = Read-CompuTekInput "Are you sure you want to clear temp files? (Y/N)"
             if ($confirm -match "^[Yy]$") {
                 Write-Host "`nClearing temporary files..." -ForegroundColor Yellow
                 Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
@@ -92,7 +102,7 @@ do {
                 $i++
             }
             Write-Host "[0] Cancel" -ForegroundColor DarkGray
-            $selection = Read-Host "Select a drive number"
+            $selection = Read-CompuTekInput "Select a drive number"
             if ($selection -ne "0" -and $selection -match "^\d+$" -and $selection -le $drives.Count) {
                 $target = $drives[$selection - 1].Name + ":"
                 Write-Host "`nRunning CHKDSK on $target..." -ForegroundColor Yellow
@@ -164,7 +174,8 @@ do {
     Write-Host "BitLocker restrictions cleared (if any)." -ForegroundColor Green
 
     # --- STEP 3: Detect encryptable drives (skip flash drive) ---
-    $scriptDrive = (Get-Item $PSScriptRoot).PSDrive.Name
+    $toolRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
+    $scriptDrive = (Get-Item $toolRoot).PSDrive.Name
     $allDrives = Get-Volume | Where-Object { $_.DriveLetter -and $_.DriveType -eq 'Fixed' -and $_.DriveLetter -ne $scriptDrive }
     $eligibleDrives = @()
 
@@ -196,7 +207,7 @@ do {
     Write-Host "[A] Encrypt All Listed Drives" -ForegroundColor Yellow
     Write-Host "[0] Cancel" -ForegroundColor DarkGray
 
-    $choiceBL = Read-Host "Select a drive number (or A for all)"
+    $choiceBL = Read-CompuTekInput "Select a drive number (or A for all)"
     $targets = @()
     if ($choiceBL.ToUpper() -eq "A") {
         $targets = $eligibleDrives
@@ -208,7 +219,7 @@ do {
     }
 
     # --- STEP 4: Prepare key storage folder on flash drive ---
-    $FlashDir = $PSScriptRoot
+    $FlashDir = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
     $KeyDir = Join-Path $FlashDir ("BitLockerKeys\" + $env:COMPUTERNAME)
     if (-not (Test-Path $KeyDir)) { New-Item -Path $KeyDir -ItemType Directory | Out-Null }
 
@@ -229,7 +240,7 @@ Write-Host "Encryption will begin automatically after the next reboot." -Foregro
 $pending = ($status -match "Encryption Pending")
 if ($pending) {
     Write-Host "`nSystem reboot required to start encryption on $letter." -ForegroundColor Cyan
-    $confirm = Read-Host "Reboot now? (Y/N)"
+    $confirm = Read-CompuTekInput "Reboot now? (Y/N)"
     if ($confirm -match "^[Yy]$") {
         Write-Host "Restarting system to begin encryption..." -ForegroundColor Yellow
         Restart-Computer -Force
@@ -247,7 +258,7 @@ if ($pending) {
     Write-Host "`nBitLocker encryption complete. Verify with 'manage-bde -status'." -ForegroundColor Cyan
 }
         "0" {
-            $confirmReboot = Read-Host "Are you sure you want to reboot now? (Y/N)"
+            $confirmReboot = Read-CompuTekInput "Are you sure you want to reboot now? (Y/N)"
             if ($confirmReboot -match "^[Yy]$") {
                 Write-Host "`nRebooting system..." -ForegroundColor Yellow
                 Log "System reboot initiated"
@@ -268,8 +279,8 @@ if ($pending) {
 
     if ($choice.ToUpper() -ne "X") {
         Write-Host "`nPress Enter to continue..." -ForegroundColor DarkGray
-        [void][System.Console]::ReadLine()
-        Clear-Host
+        [void](Read-CompuTekInput 'Press Enter to continue')
+        if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
         Write-Host "=== IT TECHNICIAN TOOLBOX ===`n" -ForegroundColor Cyan
     }
 

@@ -74,6 +74,7 @@ namespace CompuTek.Scanner.App
                 startInfo.StandardOutputEncoding = Encoding.UTF8;
                 startInfo.StandardErrorEncoding = Encoding.UTF8;
                 startInfo.EnvironmentVariables["COMPUTEK_SCANNER_APP"] = "1";
+                startInfo.EnvironmentVariables["COMPUTEK_SCANNER_PORTABLE_ROOT"] = AppDomain.CurrentDomain.BaseDirectory;
 
                 process = new Process();
                 process.StartInfo = startInfo;

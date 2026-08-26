@@ -20,6 +20,9 @@ namespace CompuTek.Scanner.App
         private readonly CheckBox scanOnly = new CheckBox();
         private readonly Button remoteButton = new Button();
         private readonly Button postScamButton = new Button();
+        private readonly Button technicianToolboxButton = new Button();
+        private readonly Button finalSystemCheckButton = new Button();
+        private readonly Button preCloneButton = new Button();
         private readonly Button reloadButton = new Button();
         private readonly Button openCaseButton = new Button();
         private readonly RichTextBox output = new RichTextBox();
@@ -65,7 +68,7 @@ namespace CompuTek.Scanner.App
             layout.RowCount = 5;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 92F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 156F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 190F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 82F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 35F));
@@ -85,7 +88,7 @@ namespace CompuTek.Scanner.App
             header.Controls.Add(title);
 
             Label subtitle = new Label();
-            subtitle.Text = "Remote-access review, verified removal, and post-scam evidence collection";
+            subtitle.Text = "Security scanning, verified remediation, evidence collection, and technician utilities";
             subtitle.ForeColor = Color.FromArgb(215, 230, 240);
             subtitle.AutoSize = true;
             subtitle.Location = new Point(23, 56);
@@ -99,6 +102,18 @@ namespace CompuTek.Scanner.App
             catalogLabel.Text = "Loading signature catalog...";
             header.Controls.Add(catalogLabel);
             layout.Controls.Add(header, 0, 0);
+
+            TabControl toolTabs = new TabControl();
+            toolTabs.Dock = DockStyle.Fill;
+            toolTabs.Padding = new Point(18, 5);
+
+            TabPage securityTab = new TabPage("Security scans");
+            securityTab.BackColor = LightBackground;
+            TabPage technicianTab = new TabPage("Technician tools");
+            technicianTab.BackColor = LightBackground;
+            toolTabs.TabPages.Add(securityTab);
+            toolTabs.TabPages.Add(technicianTab);
+            layout.Controls.Add(toolTabs, 0, 1);
 
             Panel commandPanel = new Panel();
             commandPanel.Dock = DockStyle.Fill;
@@ -194,7 +209,71 @@ namespace CompuTek.Scanner.App
             safety.Size = new Size(320, 54);
             safety.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             commandPanel.Controls.Add(safety);
-            layout.Controls.Add(commandPanel, 0, 1);
+            securityTab.Controls.Add(commandPanel);
+
+            Panel technicianPanel = new Panel();
+            technicianPanel.Dock = DockStyle.Fill;
+            technicianPanel.BackColor = LightBackground;
+            technicianPanel.Padding = new Padding(16, 12, 16, 8);
+
+            technicianToolboxButton.Text = "Open IT Technician Toolbox";
+            technicianToolboxButton.BackColor = Blue;
+            technicianToolboxButton.ForeColor = Color.White;
+            technicianToolboxButton.FlatStyle = FlatStyle.Flat;
+            technicianToolboxButton.FlatAppearance.BorderSize = 0;
+            technicianToolboxButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
+            technicianToolboxButton.Location = new Point(18, 16);
+            technicianToolboxButton.Size = new Size(330, 46);
+            technicianToolboxButton.Click += StartTechnicianToolbox;
+            technicianPanel.Controls.Add(technicianToolboxButton);
+
+            Label toolboxDescription = new Label();
+            toolboxDescription.Text = "System/network information, DNS/IP repair, internet test, temp cleanup, SFC, CHKDSK, DISM, Task Manager, print queue, BitLocker, and reboot.";
+            toolboxDescription.Location = new Point(18, 68);
+            toolboxDescription.Size = new Size(330, 55);
+            technicianPanel.Controls.Add(toolboxDescription);
+
+            finalSystemCheckButton.Text = "Run Final System Check";
+            finalSystemCheckButton.BackColor = Green;
+            finalSystemCheckButton.ForeColor = Color.White;
+            finalSystemCheckButton.FlatStyle = FlatStyle.Flat;
+            finalSystemCheckButton.FlatAppearance.BorderSize = 0;
+            finalSystemCheckButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
+            finalSystemCheckButton.Location = new Point(370, 16);
+            finalSystemCheckButton.Size = new Size(330, 46);
+            finalSystemCheckButton.Click += StartFinalSystemCheck;
+            technicianPanel.Controls.Add(finalSystemCheckButton);
+
+            Label finalCheckDescription = new Label();
+            finalCheckDescription.Text = "Readiness checks plus the original hibernation, restore-point, BitLocker, and audio-test actions.";
+            finalCheckDescription.Location = new Point(370, 68);
+            finalCheckDescription.Size = new Size(330, 42);
+            technicianPanel.Controls.Add(finalCheckDescription);
+
+            preCloneButton.Text = "Run Pre-Clone Preparation";
+            preCloneButton.BackColor = Color.FromArgb(180, 92, 28);
+            preCloneButton.ForeColor = Color.White;
+            preCloneButton.FlatStyle = FlatStyle.Flat;
+            preCloneButton.FlatAppearance.BorderSize = 0;
+            preCloneButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
+            preCloneButton.Location = new Point(722, 16);
+            preCloneButton.Size = new Size(330, 46);
+            preCloneButton.Click += StartPreClone;
+            technicianPanel.Controls.Add(preCloneButton);
+
+            Label preCloneDescription = new Label();
+            preCloneDescription.Text = "Advanced: BitLocker decryption/key backup, Secure Boot check, disk check, and optional reboot.";
+            preCloneDescription.Location = new Point(722, 68);
+            preCloneDescription.Size = new Size(330, 42);
+            technicianPanel.Controls.Add(preCloneDescription);
+
+            Label technicianWarning = new Label();
+            technicianWarning.Text = "Advanced actions can change encryption, networking, files, disks, or reboot Windows. Review every prompt before continuing.";
+            technicianWarning.ForeColor = Color.FromArgb(150, 60, 0);
+            technicianWarning.Location = new Point(18, 125);
+            technicianWarning.Size = new Size(1034, 24);
+            technicianPanel.Controls.Add(technicianWarning);
+            technicianTab.Controls.Add(technicianPanel);
 
             Panel statusPanel = new Panel();
             statusPanel.Dock = DockStyle.Fill;
@@ -307,6 +386,40 @@ namespace CompuTek.Scanner.App
             StartEngine("Post-scam evidence collection", engineLayout.PostScamScannerPath, arguments);
         }
 
+        private void StartTechnicianToolbox(object sender, EventArgs args)
+        {
+            if (!ConfirmSensitiveTool(
+                "Open IT Technician Toolbox",
+                "The toolbox includes repair actions that can clear temporary files or the print queue, renew network settings, run disk repair, enable BitLocker, or reboot Windows. Each applicable action still asks for confirmation.\r\n\r\nOpen the toolbox?")) return;
+            StartEngine("IT Technician Toolbox", engineLayout.TechnicianToolboxPath, new List<string>());
+        }
+
+        private void StartFinalSystemCheck(object sender, EventArgs args)
+        {
+            if (!ConfirmSensitiveTool(
+                "Run Final System Check",
+                "The original Final System Check is not read-only. It can disable hibernation, adjust readiness settings, create a restore point, and run an audio test.\r\n\r\nContinue?")) return;
+            StartEngine("Final System Check", engineLayout.FinalSystemCheckPath, new List<string>());
+        }
+
+        private void StartPreClone(object sender, EventArgs args)
+        {
+            if (!ConfirmSensitiveTool(
+                "Run Pre-Clone Preparation",
+                "Pre-Clone is an advanced workflow. It can back up BitLocker recovery information to this USB folder, decrypt fixed drives, change auto-encryption settings, run disk repair, and reboot Windows.\r\n\r\nContinue only on the intended computer.")) return;
+            StartEngine("Pre-Clone Preparation", engineLayout.PreClonePath, new List<string>());
+        }
+
+        private bool ConfirmSensitiveTool(string title, string message)
+        {
+            return MessageBox.Show(
+                message,
+                title,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        }
+
         private List<string> CommonArguments()
         {
             List<string> arguments = new List<string>();
@@ -326,10 +439,9 @@ namespace CompuTek.Scanner.App
 
             try
             {
+                string scriptFileName = Path.GetFileName(scriptPath);
                 engineLayout = EmbeddedEngine.Prepare();
-                string selectedScript = Path.GetFileName(scriptPath).Equals("PostScam_SystemIntegrityScanner.ps1", StringComparison.OrdinalIgnoreCase)
-                    ? engineLayout.PostScamScannerPath
-                    : engineLayout.RemoteScannerPath;
+                string selectedScript = ResolveStagedScript(scriptFileName);
                 output.Clear();
                 AppendOutput("Starting " + displayName + "...", Color.LightSkyBlue);
                 AppendOutput("Engine: " + engineLayout.DirectoryPath, Color.DimGray);
@@ -364,6 +476,16 @@ namespace CompuTek.Scanner.App
                 AppendOutput("ERROR: " + exception.Message, Color.Salmon);
                 MessageBox.Show(exception.Message, "Scanner start error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private string ResolveStagedScript(string scriptFileName)
+        {
+            if (scriptFileName.Equals("RemoteAccessScanAndRemove.ps1", StringComparison.OrdinalIgnoreCase)) return engineLayout.RemoteScannerPath;
+            if (scriptFileName.Equals("PostScam_SystemIntegrityScanner.ps1", StringComparison.OrdinalIgnoreCase)) return engineLayout.PostScamScannerPath;
+            if (scriptFileName.Equals("IT_Technician_Toolbox.ps1", StringComparison.OrdinalIgnoreCase)) return engineLayout.TechnicianToolboxPath;
+            if (scriptFileName.Equals("FinalSystemCheck_CompuTek.ps1", StringComparison.OrdinalIgnoreCase)) return engineLayout.FinalSystemCheckPath;
+            if (scriptFileName.Equals("PreClone.ps1", StringComparison.OrdinalIgnoreCase)) return engineLayout.PreClonePath;
+            throw new InvalidOperationException("Unknown embedded tool: " + scriptFileName);
         }
 
         private void HandleEngineOutput(object sender, EngineOutputEventArgs args)
@@ -406,7 +528,7 @@ namespace CompuTek.Scanner.App
                 if (engineHost != null) engineHost.Dispose();
                 engineHost = null;
                 runningTimer.Stop();
-                string status = args.ExitCode == 0 ? "Scanner completed" : "Scanner stopped with exit code " + args.ExitCode;
+                string status = args.ExitCode == 0 ? runningDisplayName + " completed" : runningDisplayName + " stopped with exit code " + args.ExitCode;
                 SetRunningState(false, status);
                 AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : Color.Salmon);
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
@@ -429,7 +551,7 @@ namespace CompuTek.Scanner.App
             {
                 AppendOutput(
                     "Still working — " + runningDisplayName + " has been running for " + elapsedText +
-                    ". Large user folders can make this step take several minutes.",
+                    ". The current Windows operation may take several minutes.",
                     Color.DarkGray);
                 lastHeartbeatUtc = now;
             }
@@ -494,6 +616,9 @@ namespace CompuTek.Scanner.App
         {
             remoteButton.Enabled = enabled;
             postScamButton.Enabled = enabled;
+            technicianToolboxButton.Enabled = enabled;
+            finalSystemCheckButton.Enabled = enabled;
+            preCloneButton.Enabled = enabled;
             lookbackDays.Enabled = enabled;
             deepScan.Enabled = enabled;
             includeHashes.Enabled = enabled;
@@ -516,8 +641,8 @@ namespace CompuTek.Scanner.App
             {
                 args.Cancel = true;
                 MessageBox.Show(
-                    "The scanner is still running. Wait for it to finish before closing the application so remediation is not interrupted.",
-                    "Scanner still running",
+                    "A scanner or technician tool is still running. Wait for it to finish before closing the application so work is not interrupted.",
+                    "Tool still running",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
             }

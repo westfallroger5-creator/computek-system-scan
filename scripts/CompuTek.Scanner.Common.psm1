@@ -258,7 +258,7 @@ function Find-CompuTekProductMatch {
     $fileName = if ($Evidence.FileName) { ([string]$Evidence.FileName).ToLowerInvariant() } elseif ($path) { [IO.Path]::GetFileName($path).ToLowerInvariant() } else { '' }
     $artifactType = [string]$Evidence.ArtifactType
     $textFields = @($name, $displayName, $path, $commandLine, $productName, $description, $packageName)
-    $matches = @()
+    $productMatches = @()
 
     foreach ($product in @($Catalog.products)) {
         $reasons = New-Object System.Collections.Generic.List[string]
@@ -276,8 +276,9 @@ function Find-CompuTekProductMatch {
         foreach ($alias in (ConvertTo-CompuTekArray $product.aliases)) {
             $needle = ([string]$alias).ToLowerInvariant()
             if (-not $needle) { continue }
+            $aliasPattern = '(?i)(?<![a-z0-9])' + ([regex]::Escape($needle)) + '(?![a-z0-9])'
             foreach ($field in $textFields) {
-                if ($field -and $field.Contains($needle)) {
+                if ($field -and $field -match $aliasPattern) {
                     $reasons.Add("product-text:$alias")
                     break
                 }
@@ -304,16 +305,20 @@ function Find-CompuTekProductMatch {
         }
 
         if ($reasons.Count -gt 0) {
-            $uniqueReasons = @($reasons | Sort-Object -Unique)
-            $matches += [pscustomobject]@{
+            [string[]]$uniqueReasons = @($reasons | Sort-Object -Unique)
+            $hasStrongReason = @($uniqueReasons | Where-Object {
+                $_ -match '^(original-filename|service|package|executable):'
+            }).Count -gt 0
+            $strength = if ($uniqueReasons.Length -ge 2 -or $hasStrongReason) { 'High' } else { 'Medium' }
+            $productMatches += [pscustomobject]@{
                 Product = $product
                 Reasons = $uniqueReasons
-                Strength = if ($uniqueReasons.Count -ge 2 -or ($uniqueReasons -match '^(original-filename|service|package|executable):')) { 'High' } else { 'Medium' }
+                Strength = $strength
             }
         }
     }
 
-    return @($matches)
+    return @($productMatches)
 }
 
 function New-CompuTekArtifact {
@@ -470,7 +475,10 @@ function Get-CompuTekProcessArtifacts {
         $path = $process.ExecutablePath
         if (-not $path) { $path = Get-CompuTekExecutablePath $process.CommandLine }
         $pidKey = [string]$process.ProcessId
-        $endpoints = if ($ConnectionMap.ContainsKey($pidKey)) { @($ConnectionMap[$pidKey]) } else { @() }
+        [string[]]$endpoints = @()
+        if ($ConnectionMap.ContainsKey($pidKey)) {
+            $endpoints = @($ConnectionMap[$pidKey] | ForEach-Object {[string]$_})
+        }
         $artifact = New-CompuTekArtifact @{
             ArtifactType = 'Process'; Source = 'RunningProcesses'; Name = $process.Name
             DisplayName = $process.Name; Path = $path; CommandLine = $process.CommandLine
@@ -586,6 +594,8 @@ function Get-CompuTekPersistenceArtifacts {
         try {
             if (-not (Test-Path -LiteralPath $folder -ErrorAction Stop)) { continue }
             foreach ($file in Get-ChildItem -LiteralPath $folder -File -Force -ErrorAction Stop) {
+                if ($file.Name -ieq 'desktop.ini') { continue }
+                if ($file.Extension -notin @('.lnk','.url','.exe','.com','.bat','.cmd','.ps1','.vbs','.js','.wsf')) { continue }
                 $target = $file.FullName
                 $command = $file.FullName
                 if ($shell -and $file.Extension -ieq '.lnk') {
@@ -850,13 +860,17 @@ function Invoke-CompuTekRemoteAccessScan {
         } elseif ($artifact.ArtifactType -eq 'Service' -and (Test-CompuTekProgramDataPath $artifact.Path) -and $artifact.SignatureStatus -notin @('Valid','Unknown')) {
             $reason = 'Unsigned or invalidly signed service executable is under ProgramData'
             $confidence = 'Medium'
-        } elseif ($artifact.ArtifactType -in @('RunKey','ScheduledTask','StartupFile') -and (Test-CompuTekUserWritablePath $artifact.Path)) {
+        } elseif (
+            $artifact.ArtifactType -in @('RunKey','ScheduledTask','StartupFile') -and
+            (Test-CompuTekUserWritablePath $artifact.Path) -and
+            -not ($artifact.SignatureStatus -eq 'Valid' -and ("$($artifact.CompanyName) $($artifact.Signer)" -match '(?i)Microsoft'))
+        ) {
             $reason = 'Persistence launches an executable from a user-writable location'
-            $confidence = 'Medium'
+            $confidence = if ($artifact.SignatureStatus -eq 'Valid') {'Low'} else {'Medium'}
         } elseif ($artifact.ArtifactType -eq 'Process' -and (Test-CompuTekUserWritablePath $artifact.Path) -and $artifact.ConnectionCount -gt 0) {
             $reason = 'Running executable in a user-writable location has active network connections'
             $confidence = 'Medium'
-        } elseif ($artifact.HeuristicReason) {
+        } elseif ($artifact.HeuristicReason -and ([string]$artifact.Path -notmatch '(?i)\\AppData\\Local\\Microsoft\\WindowsApps\\')) {
             $reason = $artifact.HeuristicReason
             $confidence = $artifact.HeuristicConfidence
         }
