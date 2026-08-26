@@ -39,6 +39,7 @@ $mainFormSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Sc
 $toolboxSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\IT_Technician_Toolbox.ps1') -Raw
 $preCloneSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PreClone.ps1') -Raw
 $finalCheckSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1') -Raw
+$brandingSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\Branding.cs') -Raw
 Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
 Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'Still working' -and $mainFormSource -match 'elapsedText') 'The Windows application shows elapsed-time heartbeats during quiet collectors'
 Assert-AppTest ($mainFormSource -match 'writeHeartbeatToOutput' -and $mainFormSource -match '!String\.Equals\(displayName, "IT Technician Toolbox"' -and $mainFormSource -match 'if \(writeHeartbeatToOutput &&') 'Technician Toolbox suppresses repetitive output heartbeats while the status bar keeps elapsed time'
@@ -47,6 +48,7 @@ Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} el
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
 Assert-AppTest ($moduleSource -match '\[string\[\]\]\$endpoints = @\(\)' -and $moduleSource -match '\$file\.Name -ieq ''desktop\.ini''') 'Process endpoint counting and Startup-folder noise from the field report are corrected'
 Assert-AppTest ($mainFormSource -match 'Technician tools' -and $mainFormSource -match 'StartTechnicianToolbox' -and $mainFormSource -match 'StartFinalSystemCheck' -and $mainFormSource -match 'StartPreClone') 'The Windows application restores the legacy technician tool entry points'
+Assert-AppTest ($mainFormSource -match 'PictureBox brandLogo' -and $mainFormSource -match 'Branding\.CreateLogoImage' -and $brandingSource -match 'CompuTek\.Scanner\.Branding\.CompuTekLogo\.png') 'The application header loads the embedded CompuTek logo'
 Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSource -match '__COMPUTEK_PROMPT__:' -and $finalCheckSource -match '__COMPUTEK_PROMPT__:') 'Interactive technician tools use the EXE technician-response bridge'
 Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remoteSource -match 'CompuTekData' -and $postScamSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $postScamSource -match 'CompuTekData') 'Remote and post-scam evidence is stored beside the EXE on the service USB'
@@ -165,6 +167,7 @@ try {
     $assembly = [Reflection.Assembly]::LoadFile($exePath)
     $resources = @($assembly.GetManifestResourceNames())
     foreach ($resource in @(
+        'CompuTek.Scanner.Branding.CompuTekLogo.png',
         'CompuTek.Scanner.Engine.RemoteAccessScanAndRemove.ps1',
         'CompuTek.Scanner.Engine.PostScam_SystemIntegrityScanner.ps1',
         'CompuTek.Scanner.Engine.IT_Technician_Toolbox.ps1',
@@ -176,6 +179,21 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.3.1.0') 'Built EXE reports version 1.3.1.0'
+    $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
+    $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
+    $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}
+    try {
+        Assert-AppTest ($null -ne $embeddedLogo -and $embeddedLogo.Width -eq 86 -and $embeddedLogo.Height -eq 57) 'Embedded CompuTek logo retains the approved 86x57 artwork'
+    } finally {
+        if ($embeddedLogo) {$embeddedLogo.Dispose()}
+    }
+    $associatedIcon = [Drawing.Icon]::ExtractAssociatedIcon($exePath)
+    try {
+        Assert-AppTest ($null -ne $associatedIcon) 'Built EXE publishes a Windows program icon derived from the CompuTek logo'
+    } finally {
+        if ($associatedIcon) {$associatedIcon.Dispose()}
+    }
     $validatorType = $assembly.GetType('CompuTek.Scanner.App.CatalogValidator',$false)
     Assert-AppTest ($null -ne $validatorType) 'EXE contains catalog validation logic'
     if ($validatorType) {

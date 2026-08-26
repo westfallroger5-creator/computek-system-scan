@@ -2,6 +2,8 @@
 
 `CompuTekScanner.exe` is the technician-facing Windows application for remote-access review/removal, post-scam evidence collection, and CompuTek technician utilities. It requests administrator rights when opened; the obsolete BAT and PowerShell launchers are no longer used.
 
+The CompuTek logo is embedded in the application header and program icon. The USB does not need a separate logo file.
+
 ## Files to keep together
 
 - `CompuTekScanner.exe` — the application and embedded, versioned scanner engine.
