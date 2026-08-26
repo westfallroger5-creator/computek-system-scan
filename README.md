@@ -14,10 +14,6 @@ Build and test it on Windows with:
 .\tests\ScannerApp.Tests.ps1
 ```
 
-## Legacy BAT/PowerShell launcher
-
-The original `Launch_CTSupport_Toolbox.bat` and `CTSupport_Toolbox.ps1` remain available for compatibility. New USB deployments should use `CompuTekScanner.exe`. The Windows program launches each technician workflow individually and does not expose the legacy **Run ALL scripts** action, which could start cleanup, encryption, disk-repair, and reboot workflows together.
-
 > All tools request administrative rights up front so they can read system state, create logs, and make changes when needed.
 
 ## Included tools
@@ -26,20 +22,21 @@ The original `Launch_CTSupport_Toolbox.bat` and `CTSupport_Toolbox.ps1` remain a
 End-of-job readiness checklist:
 - Reports Windows edition and activation status, disables hibernation, and confirms BitLocker policy flags are not blocking encryption.
 - Checks antivirus posture (Defender or third-party), Splashtop service health, pending Windows Updates, and Device Manager errors.
-- Attempts to enable System Protection and create a restore point when allowed by policy.
-- Verifies audio devices, un-mutes/sets volume to 50%, and plays a short melody to confirm speaker output.
+- Enables System Protection when needed and creates the required end-of-job restore point when Windows policy allows it.
+- Verifies audio devices, un-mutes/sets volume to 50%, plays a short melody, and requires the technician to confirm that it was heard.
 
 ### IT_Technician_Toolbox.ps1
 Quick access maintenance menu with logging to `%TEMP%\toolbox_log.txt`:
 - System and network information, DNS flush + IP renew, internet connectivity tests.
 - Temp file cleanup, SFC, CHKDSK (drive picker), DISM restore health, Task Manager launch, and print queue reset.
-- BitLocker “used space only” enablement workflow that stores recovery keys under `BitLockerKeys/<COMPUTERNAME>` next to the script.
+- BitLocker “used space only” enablement workflow that requires typed technician approval, saves and reads back complete 48-digit recovery passwords under `BitLockerKeys/<COMPUTERNAME>` on the service USB before encryption, and uses TPM protection for the Windows drive.
 
 ### PreClone.ps1
 Pre-imaging helper focused on BitLocker and disk health:
-- Detects encrypted volumes, exports recovery info, decrypts if approved, and monitors progress.
-- Optionally blocks automatic re-encryption and disables the BitLocker service when decryption occurred.
-- Checks Secure Boot state, runs CHKDSK (smart mode), and summarizes actions, including key save location.
+- Uses structured BitLocker information rather than language-dependent console text. If an encrypted volume lacks a 48-digit recovery-password protector, it adds one before decryption.
+- Saves the full recovery password and protector ID under `BitLockerKeys/<COMPUTERNAME>` on the service USB, reads the file back, validates every password, and records a SHA-256 hash. Decryption is blocked if this verification fails or if the key would be stored on the drive being decrypted.
+- Requires the technician to type `PREPARE FOR CLONE`, starts decryption, and reports progress until every target volume is fully decrypted. It applies temporary auto-encryption prevention without disabling the BitLocker service.
+- Runs non-destructive CHKDSK scans, preserves each result, and reports **READY FOR ACRONIS CLONE: YES** only when BitLocker inspection, complete decryption, and all disk checks pass.
 
 ### PostScam_SystemIntegrityScanner.ps1
 Read-only post-scam evidence collection with a configurable 30-day default lookback:
@@ -88,8 +85,8 @@ powershell.exe -ExecutionPolicy Bypass -File .\tests\Scanner.Tests.ps1
 `-DeepScan` may take a long time. The standard scan already recursively covers every profile's AppData, Desktop, Downloads, ProgramData, and Windows Temp.
 
 ## Notes
-- The launcher sorts scripts alphabetically; rename files to control menu order.
-- All scripts run with `-ExecutionPolicy Bypass` to simplify use on locked-down machines.
-- Keep the `scripts/` folder alongside the launcher so discovery and key-storage paths remain valid.
+- USB deployments use `CompuTekScanner.exe`; the obsolete BAT and PowerShell launchers have been removed.
+- The EXE contains the trusted workflow scripts. Keep `RemoteAccessSignatures.json` beside it so remote-software signatures can be updated without rebuilding.
+- BitLocker recovery-password files are confidential. Secure or remove them from the service USB after the clone job.
 - Remote-access software is dual-use. Confirm whether a detected product is an approved company support tool before remediation.
 - A post-scam scan cannot prove that no data was stolen or that no custom/fileless backdoor exists. Preserve the case folder and use router, firewall, identity-provider, banking, email, EDR, and other available logs when the incident warrants it.

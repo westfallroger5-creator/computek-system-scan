@@ -2,12 +2,25 @@
 #  FINAL SYSTEM READINESS CHECK - COMPU-TEK
 # =====================================================
 try { $Host.UI.RawUI.WindowTitle = "Final System Readiness Check - Compu-TEK" } catch {}
+
+function Read-CompuTekInput {
+    param([Parameter(Mandatory)][string]$Prompt)
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
+        [Console]::Out.Flush()
+        return [Console]::In.ReadLine()
+    }
+    return Read-Host $Prompt
+}
+
 Write-Host "`n===================================================" -ForegroundColor Cyan
 Write-Host "      FINAL SYSTEM READINESS CHECK - COMPU-TEK" -ForegroundColor Cyan
 Write-Host "===================================================`n" -ForegroundColor Cyan
 
 $BitLockerSkipped = $false
 $SpeakerTestFailed = $false
+$HibernationFailed = $false
+$RestorePointFailed = $false
 
 # --- 1. Windows Edition & Activation ---
 $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").EditionID
@@ -27,24 +40,23 @@ try {
 
 # --- 1b. Disable and verify Hibernation ---
 try {
-    Write-Host "`n[INFO] Checking hibernation status..." -ForegroundColor Cyan
-    $hiberStatus = (powercfg /a) | Select-String "Hibernate"
+    Write-Host "`n[INFO] Disabling hibernation as part of the standard final-store workflow..." -ForegroundColor Cyan
+    & powercfg.exe /hibernate off | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "powercfg returned exit code $LASTEXITCODE"
+    }
 
-    if ($hiberStatus -match "not available") {
-        Write-Host "[OK] Hibernation already disabled." -ForegroundColor Green
+    $powerSettings = Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Power' -ErrorAction Stop
+    if ($null -ne $powerSettings.PSObject.Properties['HibernateEnabled'] -and
+        [int]$powerSettings.HibernateEnabled -eq 0) {
+        Write-Host "[OK] Hibernation is disabled." -ForegroundColor Green
     } else {
-        Write-Host "[INFO] Disabling hibernation..." -ForegroundColor Cyan
-        powercfg -h off | Out-Null
-        Start-Sleep -Seconds 1
-        $check = (powercfg /a) | Select-String "not available"
-        if ($check) {
-            Write-Host "[OK] Hibernation successfully disabled." -ForegroundColor Green
-        } else {
-            Write-Host "[WARN] Could not confirm hibernation is off." -ForegroundColor Yellow
-        }
+        $HibernationFailed = $true
+        Write-Host "[WARN] Hibernation could not be verified as disabled." -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "[WARN] Unable to modify hibernation settings." -ForegroundColor Yellow
+    $HibernationFailed = $true
+    Write-Host "[WARN] Unable to disable or verify hibernation: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 # --- 2. BitLocker (skip for Home/Core editions) ---
@@ -74,6 +86,14 @@ else {
             }
         }
         Write-Host "[OK] BitLocker policy flags verified." -ForegroundColor Green
+
+        # Older Pre-Clone versions disabled BDESVC. Repair that state so the
+        # final computer can manage BitLocker normally again.
+        $bitLockerService = Get-CimInstance Win32_Service -Filter "Name='BDESVC'" -ErrorAction SilentlyContinue
+        if ($bitLockerService -and $bitLockerService.StartMode -eq 'Disabled') {
+            Write-Host "[FIX] Restoring the BitLocker service to Manual startup." -ForegroundColor Yellow
+            Set-Service -Name 'BDESVC' -StartupType Manual -ErrorAction Stop
+        }
 
         # --- Step 2: Check BitLocker status per drive ---
         $oldPref = $WarningPreference
@@ -181,7 +201,7 @@ try {
 
 # --- 7. System Restore Point (Hardened for field use) ---
 try {
-    Write-Host "`n[INFO] Checking System Restore configuration..." -ForegroundColor Cyan
+    Write-Host "`n[INFO] Enabling System Protection and creating the required restore point..." -ForegroundColor Cyan
 
     # Detect system drive
     $sysDrive = (Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue).SystemDrive
@@ -190,42 +210,64 @@ try {
         throw "No system drive" 
     }
 
-    # Check if System Protection is enabled
-    $shadowInfo = vssadmin list shadowstorage 2>$null
-    $enabled = $shadowInfo -match [regex]::Escape($sysDrive)
-
-    if (-not $enabled) {
-        Write-Host "[INFO] System Protection appears OFF for $sysDrive. Attempting to enable..." -ForegroundColor Cyan
-        try {
-            Enable-ComputerRestore -Drive $sysDrive -ErrorAction Stop
-            Write-Host "[OK] System Protection enabled." -ForegroundColor Green
-        } catch {
-            Write-Host "[WARN] Could not enable System Protection. It may be disabled by policy on this machine." -ForegroundColor Yellow
-            Write-Host "[INFO] Skipping restore point creation." -ForegroundColor DarkGray
-            throw "ProtectionOff"
-        }
-    } else {
-        Write-Host "[OK] System Protection already active on $sysDrive." -ForegroundColor Green
+    # Enable-ComputerRestore is safe to call when protection is already enabled
+    # and avoids parsing localized vssadmin text.
+    try {
+        $restoreDrive = $sysDrive.TrimEnd('\') + '\'
+        Enable-ComputerRestore -Drive $restoreDrive -ErrorAction Stop
+        Write-Host "[OK] System Protection is enabled on $restoreDrive." -ForegroundColor Green
+    } catch {
+        Write-Host "[WARN] Could not enable System Protection. It may be disabled by policy on this machine." -ForegroundColor Yellow
+        Write-Host "[INFO] Skipping restore point creation." -ForegroundColor DarkGray
+        $RestorePointFailed = $true
+        throw "ProtectionOff"
     }
-
     # Attempt to create restore point
     try {
-        $dateLabel = (Get-Date).ToString("yyyy-MM-dd_HHmm")
+        $dateLabel = (Get-Date).ToString("yyyy-MM-dd_HHmmss")
+        $restoreDescription = "Compu-TEK Readiness Check - $dateLabel"
         Write-Host "[INFO] Creating System Restore Point..." -ForegroundColor Cyan
 
-        Checkpoint-Computer `
-            -Description "Compu-TEK Readiness Check - $dateLabel" `
-            -RestorePointType MODIFY_SETTINGS `
-            -ErrorAction Stop
+        # Windows normally skips a new point when another was made during the
+        # last 24 hours. Temporarily allow this required final-store point, then
+        # restore the customer's original frequency setting.
+        $restoreRegistryPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+        $frequencyName = 'SystemRestorePointCreationFrequency'
+        if (-not (Test-Path -LiteralPath $restoreRegistryPath)) {
+            New-Item -Path $restoreRegistryPath -Force | Out-Null
+        }
+        $restoreProperties = Get-ItemProperty -LiteralPath $restoreRegistryPath -ErrorAction Stop
+        $frequencyWasPresent = $null -ne $restoreProperties.PSObject.Properties[$frequencyName]
+        $originalFrequency = if ($frequencyWasPresent) { $restoreProperties.$frequencyName } else { $null }
+
+        try {
+            New-ItemProperty -LiteralPath $restoreRegistryPath -Name $frequencyName -PropertyType DWord -Value 0 -Force | Out-Null
+            Checkpoint-Computer -Description $restoreDescription -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+        }
+        finally {
+            if ($frequencyWasPresent) {
+                New-ItemProperty -LiteralPath $restoreRegistryPath -Name $frequencyName -PropertyType DWord -Value $originalFrequency -Force | Out-Null
+            } else {
+                Remove-ItemProperty -LiteralPath $restoreRegistryPath -Name $frequencyName -ErrorAction SilentlyContinue
+            }
+        }
+
+        $createdPoint = @(Get-ComputerRestorePoint -ErrorAction Stop | Where-Object {
+            $_.Description -eq $restoreDescription
+        } | Select-Object -First 1)
+        if ($createdPoint.Count -eq 0) {
+            throw 'Windows did not return the newly requested restore point.'
+        }
 
         Write-Host "[OK] Restore Point created successfully." -ForegroundColor Green
     }
     catch {
+        $RestorePointFailed = $true
         Write-Host "[WARN] Restore point could NOT be created. (Likely VSS or policy issue)" -ForegroundColor Yellow
     }
-
 } catch {
     # This catches all failures, but *never* ends the script
+    $RestorePointFailed = $true
     Write-Host "[INFO] System Restore section skipped due to environment restrictions." -ForegroundColor DarkGray
 }
 
@@ -356,7 +398,14 @@ public class VolumeControl {
                 }
             }
 
-            Write-Host "[OK] Speaker test melody completed successfully." -ForegroundColor Green
+            Write-Host "[INFO] Speaker test melody finished." -ForegroundColor Cyan
+            $heardResponse = Read-CompuTekInput 'Did you clearly hear the speaker test? (Y/N)'
+            if ($heardResponse -match '^[Yy]$') {
+                Write-Host "[OK] Technician confirmed audible speaker output." -ForegroundColor Green
+            } else {
+                Write-Host "[WARN] Technician did not confirm audible speaker output." -ForegroundColor Yellow
+                $SpeakerTestFailed = $true
+            }
         } catch {
             Write-Host "[WARN] Speaker test failed during melody playback." -ForegroundColor Yellow
             $SpeakerTestFailed = $true
@@ -382,7 +431,13 @@ if ($BitLockerSkipped) {
     Write-Host "[INFO] BitLocker test skipped automatically due to Home/Core edition." -ForegroundColor DarkGray
 }
 if ($SpeakerTestFailed) {
-    Write-Host "[WARN] Speaker test failed -- no audible output detected." -ForegroundColor Yellow
+    Write-Host "[WARN] Speaker readiness failed -- audible output was not confirmed." -ForegroundColor Yellow
+}
+if ($HibernationFailed) {
+    Write-Host "[WARN] Required final action failed: hibernation is not confirmed off." -ForegroundColor Yellow
+}
+if ($RestorePointFailed) {
+    Write-Host "[WARN] Required final action failed: a restore point was not confirmed." -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "===================================================" -ForegroundColor Cyan
