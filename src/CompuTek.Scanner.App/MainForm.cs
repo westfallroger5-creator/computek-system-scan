@@ -42,9 +42,6 @@ namespace CompuTek.Scanner.App
         private string runningDisplayName;
         private string currentStage;
         private DateTime engineStartedUtc;
-        private DateTime lastEngineOutputUtc;
-        private DateTime lastHeartbeatUtc;
-        private bool writeHeartbeatToOutput;
         private string sessionLogPath;
 
         public MainForm()
@@ -119,13 +116,50 @@ namespace CompuTek.Scanner.App
             toolTabs.Dock = DockStyle.Fill;
             toolTabs.Padding = new Point(18, 5);
 
+            TabPage finalCheckTab = new TabPage("Final system check");
+            finalCheckTab.BackColor = LightBackground;
             TabPage securityTab = new TabPage("Security scans");
             securityTab.BackColor = LightBackground;
             TabPage technicianTab = new TabPage("Technician tools");
             technicianTab.BackColor = LightBackground;
+            toolTabs.TabPages.Add(finalCheckTab);
             toolTabs.TabPages.Add(securityTab);
             toolTabs.TabPages.Add(technicianTab);
+            toolTabs.SelectedTab = finalCheckTab;
             layout.Controls.Add(toolTabs, 0, 1);
+
+            Panel finalCheckPanel = new Panel();
+            finalCheckPanel.Dock = DockStyle.Fill;
+            finalCheckPanel.BackColor = LightBackground;
+            finalCheckPanel.Padding = new Padding(20, 14, 20, 10);
+
+            finalSystemCheckButton.Text = "&Run Final System Check";
+            finalSystemCheckButton.AccessibleName = "Run Final System Check";
+            finalSystemCheckButton.AccessibleDescription = "Run the standard final-store readiness checklist.";
+            finalSystemCheckButton.BackColor = Green;
+            finalSystemCheckButton.ForeColor = Color.White;
+            finalSystemCheckButton.FlatStyle = FlatStyle.Flat;
+            finalSystemCheckButton.FlatAppearance.BorderSize = 0;
+            finalSystemCheckButton.Font = new Font("Segoe UI Semibold", 13F, FontStyle.Bold);
+            finalSystemCheckButton.Location = new Point(24, 22);
+            finalSystemCheckButton.Size = new Size(360, 64);
+            finalSystemCheckButton.Click += StartFinalSystemCheck;
+            finalCheckPanel.Controls.Add(finalSystemCheckButton);
+
+            Label finalCheckDescription = new Label();
+            finalCheckDescription.Text = "Most-used store workflow: disable hibernation, verify activation, Windows security, updates and devices, create a restore point, and confirm working audio.";
+            finalCheckDescription.Font = new Font("Segoe UI", 10.5F, FontStyle.Regular);
+            finalCheckDescription.Location = new Point(414, 24);
+            finalCheckDescription.Size = new Size(710, 62);
+            finalCheckPanel.Controls.Add(finalCheckDescription);
+
+            Label finalCheckShortcut = new Label();
+            finalCheckShortcut.Text = "Start here when preparing a repaired computer to leave the store. Keyboard: Alt+R.";
+            finalCheckShortcut.ForeColor = Color.FromArgb(60, 80, 92);
+            finalCheckShortcut.Location = new Point(24, 110);
+            finalCheckShortcut.Size = new Size(1050, 34);
+            finalCheckPanel.Controls.Add(finalCheckShortcut);
+            finalCheckTab.Controls.Add(finalCheckPanel);
 
             Panel commandPanel = new Panel();
             commandPanel.Dock = DockStyle.Fill;
@@ -246,37 +280,20 @@ namespace CompuTek.Scanner.App
             toolboxDescription.Size = new Size(330, 55);
             technicianPanel.Controls.Add(toolboxDescription);
 
-            finalSystemCheckButton.Text = "Run Final System Check";
-            finalSystemCheckButton.BackColor = Green;
-            finalSystemCheckButton.ForeColor = Color.White;
-            finalSystemCheckButton.FlatStyle = FlatStyle.Flat;
-            finalSystemCheckButton.FlatAppearance.BorderSize = 0;
-            finalSystemCheckButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            finalSystemCheckButton.Location = new Point(370, 16);
-            finalSystemCheckButton.Size = new Size(330, 46);
-            finalSystemCheckButton.Click += StartFinalSystemCheck;
-            technicianPanel.Controls.Add(finalSystemCheckButton);
-
-            Label finalCheckDescription = new Label();
-            finalCheckDescription.Text = "Standard final-store check: disable hibernation, create a restore point, verify updates/devices/security, and confirm audible sound.";
-            finalCheckDescription.Location = new Point(370, 68);
-            finalCheckDescription.Size = new Size(330, 55);
-            technicianPanel.Controls.Add(finalCheckDescription);
-
             preCloneButton.Text = "Run Pre-Clone Preparation";
             preCloneButton.BackColor = Color.FromArgb(180, 92, 28);
             preCloneButton.ForeColor = Color.White;
             preCloneButton.FlatStyle = FlatStyle.Flat;
             preCloneButton.FlatAppearance.BorderSize = 0;
             preCloneButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            preCloneButton.Location = new Point(722, 16);
+            preCloneButton.Location = new Point(370, 16);
             preCloneButton.Size = new Size(330, 46);
             preCloneButton.Click += StartPreClone;
             technicianPanel.Controls.Add(preCloneButton);
 
             Label preCloneDescription = new Label();
             preCloneDescription.Text = "Acronis gate: verify complete BitLocker recovery keys on the USB, fully decrypt fixed drives, then pass CHKDSK.";
-            preCloneDescription.Location = new Point(722, 68);
+            preCloneDescription.Location = new Point(370, 68);
             preCloneDescription.Size = new Size(330, 55);
             technicianPanel.Controls.Add(preCloneDescription);
 
@@ -453,7 +470,6 @@ namespace CompuTek.Scanner.App
                 string selectedScript = ResolveStagedScript(scriptFileName);
                 sessionLogPath = null;
                 sessionLogPath = CreateSessionLog(displayName);
-                writeHeartbeatToOutput = !String.Equals(displayName, "IT Technician Toolbox", StringComparison.Ordinal);
                 output.Clear();
                 AppendOutput("Starting " + displayName + "...", Color.LightSkyBlue);
                 AppendOutput("Engine: " + engineLayout.DirectoryPath, Color.DimGray);
@@ -465,8 +481,6 @@ namespace CompuTek.Scanner.App
                 runningDisplayName = displayName;
                 currentStage = "Starting scanner engine";
                 engineStartedUtc = DateTime.UtcNow;
-                lastEngineOutputUtc = engineStartedUtc;
-                lastHeartbeatUtc = engineStartedUtc;
                 SetRunningState(true, displayName + " is running");
                 runningTimer.Start();
 
@@ -506,7 +520,6 @@ namespace CompuTek.Scanner.App
             if (IsDisposed) return;
             BeginInvoke((MethodInvoker)delegate
             {
-                lastEngineOutputUtc = DateTime.UtcNow;
                 if (args.Text.StartsWith("SCAN STAGE:", StringComparison.OrdinalIgnoreCase))
                     currentStage = args.Text.Substring("SCAN STAGE:".Length).Trim();
                 CaptureCaseFolder(args.Text);
@@ -565,15 +578,6 @@ namespace CompuTek.Scanner.App
                 ? elapsed.ToString(@"h\:mm\:ss")
                 : elapsed.ToString(@"m\:ss");
             statusLabel.Text = currentStage + " — elapsed " + elapsedText;
-
-            if (writeHeartbeatToOutput && (now - lastEngineOutputUtc).TotalSeconds >= 15 && (now - lastHeartbeatUtc).TotalSeconds >= 15)
-            {
-                AppendOutput(
-                    "Still working — " + runningDisplayName + " has been running for " + elapsedText +
-                    ". The current Windows operation may take several minutes.",
-                    Color.DarkGray);
-                lastHeartbeatUtc = now;
-            }
         }
 
         private void SendResponse(object sender, EventArgs args)

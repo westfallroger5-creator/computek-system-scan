@@ -72,39 +72,23 @@ $caseRoot = Join-Path $portableDataRoot "RemoteScanner\Cases\$timestamp"
 $quarantineRoot = Join-Path $portableDataRoot "RemoteScanner\Quarantine\$timestamp"
 New-Item -Path $caseRoot -ItemType Directory -Force | Out-Null
 $remediationLog = Join-Path $caseRoot 'Remediation.log'
-$script:EvidenceStorageSecurity = 'AclRestricted'
+$script:EvidenceStorageSecurity = 'PortableFolder-NormalPermissions'
 
-function Protect-CompuTekEvidenceDirectory {
+function Initialize-CompuTekEvidenceDirectory {
     param([Parameter(Mandatory)][string]$Path)
+
+    # Evidence stays under the service USB/application folder with the drive's normal
+    # inherited permissions. Older releases replaced the folder ACL with SYSTEM and
+    # Administrators only, which made routine cleanup require elevation.
     try {
         $driveLetter = (Get-Item -LiteralPath $Path -ErrorAction Stop).PSDrive.Name
         $fileSystem = (Get-Volume -DriveLetter $driveLetter -ErrorAction SilentlyContinue).FileSystem
-        if ($fileSystem -and $fileSystem -notin @('NTFS','ReFS')) {
-            $script:EvidenceStorageSecurity = "PortableMedia-$fileSystem-NoAcl"
-            Write-Host "NOTICE: The service USB uses $fileSystem and does not support Windows folder permissions. Keep the USB under technician control." -ForegroundColor Yellow
-            return $true
-        }
+        if ($fileSystem) { $script:EvidenceStorageSecurity = "PortableMedia-$fileSystem-NormalPermissions" }
     } catch {}
-    try {
-        $acl = New-Object Security.AccessControl.DirectorySecurity
-        $acl.SetAccessRuleProtection($true,$false)
-        $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
-        $propagation = [Security.AccessControl.PropagationFlags]::None
-        $allow = [Security.AccessControl.AccessControlType]::Allow
-        foreach ($sidText in @('S-1-5-18','S-1-5-32-544')) {
-            $sid = [Security.Principal.SecurityIdentifier]::new($sidText)
-            $rule = [Security.AccessControl.FileSystemAccessRule]::new($sid,[Security.AccessControl.FileSystemRights]::FullControl,$inheritance,$propagation,$allow)
-            [void]$acl.AddAccessRule($rule)
-        }
-        Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
-        return $true
-    } catch {
-        Write-Host "WARNING: Could not restrict evidence folder permissions: $Path ($($_.Exception.Message))" -ForegroundColor Red
-        return $false
-    }
+    return $true
 }
 
-$caseFolderProtected = Protect-CompuTekEvidenceDirectory -Path $caseRoot
+Initialize-CompuTekEvidenceDirectory -Path $caseRoot | Out-Null
 
 function Write-RemediationLog {
     param([string]$Message, [string]$Color = 'Gray')
@@ -122,6 +106,62 @@ function Show-Finding {
     }
     if ($Finding.ConnectionCount -gt 0) {
         Write-Host ("{0}Active endpoints: {1}" -f $Indent,(@($Finding.RemoteEndpoints) -join ', ')) -ForegroundColor Yellow
+    }
+}
+
+function Get-CandidateLocationLabel {
+    param($Candidate)
+    if ($Candidate.GroupProductComponents) {
+        return ("{0} related location(s), grouped as one product" -f @($Candidate.Locations).Count)
+    }
+    if ($Candidate.ScopePath) { return [string]$Candidate.ScopePath }
+    return [string]$Candidate.ScopeKey
+}
+
+function Show-CandidateSummary {
+    param($Candidate, [switch]$Detailed)
+
+    $typeCounts = @($Candidate.Findings | Group-Object ArtifactType | Sort-Object Name)
+    $typeText = @($typeCounts | ForEach-Object {"$($_.Count) $($_.Name)"}) -join ', '
+    $runningServices = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Service' -and $_.ServiceState -eq 'Running'}).Count
+    $runningProcesses = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Process'}).Count
+    $endpoints = @($Candidate.Findings | ForEach-Object {@($_.RemoteEndpoints)} | Where-Object {$_} | Sort-Object -Unique)
+    $renamed = @($Candidate.Findings | Where-Object {
+        $_.OriginalFilename -and $_.Path -and ([IO.Path]::GetFileName($_.Path) -ine $_.OriginalFilename)
+    })
+
+    Write-Host ("    Location: {0}" -f (Get-CandidateLocationLabel $Candidate)) -ForegroundColor Cyan
+    Write-Host ("    Evidence: {0}" -f $typeText) -ForegroundColor Gray
+    if ($runningServices -gt 0 -or $runningProcesses -gt 0) {
+        Write-Host ("    Active now: {0} running service(s), {1} process(es)" -f $runningServices,$runningProcesses) -ForegroundColor Yellow
+    }
+    if ($endpoints.Count -gt 0) {
+        Write-Host ("    Remote endpoint(s): {0}" -f ($endpoints -join ', ')) -ForegroundColor Yellow
+    }
+    if ($renamed.Count -gt 0) {
+        Write-Host ("    WARNING: {0} renamed-file indicator(s) require review." -f $renamed.Count) -ForegroundColor Red
+    }
+
+    if ($Candidate.GroupProductComponents -and @($Candidate.Locations).Count -gt 1) {
+        foreach ($location in @($Candidate.Locations | Select-Object -First 4)) {
+            Write-Host ("      - {0}" -f $location) -ForegroundColor DarkGray
+        }
+        if (@($Candidate.Locations).Count -gt 4) {
+            Write-Host ("      ...and {0} more related location(s); the full list is saved in the report." -f (@($Candidate.Locations).Count - 4)) -ForegroundColor DarkGray
+        }
+    }
+
+    if ($Detailed) {
+        $priority = @{InstalledProgram=1;Service=2;NativeFeature=3;AppxPackage=4;RunKey=5;ScheduledTask=6;StartupFile=7;Process=8;File=9}
+        $examples = @($Candidate.Findings | Sort-Object @{Expression={if($priority.ContainsKey($_.ArtifactType)){$priority[$_.ArtifactType]}else{99}}},Path,Name | Select-Object -First 6)
+        Write-Host '    Key items:' -ForegroundColor Gray
+        foreach ($finding in $examples) {
+            $location = if ($finding.Path) {$finding.Path} elseif ($finding.RegistryPath) {$finding.RegistryPath} else {$finding.DisplayName}
+            Write-Host ("      [{0}] {1}" -f $finding.ArtifactType,$location) -ForegroundColor Gray
+        }
+        if ($Candidate.Findings.Count -gt $examples.Count) {
+            Write-Host ("      ...{0} additional supporting item(s) are saved in JSON/CSV." -f ($Candidate.Findings.Count - $examples.Count)) -ForegroundColor DarkGray
+        }
     }
 }
 
@@ -150,6 +190,12 @@ function Get-FindingScopePath {
 function New-RemovalCandidates {
     param($Findings)
 
+    $groupedProducts = @{}
+    foreach ($product in @($catalog.products)) {
+        $groupProperty = $product.PSObject.Properties['groupProductComponents']
+        if ($groupProperty -and [bool]$groupProperty.Value) { $groupedProducts[[string]$product.id] = $true }
+    }
+
     $installAnchors = @{}
     foreach ($finding in @($Findings | Where-Object {$_.ArtifactType -eq 'InstalledProgram' -and $_.ProductId -ne 'unknown'})) {
         $anchor = Get-FindingScopePath $finding
@@ -161,7 +207,9 @@ function New-RemovalCandidates {
     $scopeGroups = @{}
     foreach ($finding in @($Findings)) {
         $scopePath = Get-FindingScopePath $finding
-        if ($scopePath -and $installAnchors.ContainsKey($finding.ProductId)) {
+        $evidenceLocation = $scopePath
+        $groupProductComponents = $groupedProducts.ContainsKey([string]$finding.ProductId)
+        if (-not $groupProductComponents -and $scopePath -and $installAnchors.ContainsKey($finding.ProductId)) {
             $scopeLower = $scopePath.TrimEnd('\').ToLowerInvariant()
             $matchingAnchor = @($installAnchors[$finding.ProductId] | Where-Object {
                 $anchorLower = ([string]$_).TrimEnd('\').ToLowerInvariant()
@@ -169,7 +217,9 @@ function New-RemovalCandidates {
             } | Sort-Object Length -Descending | Select-Object -First 1)
             if ($matchingAnchor) { $scopePath = [string]$matchingAnchor[0] }
         }
-        $scopeKey = if ($finding.Category -eq 'native-feature') {
+        $scopeKey = if ($groupProductComponents) {
+            "product-components:$($finding.ProductId)"
+        } elseif ($finding.Category -eq 'native-feature') {
             "native:$($finding.ProductId)"
         } elseif ($finding.ArtifactType -eq 'AppxPackage' -and $finding.PackageFullName) {
             "appx:$($finding.PackageFullName)"
@@ -185,9 +235,14 @@ function New-RemovalCandidates {
                 ProductName = [string]$finding.ProductName
                 Category = [string]$finding.Category
                 ScopeKey = $scopeKey
-                ScopePath = $scopePath
+                ScopePath = if ($groupProductComponents) { $null } else { $scopePath }
+                GroupProductComponents = $groupProductComponents
+                Locations = New-Object System.Collections.Generic.List[string]
                 Findings = New-Object System.Collections.Generic.List[object]
             }
+        }
+        if ($evidenceLocation -and -not $scopeGroups[$key].Locations.Contains([string]$evidenceLocation)) {
+            $scopeGroups[$key].Locations.Add([string]$evidenceLocation)
         }
         $scopeGroups[$key].Findings.Add($finding)
     }
@@ -214,6 +269,8 @@ function New-RemovalCandidates {
             Category = $entry.Category
             ScopeKey = $entry.ScopeKey
             ScopePath = $entry.ScopePath
+            GroupProductComponents = [bool]$entry.GroupProductComponents
+            Locations = @($entry.Locations | Sort-Object)
             Findings = @($entry.Findings | ForEach-Object {$_})
             IsUnknown = ($entry.ProductId -eq 'unknown')
         }
@@ -552,10 +609,7 @@ function Move-ToCandidateQuarantine {
 
     $destination = Join-Path $quarantineRoot ($Candidate.Id -replace '[^a-zA-Z0-9._-]','_')
     New-Item -Path $destination -ItemType Directory -Force | Out-Null
-    if (-not (Protect-CompuTekEvidenceDirectory -Path $destination)) {
-        Write-RemediationLog "Quarantine folder permissions could not be secured. The file was left in place: $Path" 'Red'
-        return $false
-    }
+    Initialize-CompuTekEvidenceDirectory -Path $destination | Out-Null
     try {
         $metadata = if ($isDirectory) {
             [pscustomobject]@{Path=$Path;Type='Directory';CapturedAtUtc=(Get-Date).ToUniversalTime()}
@@ -647,6 +701,7 @@ function Invoke-FullCandidateRemoval {
 function Test-FindingBelongsToCandidate {
     param($Finding, $Candidate)
     if ($Finding.ProductId -ne $Candidate.ProductId) { return $false }
+    if ($Candidate.GroupProductComponents) { return $true }
     if ($Candidate.Category -eq 'native-feature') { return $true }
     if ($Candidate.ScopeKey -like 'appx:*') { return ("appx:$($Finding.PackageFullName)" -ieq $Candidate.ScopeKey) }
 
@@ -704,22 +759,14 @@ if ($candidates.Count -eq 0) {
 Write-Host "`n===================== FINDINGS ======================" -ForegroundColor Cyan
 foreach ($candidate in $candidates) {
     $highest = if ($candidate.Findings.Confidence -contains 'High') {'High'} elseif ($candidate.Findings.Confidence -contains 'Medium') {'Medium'} else {'Low'}
-    Write-Host ("{0,2}. [{1}] {2} ({3} evidence item(s))" -f $candidate.Index,$highest,$candidate.Name,$candidate.Findings.Count) -ForegroundColor $(if($highest -eq 'High'){'Red'}elseif($highest -eq 'Medium'){'Yellow'}else{'DarkYellow'})
-    Write-Host ("    Review ID: {0} | Installation scope: {1}" -f $candidate.Id,$(if($candidate.ScopePath){$candidate.ScopePath}else{$candidate.ScopeKey})) -ForegroundColor Cyan
-    foreach ($finding in $candidate.Findings) { Show-Finding $finding }
+    Write-Host ("{0,2}. [{1}] {2} - review ID {3}" -f $candidate.Index,$highest,$candidate.Name,$candidate.Id) -ForegroundColor $(if($highest -eq 'High'){'Red'}elseif($highest -eq 'Medium'){'Yellow'}else{'DarkYellow'})
+    Show-CandidateSummary $candidate
 }
 
 Write-Host "`nReports were saved before any remediation:" -ForegroundColor Cyan
 Write-Host "  $($reportPaths.Json)" -ForegroundColor DarkGray
 Write-Host "  $($reportPaths.Csv)" -ForegroundColor DarkGray
 Write-Host 'A finding is not proof of malicious use. Verify company-approved support tools before removal.' -ForegroundColor Yellow
-
-if (-not $caseFolderProtected) {
-    Write-Host 'Removal is blocked because the evidence folder could not be restricted to SYSTEM and Administrators.' -ForegroundColor Red
-    Write-Host 'Nothing was changed. Correct the folder-permission problem and run the scanner again.' -ForegroundColor Yellow
-    Complete-CompuTekRun 'Removal is unavailable because the evidence folder could not be secured.'
-    exit 3
-}
 
 $technicianName = ''
 while ([string]::IsNullOrWhiteSpace($technicianName)) {
@@ -734,8 +781,8 @@ $decisionById = @{}
 Write-Host "`nEvery installation must be verified. KEEP and REMOVE decisions are recorded before any changes occur." -ForegroundColor Cyan
 foreach ($candidate in $candidates) {
     Write-Host "`n---------------- $($candidate.Name) ----------------" -ForegroundColor Magenta
-    Write-Host ("Review ID: {0}`nInstallation scope: {1}" -f $candidate.Id,$(if($candidate.ScopePath){$candidate.ScopePath}else{$candidate.ScopeKey})) -ForegroundColor Cyan
-    foreach ($finding in $candidate.Findings) { Show-Finding $finding }
+    Write-Host ("Review ID: {0}" -f $candidate.Id) -ForegroundColor Cyan
+    Show-CandidateSummary $candidate -Detailed
 
     $decision = $null
     while (-not $decision) {
@@ -753,7 +800,7 @@ foreach ($candidate in $candidates) {
         CandidateId = $candidate.Id
         ProductId = $candidate.ProductId
         ProductName = $candidate.Name
-        InstallationScope = if ($candidate.ScopePath) { $candidate.ScopePath } else { $candidate.ScopeKey }
+        InstallationScope = Get-CandidateLocationLabel $candidate
         Decision = $decision
         Technician = $technicianName
         WindowsAccount = "$env:USERDOMAIN\$env:USERNAME"
@@ -799,7 +846,7 @@ if ($finalConfirmation -cne 'APPLY REMOVALS') {
 }
 
 foreach ($candidate in $selected) {
-    Write-Host "`nRemoving $($candidate.Name) from scope $($candidate.ScopePath)..." -ForegroundColor Magenta
+    Write-Host "`nRemoving $($candidate.Name) from $(Get-CandidateLocationLabel $candidate)..." -ForegroundColor Magenta
     $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
     $decisionRecord.RemovalOutcome = 'RemovalAttempted'
     try {
@@ -829,7 +876,7 @@ try {
         $verificationSummary += [pscustomobject]@{
             CandidateId = $candidate.Id
             ProductName = $candidate.Name
-            InstallationScope = if ($candidate.ScopePath) { $candidate.ScopePath } else { $candidate.ScopeKey }
+            InstallationScope = Get-CandidateLocationLabel $candidate
             Status = $status
             RemainingFindings = $remaining.Count
         }

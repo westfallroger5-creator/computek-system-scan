@@ -697,11 +697,11 @@ function Get-CompuTekTargetedFileArtifacts {
                 continue
             }
 
-            if ($recentExecutable -and (Test-CompuTekUserWritablePath $file.FullName) -and $artifact.SignatureStatus -notin @('Valid','Unknown')) {
-                $artifact.HeuristicReason = 'Recent unsigned or invalidly signed executable in a user-writable location'
-                $artifact.HeuristicConfidence = 'Low'
-                $items += $artifact
-            }
+            # Recent unsigned files alone are not remote-access findings. They are common in
+            # installers, developer tools, application caches, and Temp folders. Renamed known
+            # remote tools are still detected above from their embedded file metadata. Unknown
+            # services, persistence, and network-connected processes remain covered by the
+            # higher-signal collectors below.
         }
     }
     return @($items)
