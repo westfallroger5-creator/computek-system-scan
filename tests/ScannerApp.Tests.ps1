@@ -59,6 +59,7 @@ Assert-AppTest ($postScamSource -match '\$script:Supplemental' -and $postScamSou
 Assert-AppTest ($postScamSource -match '\$script:Evidence\.ToArray\(\)' -and $postScamSource -match '\$script:Supplemental\.ToArray\(\)' -and $postScamSource -notmatch '@\(\$script:Evidence\)') 'Post-scam export materializes generic lists safely for Windows PowerShell 5.1'
 Assert-AppTest ($remoteSource -match 'Get-FindingDetectedVersion' -and $remoteSource -match 'GroupByVersion' -and $moduleSource -match 'DisplayVersion') 'Remote findings are grouped by detected product version'
 Assert-AppTest ($remoteSource -match 'ConvertTo-CompuTekCandidateSelection' -and $remoteSource -match 'KEEP 1,3-5' -and $remoteSource -match 'REMOVE 2,6-8' -and $remoteSource -match 'CONFIRM DECISIONS') 'Numbered agents support confirmed batch KEEP and REMOVE ranges'
+Assert-AppTest ($remoteSource -match 'displayClass = if \(\$candidate\.IsManagedSuite\) \{''Managed''\}' -and $remoteSource -match 'OPEN 1' -and $remoteSource -match 'Open-CandidateInstallerFiles') 'Managed Syncro/Splashtop displays once without a warning label and supports showing downloaded installers'
 Assert-AppTest ($moduleSource -match '\$actionableMatches' -and $moduleSource -match "category -ne 'native-feature'") 'Ordinary Windows-native remote features are excluded from removal candidates'
 Assert-AppTest ($remoteSource -match 'retry after blockers were stopped' -and $remoteSource -match 'ManualRemovalRequired\.txt') 'Failed uninstallers get one blocker-stop retry and incomplete removal locations are saved for technicians'
 Assert-AppTest ($mainFormSource -match 'CreateSessionLog' -and $mainFormSource -match 'ApplicationSessions' -and $mainFormSource -match 'File\.AppendAllText' -and $mainFormSource -match 'USB session log could not be updated') 'Every application run saves its displayed output to a USB session log and visibly warns if USB writing stops'
@@ -190,7 +191,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.3.0') 'Built EXE reports version 1.4.3.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.4.0') 'Built EXE reports version 1.4.4.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}
