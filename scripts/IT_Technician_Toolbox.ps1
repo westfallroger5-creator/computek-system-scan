@@ -72,19 +72,44 @@ function Save-ToolboxRecoveryPasswords {
     }
 }
 
-# --- Console Setup ---
+# --- USB session and console setup ---
+$toolRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
+$toolboxTimestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$toolboxSessionRoot = Join-Path $toolRoot ("CompuTekData\{0}\TechnicianToolbox\{1}" -f $env:COMPUTERNAME,$toolboxTimestamp)
+New-Item -Path $toolboxSessionRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null
+$logFile = Join-Path $toolboxSessionRoot 'Toolbox.log'
+
 try { $host.UI.RawUI.WindowTitle = "IT Technician Toolbox" } catch {}
 if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
-Write-Host "`n=== IT TECHNICIAN TOOLBOX ===`n" -ForegroundColor Cyan
-
-# --- Log file path ---
-$logFile = "$env:TEMP\toolbox_log.txt"
+Write-Host "`n=== IT TECHNICIAN TOOLBOX ===" -ForegroundColor Cyan
+Write-Host "Case folder: $toolboxSessionRoot" -ForegroundColor Cyan
+Write-Host 'Toolbox logs and CHKDSK reports will be saved on this service USB.' -ForegroundColor Cyan
 
 # --- Logging Function ---
 function Log {
     param([string]$message)
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$timestamp - $message" | Out-File -Append -FilePath $logFile
+}
+
+function Invoke-ToolboxChkdsk {
+    param(
+        [Parameter(Mandatory)][ValidatePattern('^[A-Z]:$')][string]$Target,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$OutputPath,
+        [switch]$ApproveWindowsPrompt
+    )
+
+    if ($ApproveWindowsPrompt) {
+        'Y' | & chkdsk.exe $Target @Arguments 2>&1 |
+            Tee-Object -FilePath $OutputPath -Append |
+            ForEach-Object { Write-Host ([string]$_) }
+    } else {
+        & chkdsk.exe $Target @Arguments 2>&1 |
+            Tee-Object -FilePath $OutputPath -Append |
+            ForEach-Object { Write-Host ([string]$_) }
+    }
+    return $LASTEXITCODE
 }
 
 # --- Menu Loop ---
@@ -148,19 +173,60 @@ do {
         }
         "7" {
             Write-Host "`n--- AVAILABLE DRIVES ---" -ForegroundColor Yellow
-            $drives = Get-PSDrive -PSProvider 'FileSystem' | Where-Object { $_.Free -gt 0 }
-            $i = 1
-            foreach ($d in $drives) {
-                Write-Host "[$i] $($d.Name):\" -ForegroundColor Cyan
-                $i++
+            $drives = @(Get-Volume -ErrorAction SilentlyContinue | Where-Object {
+                $_.DriveLetter -and $_.FileSystem
+            } | Sort-Object DriveLetter)
+            for ($i = 0; $i -lt $drives.Count; $i++) {
+                $d = $drives[$i]
+                Write-Host "[$($i + 1)] $($d.DriveLetter):\  $($d.FileSystem)  $($d.FileSystemLabel)" -ForegroundColor Cyan
             }
             Write-Host "[0] Cancel" -ForegroundColor DarkGray
             $selection = Read-CompuTekInput "Select a drive number"
-            if ($selection -ne "0" -and $selection -match "^\d+$" -and $selection -le $drives.Count) {
-                $target = $drives[$selection - 1].Name + ":"
-                Write-Host "`nRunning CHKDSK on $target..." -ForegroundColor Yellow
-                chkdsk $target /f /r
-                Log "Ran CHKDSK on $target"
+            if ($selection -ne '0' -and $selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $drives.Count) {
+                $drive = $drives[[int]$selection - 1]
+                $target = "$($drive.DriveLetter):"
+                $scanArguments = if ([string]$drive.FileSystem -eq 'NTFS') { @('/scan') } else { @() }
+                $scanLog = Join-Path $toolboxSessionRoot ("CHKDSK_{0}_ReadOnly_{1}.txt" -f $drive.DriveLetter,(Get-Date -Format 'yyyyMMdd_HHmmss'))
+
+                Write-Host "`nRunning CHKDSK in read-only scan mode on $target..." -ForegroundColor Yellow
+                Write-Host 'No repair switch is being used. Windows will inspect the file system without an automatic /F or /R.' -ForegroundColor Cyan
+                $scanExitCode = Invoke-ToolboxChkdsk -Target $target -Arguments $scanArguments -OutputPath $scanLog
+                Log "Read-only CHKDSK on $target returned exit code $scanExitCode; report $scanLog"
+
+                if ($scanExitCode -eq 0) {
+                    Write-Host "[OK] $target passed the read-only CHKDSK scan. No repair was started." -ForegroundColor Green
+                    Write-Host "Report: $scanLog" -ForegroundColor DarkGray
+                } else {
+                    Write-Host "[REVIEW] CHKDSK returned exit code $scanExitCode. Review the report before approving a repair." -ForegroundColor Yellow
+                    Write-Host 'Choose F for logical file-system repair. Choose R only when bad sectors or physical-media problems are suspected; /R can take many hours.' -ForegroundColor Yellow
+                    $repairChoice = Read-CompuTekInput 'Type F for CHKDSK /F, R for CHKDSK /R, or SKIP'
+                    if ($repairChoice -match '^[FfRr]$') {
+                        $repairSwitch = if ($repairChoice -match '^[Rr]$') { '/r' } else { '/f' }
+                        $requiredText = "RUN CHKDSK $($repairSwitch.ToUpper()) $target"
+                        Write-Host "Close files and programs using $target. Windows may dismount the volume or schedule the repair for restart." -ForegroundColor Yellow
+                        $repairApproval = Read-CompuTekInput "Type $requiredText to approve this repair, or type CANCEL"
+                        if ($repairApproval -ceq $requiredText) {
+                            $repairLog = Join-Path $toolboxSessionRoot ("CHKDSK_{0}_{1}_{2}.txt" -f $drive.DriveLetter,$repairSwitch.TrimStart('/').ToUpper(),(Get-Date -Format 'yyyyMMdd_HHmmss'))
+                            Write-Host "Running CHKDSK $repairSwitch on $target after technician approval..." -ForegroundColor Yellow
+                            $repairExitCode = Invoke-ToolboxChkdsk -Target $target -Arguments @($repairSwitch) -OutputPath $repairLog -ApproveWindowsPrompt
+                            Log "Technician-approved CHKDSK $repairSwitch on $target returned exit code $repairExitCode; report $repairLog"
+                            Write-Host "Repair command finished with exit code $repairExitCode. Report: $repairLog" -ForegroundColor Cyan
+                            if ($target -ieq $env:SystemDrive) {
+                                Write-Host 'If Windows scheduled this repair, restart the computer when the technician is ready. This toolbox will not reboot automatically.' -ForegroundColor Yellow
+                            } else {
+                                $verifyLog = Join-Path $toolboxSessionRoot ("CHKDSK_{0}_Verify_{1}.txt" -f $drive.DriveLetter,(Get-Date -Format 'yyyyMMdd_HHmmss'))
+                                Write-Host 'Running a final read-only verification scan...' -ForegroundColor Cyan
+                                $verifyExitCode = Invoke-ToolboxChkdsk -Target $target -Arguments $scanArguments -OutputPath $verifyLog
+                                Log "Post-repair CHKDSK verification on $target returned exit code $verifyExitCode; report $verifyLog"
+                                Write-Host "Verification exit code: $verifyExitCode. Report: $verifyLog" -ForegroundColor $(if($verifyExitCode -eq 0){'Green'}else{'Yellow'})
+                            }
+                        } else {
+                            Write-Host 'Exact repair approval was not provided. No repair was started.' -ForegroundColor DarkGray
+                        }
+                    } else {
+                        Write-Host 'Repair skipped. No /F or /R command was started.' -ForegroundColor DarkGray
+                    }
+                }
             } else {
                 Write-Host "Canceled CHKDSK." -ForegroundColor DarkGray
             }

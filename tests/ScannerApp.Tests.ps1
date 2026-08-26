@@ -32,7 +32,7 @@ $remoteSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAcc
 $postScamSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1') -Raw
 Assert-AppTest ($remoteSource -match '__COMPUTEK_PROMPT__:' -and $postScamSource -match '__COMPUTEK_PROMPT__:') 'Both scanner engines expose application-safe input prompts'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_APP' -and $remoteSource -match 'Read-CompuTekInput') 'The remote scanner remains interactive in both EXE and direct-script modes'
-Assert-AppTest ($remoteSource -match "Complete-CompuTekRun 'Scan-only mode complete\.'" -and $postScamSource -match "Complete-CompuTekRun 'Post-scam evidence collection complete\.'") 'Completed EXE scans exit automatically instead of waiting forever for Enter'
+Assert-AppTest ($remoteSource -notmatch '\bScanOnly\b' -and $postScamSource -match "Complete-CompuTekRun 'Post-scam evidence collection complete\.'") 'Remote review is always offered and completed evidence collectors exit automatically'
 
 $moduleSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\CompuTek.Scanner.Common.psm1') -Raw
 $mainFormSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\MainForm.cs') -Raw
@@ -41,6 +41,7 @@ $preCloneSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PreClon
 $finalCheckSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1') -Raw
 Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
 Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'Still working' -and $mainFormSource -match 'elapsedText') 'The Windows application shows elapsed-time heartbeats during quiet collectors'
+Assert-AppTest ($mainFormSource -match 'writeHeartbeatToOutput' -and $mainFormSource -match '!String\.Equals\(displayName, "IT Technician Toolbox"' -and $mainFormSource -match 'if \(writeHeartbeatToOutput &&') 'Technician Toolbox suppresses repetitive output heartbeats while the status bar keeps elapsed time'
 Assert-AppTest ($moduleSource -match 'Get-CompuTekCandidateFilesSafe' -and $moduleSource -match 'FileAttributes\]::ReparsePoint' -and $moduleSource -notmatch 'Get-ChildItem -LiteralPath \$root -Recurse') 'Default file discovery uses a junction-safe bounded traversal'
 Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} else \{ 5 \}') 'Full-depth file traversal is reserved for explicit Deep Scan mode'
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
@@ -48,6 +49,9 @@ Assert-AppTest ($moduleSource -match '\[string\[\]\]\$endpoints = @\(\)' -and $m
 Assert-AppTest ($mainFormSource -match 'Technician tools' -and $mainFormSource -match 'StartTechnicianToolbox' -and $mainFormSource -match 'StartFinalSystemCheck' -and $mainFormSource -match 'StartPreClone') 'The Windows application restores the legacy technician tool entry points'
 Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSource -match '__COMPUTEK_PROMPT__:' -and $finalCheckSource -match '__COMPUTEK_PROMPT__:') 'Interactive technician tools use the EXE technician-response bridge'
 Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
+Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remoteSource -match 'CompuTekData' -and $postScamSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $postScamSource -match 'CompuTekData') 'Remote and post-scam evidence is stored beside the EXE on the service USB'
+Assert-AppTest ($mainFormSource -match 'CreateSessionLog' -and $mainFormSource -match 'ApplicationSessions' -and $mainFormSource -match 'File\.AppendAllText' -and $mainFormSource -match 'USB session log could not be updated') 'Every application run saves its displayed output to a USB session log and visibly warns if USB writing stops'
+Assert-AppTest ($moduleSource -match '\$portableDataRoot' -and $moduleSource -match 'Join-Path \$env:COMPUTEK_SCANNER_PORTABLE_ROOT ''CompuTekData''') 'File discovery excludes the scanner data it saved on the service USB'
 Assert-AppTest ($mainFormSource -match 'ConfirmSensitiveTool' -and $mainFormSource -match 'MessageBoxDefaultButton\.Button2') 'Advanced technician workflows require a warning with safe default cancellation'
 Assert-AppTest (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'Launch_CTSupport_Toolbox.bat')) -and -not (Test-Path -LiteralPath (Join-Path $repoRoot 'CTSupport_Toolbox.ps1'))) 'Obsolete BAT and PowerShell launchers are removed'
 
@@ -66,6 +70,12 @@ Assert-AppTest ($toolboxSource -match 'Get-BitLockerVolume' -and $toolboxSource 
 $toolboxSaveIndex = $toolboxSource.IndexOf('Save-ToolboxRecoveryPasswords -BitLockerVolume $current')
 $toolboxEnableIndex = $toolboxSource.IndexOf('Enable-BitLocker -MountPoint')
 Assert-AppTest ($toolboxSaveIndex -ge 0 -and $toolboxEnableIndex -gt $toolboxSaveIndex -and $toolboxSource -match 'Type ENABLE BITLOCKER') 'Toolbox verifies the recovery file and exact technician approval before enabling BitLocker'
+Assert-AppTest ($toolboxSource -match 'Invoke-ToolboxChkdsk' -and $toolboxSource -match 'Running CHKDSK in read-only scan mode' -and $toolboxSource -match '\$scanExitCode -eq 0') 'Toolbox CHKDSK starts in read-only mode and stops when the volume passes'
+$chkdskScanIndex = $toolboxSource.IndexOf("`$scanExitCode = Invoke-ToolboxChkdsk")
+$chkdskRepairChoiceIndex = $toolboxSource.IndexOf("`$repairChoice = Read-CompuTekInput")
+$chkdskRepairIndex = $toolboxSource.IndexOf("`$repairExitCode = Invoke-ToolboxChkdsk")
+Assert-AppTest ($chkdskScanIndex -ge 0 -and $chkdskRepairChoiceIndex -gt $chkdskScanIndex -and $chkdskRepairIndex -gt $chkdskRepairChoiceIndex -and $toolboxSource -match 'RUN CHKDSK \$\(\$repairSwitch\.ToUpper\(\)\) \$target') 'CHKDSK /F or /R requires a technician choice and exact typed approval after the read-only scan'
+Assert-AppTest ($toolboxSource -match 'This toolbox will not reboot automatically' -and $toolboxSource -match 'CHKDSK_\{0\}_ReadOnly') 'Toolbox preserves CHKDSK reports on USB and never automatically reboots after a repair request'
 
 $preCloneTokens = $null
 $preCloneErrors = $null

@@ -57,7 +57,8 @@ $catalog = Get-CompuTekCatalog -Path $catalogPath
 $started = Get-Date
 $cutoff = $started.AddDays(-1 * [Math]::Abs($LookbackDays))
 $timestamp = $started.ToString('yyyyMMdd_HHmmss')
-$caseRoot = Join-Path $env:ProgramData "CompuTek\PostScam\Cases\$($env:COMPUTERNAME)_$timestamp"
+$portableRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
+$caseRoot = Join-Path $portableRoot ("CompuTekData\{0}\PostScam\Cases\{1}" -f $env:COMPUTERNAME,$timestamp)
 New-Item -Path $caseRoot -ItemType Directory -Force | Out-Null
 
 $script:Evidence = New-Object System.Collections.Generic.List[object]

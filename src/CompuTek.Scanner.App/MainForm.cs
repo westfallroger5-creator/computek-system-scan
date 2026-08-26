@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Text;
 using System.Windows.Forms;
 
 namespace CompuTek.Scanner.App
@@ -17,7 +18,6 @@ namespace CompuTek.Scanner.App
         private readonly NumericUpDown lookbackDays = new NumericUpDown();
         private readonly CheckBox deepScan = new CheckBox();
         private readonly CheckBox includeHashes = new CheckBox();
-        private readonly CheckBox scanOnly = new CheckBox();
         private readonly Button remoteButton = new Button();
         private readonly Button postScamButton = new Button();
         private readonly Button technicianToolboxButton = new Button();
@@ -43,6 +43,8 @@ namespace CompuTek.Scanner.App
         private DateTime engineStartedUtc;
         private DateTime lastEngineOutputUtc;
         private DateTime lastHeartbeatUtc;
+        private bool writeHeartbeatToOutput;
+        private string sessionLogPath;
 
         public MainForm()
         {
@@ -156,11 +158,12 @@ namespace CompuTek.Scanner.App
             includeHashes.Location = new Point(270, 64);
             options.Controls.Add(includeHashes);
 
-            scanOnly.Text = "Remote scan only — do not offer removal";
-            scanOnly.AutoSize = true;
-            scanOnly.Checked = true;
-            scanOnly.Location = new Point(18, 95);
-            options.Controls.Add(scanOnly);
+            Label removalReview = new Label();
+            removalReview.Text = "Remote findings are always shown and offered for technician review. Nothing is removed automatically.";
+            removalReview.ForeColor = Color.FromArgb(90, 65, 0);
+            removalReview.Location = new Point(18, 94);
+            removalReview.Size = new Size(480, 30);
+            options.Controls.Add(removalReview);
             commandPanel.Controls.Add(options);
 
             remoteButton.Text = "Run remote-access scanner";
@@ -317,7 +320,7 @@ namespace CompuTek.Scanner.App
             layout.Controls.Add(inputPanel, 0, 3);
 
             GroupBox outputGroup = new GroupBox();
-            outputGroup.Text = "Scanner output";
+            outputGroup.Text = "Live findings and tool output";
             outputGroup.Dock = DockStyle.Fill;
             outputGroup.Padding = new Padding(9);
             outputGroup.BackColor = LightBackground;
@@ -362,19 +365,15 @@ namespace CompuTek.Scanner.App
 
         private void StartRemoteScanner(object sender, EventArgs args)
         {
-            if (!scanOnly.Checked)
-            {
-                DialogResult result = MessageBox.Show(
-                    "Removal review mode is enabled. The application will not remove anything until every installation is classified and APPLY REMOVALS is typed.\r\n\r\nContinue?",
-                    "Start removal review",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button2);
-                if (result != DialogResult.Yes) return;
-            }
+            DialogResult result = MessageBox.Show(
+                "The scanner will display every finding and save its reports beside this EXE on the service USB. It will then offer technician-reviewed removal.\r\n\r\nNothing is removed automatically. Every installation requires an exact KEEP or REMOVE decision, and removals require the final words APPLY REMOVALS.\r\n\r\nContinue?",
+                "Start remote-access review",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.Yes) return;
 
             List<string> arguments = CommonArguments();
-            if (scanOnly.Checked) arguments.Add("-ScanOnly");
             if (includeHashes.Checked) arguments.Add("-IncludeHashes");
             StartEngine("Remote-access scanner", engineLayout.RemoteScannerPath, arguments);
         }
@@ -442,11 +441,15 @@ namespace CompuTek.Scanner.App
                 string scriptFileName = Path.GetFileName(scriptPath);
                 engineLayout = EmbeddedEngine.Prepare();
                 string selectedScript = ResolveStagedScript(scriptFileName);
+                sessionLogPath = null;
+                sessionLogPath = CreateSessionLog(displayName);
+                writeHeartbeatToOutput = !String.Equals(displayName, "IT Technician Toolbox", StringComparison.Ordinal);
                 output.Clear();
                 AppendOutput("Starting " + displayName + "...", Color.LightSkyBlue);
                 AppendOutput("Engine: " + engineLayout.DirectoryPath, Color.DimGray);
                 AppendOutput("Signatures: " + engineLayout.Catalog.Version + " (" + engineLayout.Catalog.SourceDescription + ")", Color.DimGray);
-                lastCaseFolder = null;
+                AppendOutput("USB session log: " + sessionLogPath, Color.DimGray);
+                lastCaseFolder = Path.GetDirectoryName(sessionLogPath);
                 openCaseButton.Enabled = false;
                 awaitingInput = false;
                 runningDisplayName = displayName;
@@ -553,7 +556,7 @@ namespace CompuTek.Scanner.App
                 : elapsed.ToString(@"m\:ss");
             statusLabel.Text = currentStage + " — elapsed " + elapsedText;
 
-            if ((now - lastEngineOutputUtc).TotalSeconds >= 15 && (now - lastHeartbeatUtc).TotalSeconds >= 15)
+            if (writeHeartbeatToOutput && (now - lastEngineOutputUtc).TotalSeconds >= 15 && (now - lastHeartbeatUtc).TotalSeconds >= 15)
             {
                 AppendOutput(
                     "Still working — " + runningDisplayName + " has been running for " + elapsedText +
@@ -628,16 +631,56 @@ namespace CompuTek.Scanner.App
             lookbackDays.Enabled = enabled;
             deepScan.Enabled = enabled;
             includeHashes.Enabled = enabled;
-            scanOnly.Enabled = enabled;
+        }
+
+        private static string CreateSessionLog(string displayName)
+        {
+            string directory = Path.Combine(
+                AppDomain.CurrentDomain.BaseDirectory,
+                "CompuTekData",
+                Environment.MachineName,
+                "ApplicationSessions");
+            Directory.CreateDirectory(directory);
+            string safeName = displayName;
+            foreach (char invalid in Path.GetInvalidFileNameChars())
+                safeName = safeName.Replace(invalid, '_');
+            string path = Path.Combine(directory, DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + "_" + safeName.Replace(' ', '_') + ".log");
+            File.WriteAllText(
+                path,
+                "CompuTek Scanner session\r\nComputer: " + Environment.MachineName +
+                "\r\nTool: " + displayName +
+                "\r\nStarted: " + DateTime.Now.ToString("o") + "\r\n\r\n",
+                new UTF8Encoding(true));
+            return path;
         }
 
         private void AppendOutput(string text, Color color)
         {
+            string loggingWarning = null;
+            if (!String.IsNullOrWhiteSpace(sessionLogPath))
+            {
+                try
+                {
+                    File.AppendAllText(sessionLogPath, text + Environment.NewLine, Encoding.UTF8);
+                }
+                catch (Exception exception)
+                {
+                    loggingWarning = "WARNING: The USB session log could not be updated. Check that the service USB is still connected and writable. " + exception.Message;
+                    sessionLogPath = null;
+                }
+            }
             output.SelectionStart = output.TextLength;
             output.SelectionLength = 0;
             output.SelectionColor = color;
             output.AppendText(text + Environment.NewLine);
             output.SelectionColor = output.ForeColor;
+            if (!String.IsNullOrWhiteSpace(loggingWarning))
+            {
+                output.SelectionStart = output.TextLength;
+                output.SelectionColor = Color.Salmon;
+                output.AppendText(loggingWarning + Environment.NewLine);
+                output.SelectionColor = output.ForeColor;
+            }
             output.ScrollToCaret();
         }
 

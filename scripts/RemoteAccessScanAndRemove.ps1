@@ -22,7 +22,6 @@
 param(
     [switch]$DeepScan,
     [ValidateRange(1,365)][int]$LookbackDays = 30,
-    [switch]$ScanOnly,
     [switch]$IncludeHashes
 )
 
@@ -56,7 +55,6 @@ function Test-IsAdministrator {
 if (-not (Test-IsAdministrator)) {
     $argumentList = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $PSCommandPath),'-LookbackDays',[string]$LookbackDays)
     if ($DeepScan) { $argumentList += '-DeepScan' }
-    if ($ScanOnly) { $argumentList += '-ScanOnly' }
     if ($IncludeHashes) { $argumentList += '-IncludeHashes' }
     Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentList -Verb RunAs
     exit
@@ -68,13 +66,25 @@ Import-Module $modulePath -Force -ErrorAction Stop
 $catalog = Get-CompuTekCatalog -Path $catalogPath
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$caseRoot = Join-Path $env:ProgramData "CompuTek\RemoteScanner\Cases\$($env:COMPUTERNAME)_$timestamp"
-$quarantineRoot = Join-Path $env:ProgramData "CompuTek\RemoteScanner\Quarantine\$($env:COMPUTERNAME)_$timestamp"
+$portableRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
+$portableDataRoot = Join-Path $portableRoot ("CompuTekData\{0}" -f $env:COMPUTERNAME)
+$caseRoot = Join-Path $portableDataRoot "RemoteScanner\Cases\$timestamp"
+$quarantineRoot = Join-Path $portableDataRoot "RemoteScanner\Quarantine\$timestamp"
 New-Item -Path $caseRoot -ItemType Directory -Force | Out-Null
 $remediationLog = Join-Path $caseRoot 'Remediation.log'
+$script:EvidenceStorageSecurity = 'AclRestricted'
 
 function Protect-CompuTekEvidenceDirectory {
     param([Parameter(Mandatory)][string]$Path)
+    try {
+        $driveLetter = (Get-Item -LiteralPath $Path -ErrorAction Stop).PSDrive.Name
+        $fileSystem = (Get-Volume -DriveLetter $driveLetter -ErrorAction SilentlyContinue).FileSystem
+        if ($fileSystem -and $fileSystem -notin @('NTFS','ReFS')) {
+            $script:EvidenceStorageSecurity = "PortableMedia-$fileSystem-NoAcl"
+            Write-Host "NOTICE: The service USB uses $fileSystem and does not support Windows folder permissions. Keep the USB under technician control." -ForegroundColor Yellow
+            return $true
+        }
+    } catch {}
     try {
         $acl = New-Object Security.AccessControl.DirectorySecurity
         $acl.SetAccessRuleProtection($true,$false)
@@ -653,7 +663,8 @@ Write-Host '============================================================' -Foreg
 Write-Host '  CompuTek Remote-Access Scanner and Remediation Tool' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host "Catalog: $($catalog.catalogVersion) ($(@($catalog.products).Count) product families)" -ForegroundColor DarkGray
-Write-Host "Case folder: $caseRoot" -ForegroundColor DarkGray
+Write-Host "Case folder: $caseRoot" -ForegroundColor Cyan
+Write-Host 'Findings, decisions, evidence, and quarantine data will be saved on this service USB.' -ForegroundColor Cyan
 if ($DeepScan) {
     Write-Host 'Full fixed-drive scan is enabled. This can take a long time.' -ForegroundColor Yellow
 } else {
@@ -702,11 +713,6 @@ Write-Host "`nReports were saved before any remediation:" -ForegroundColor Cyan
 Write-Host "  $($reportPaths.Json)" -ForegroundColor DarkGray
 Write-Host "  $($reportPaths.Csv)" -ForegroundColor DarkGray
 Write-Host 'A finding is not proof of malicious use. Verify company-approved support tools before removal.' -ForegroundColor Yellow
-
-if ($ScanOnly) {
-    Complete-CompuTekRun 'Scan-only mode complete.'
-    exit 0
-}
 
 if (-not $caseFolderProtected) {
     Write-Host 'Removal is blocked because the evidence folder could not be restricted to SYSTEM and Administrators.' -ForegroundColor Red
@@ -767,6 +773,7 @@ $decisionDocument = [pscustomobject][ordered]@{
     WindowsAccount = "$env:USERDOMAIN\$env:USERNAME"
     TicketOrCase = $caseReference
     RecordedAtUtc = (Get-Date).ToUniversalTime()
+    EvidenceStorageSecurity = $script:EvidenceStorageSecurity
     Decisions = $decisions
 }
 $decisionDocument | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $decisionPath -Encoding UTF8
