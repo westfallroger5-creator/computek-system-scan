@@ -353,6 +353,9 @@ function New-CompuTekArtifact {
         PackageFullName    = $null
         TaskPath           = $null
         SourcePath         = $null
+        StartupTarget      = $null
+        StartupArguments   = $null
+        StartupReinstallRisk = $false
         ProcessId          = $null
         ServiceState       = $null
         ServiceStartMode   = $null
@@ -534,6 +537,67 @@ function Get-CompuTekRunKeyRoots {
     return @($roots | Sort-Object -Unique)
 }
 
+function Get-CompuTekStartupCommandInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$File,
+        $ShortcutShell
+    )
+
+    $target = [string]$File.FullName
+    $arguments = ''
+    $analysisText = [string]$File.FullName
+    $extension = ([string]$File.Extension).ToLowerInvariant()
+
+    if ($extension -eq '.lnk' -and $ShortcutShell) {
+        try {
+            $shortcut = $ShortcutShell.CreateShortcut($File.FullName)
+            if ($shortcut.TargetPath) { $target = [string]$shortcut.TargetPath }
+            $arguments = [string]$shortcut.Arguments
+            $analysisText = ($target + ' ' + $arguments).Trim()
+        } catch {}
+    } elseif ($extension -eq '.url') {
+        try {
+            $urlLine = Get-Content -LiteralPath $File.FullName -ErrorAction Stop | Where-Object {$_ -match '^\s*URL\s*='} | Select-Object -First 1
+            if ($urlLine) {
+                $target = ([string]$urlLine -replace '^\s*URL\s*=\s*','').Trim()
+                $analysisText = $target
+            }
+        } catch {}
+    }
+
+    $scriptExtensions = @('.bat','.cmd','.ps1','.vbs','.js','.wsf','.hta')
+    $contentPaths = New-Object System.Collections.Generic.List[string]
+    if ($scriptExtensions -contains $extension) { $contentPaths.Add([string]$File.FullName) }
+    if ($target -and $scriptExtensions -contains ([IO.Path]::GetExtension($target).ToLowerInvariant()) -and (Test-Path -LiteralPath $target -PathType Leaf -ErrorAction SilentlyContinue)) {
+        if (-not $contentPaths.Contains($target)) { $contentPaths.Add($target) }
+    }
+    foreach ($match in [regex]::Matches(($target + ' ' + $arguments),'(?i)(?:"|'')?([a-z]:\\[^"'']+\.(?:bat|cmd|ps1|vbs|js|wsf|hta))(?:"|'')?')) {
+        $referencedPath = [Environment]::ExpandEnvironmentVariables([string]$match.Groups[1].Value)
+        if ((Test-Path -LiteralPath $referencedPath -PathType Leaf -ErrorAction SilentlyContinue) -and -not $contentPaths.Contains($referencedPath)) {
+            $contentPaths.Add($referencedPath)
+        }
+    }
+    foreach ($contentPath in $contentPaths) {
+        try {
+            $content = [IO.File]::ReadAllText($contentPath)
+            if ($content.Length -gt 16000) { $content = $content.Substring(0,16000) + '...[truncated]' }
+            $content = $content -replace '(?i)((?:password|passwd|token|api[_-]?key|authorization|secret)\s*[:=]\s*)[^\s;]+','$1<redacted>'
+            $analysisText += "`n$content"
+        } catch {}
+    }
+
+    $reinstallPattern = '(?i)(\bmsiexec(?:\.exe)?\s+(?:/i|/package)\b|\bwinget(?:\.exe)?\s+install\b|\bchoco(?:\.exe)?\s+install\b|\binvoke-webrequest\b|\bstart-bitstransfer\b|\bbitsadmin(?:\.exe)?.*?/transfer\b|\bcertutil(?:\.exe)?\s+.*?-urlcache\b|\b(?:curl|wget)(?:\.exe)?\s+.*https?://|\bdownloadfile\s*\(|\bpowershell(?:\.exe)?\s+.*?(?:-e|-ec|-encodedcommand)\s+|\bmshta(?:\.exe)?\s+https?://|https?://\S+\.(?:exe|msi|msix|zip)\b|(?:setup|installer|install-agent)[^\\/\s]*\.(?:exe|msi)\b)'
+    $reinstallRisk = [bool]($analysisText -match $reinstallPattern)
+
+    return [pscustomobject]@{
+        Target = $target
+        Arguments = $arguments
+        AnalysisText = $analysisText
+        ReinstallRisk = $reinstallRisk
+    }
+}
+
 function Get-CompuTekPersistenceArtifacts {
     [CmdletBinding()]
     param()
@@ -599,20 +663,18 @@ function Get-CompuTekPersistenceArtifacts {
             if (-not (Test-Path -LiteralPath $folder -ErrorAction Stop)) { continue }
             foreach ($file in Get-ChildItem -LiteralPath $folder -File -Force -ErrorAction Stop) {
                 if ($file.Name -ieq 'desktop.ini') { continue }
-                if ($file.Extension -notin @('.lnk','.url','.exe','.com','.bat','.cmd','.ps1','.vbs','.js','.wsf')) { continue }
-                $target = $file.FullName
-                $command = $file.FullName
-                if ($shell -and $file.Extension -ieq '.lnk') {
-                    try {
-                        $shortcut = $shell.CreateShortcut($file.FullName)
-                        $target = $shortcut.TargetPath
-                        $command = ($shortcut.TargetPath + ' ' + $shortcut.Arguments).Trim()
-                    } catch {}
-                }
+                if ($file.Extension -notin @('.lnk','.url','.exe','.com','.bat','.cmd','.ps1','.vbs','.js','.wsf','.hta')) { continue }
+                $startupInfo = Get-CompuTekStartupCommandInfo -File $file -ShortcutShell $shell
+                $target = [string]$startupInfo.Target
+                $command = [string]$startupInfo.AnalysisText
                 $artifact = New-CompuTekArtifact @{
                     ArtifactType = 'StartupFile'; Source = 'StartupFolder'; Name = $file.Name
                     DisplayName = $file.Name; Path = $target; CommandLine = $command
                     SourcePath = $file.FullName
+                    StartupTarget = $target; StartupArguments = [string]$startupInfo.Arguments
+                    StartupReinstallRisk = [bool]$startupInfo.ReinstallRisk
+                    HeuristicReason = if ($startupInfo.ReinstallRisk) {'Startup folder item can download or reinstall software at sign-in'} else {$null}
+                    HeuristicConfidence = if ($startupInfo.ReinstallRisk) {'Medium'} else {$null}
                     LastWriteTimeUtc = $file.LastWriteTimeUtc; RemediationKind = 'QuarantineFile'
                 }
                 if ($target -and (Test-Path -LiteralPath $target -PathType Leaf)) {
@@ -786,6 +848,10 @@ function ConvertTo-CompuTekFinding {
         PackageFullName      = $Artifact.PackageFullName
         TaskPath             = $Artifact.TaskPath
         SourcePath           = $Artifact.SourcePath
+        StartupTarget        = $Artifact.StartupTarget
+        StartupArguments     = $Artifact.StartupArguments
+        StartupReinstallRisk = [bool]$Artifact.StartupReinstallRisk
+        HeuristicReason      = $Artifact.HeuristicReason
         ProcessId            = $Artifact.ProcessId
         ServiceState         = $Artifact.ServiceState
         ServiceStartMode     = $Artifact.ServiceStartMode
@@ -904,6 +970,7 @@ function Invoke-CompuTekRemoteAccessScan {
     $completed = (Get-Date).ToUniversalTime()
     $errorArray = $errors.ToArray()
     $findingArray = $findings.ToArray()
+    $startupInventory = @($artifacts | Where-Object {$_.ArtifactType -eq 'StartupFile'} | Sort-Object SourcePath)
     return [pscustomobject][ordered]@{
         SchemaVersion = 1
         CatalogVersion = $catalog.catalogVersion
@@ -915,12 +982,15 @@ function Invoke-CompuTekRemoteAccessScan {
         IsComplete = ($errors.Count -eq 0)
         Errors = $errorArray
         Findings = $findingArray
+        StartupInventory = $startupInventory
         Stats = [pscustomobject]@{
             ArtifactsInspected = $artifacts.Count
             Findings = $findings.Count
             KnownProducts = @($findingArray | Where-Object {$_.Disposition -eq 'KnownRemoteAccessSoftware'} | Select-Object -ExpandProperty ProductId -Unique).Count
             NativeFeatures = @($findingArray | Where-Object {$_.Disposition -eq 'RemoteFeatureEnabledOrInstalled'} | Select-Object -ExpandProperty ProductId -Unique).Count
             SuspiciousUnknown = @($findingArray | Where-Object {$_.Disposition -eq 'SuspiciousUnknown'}).Count
+            StartupItems = $startupInventory.Count
+            StartupReinstallRisks = @($startupInventory | Where-Object {$_.StartupReinstallRisk}).Count
             CollectorErrors = $errors.Count
         }
     }
@@ -939,9 +1009,19 @@ function Export-CompuTekScanReport {
     }
     $jsonPath = Join-Path $Directory ($BaseName + '.json')
     $csvPath = Join-Path $Directory ($BaseName + '.csv')
+    $startupJsonPath = Join-Path $Directory ($BaseName + '.StartupItems.json')
+    $startupCsvPath = Join-Path $Directory ($BaseName + '.StartupItems.csv')
     $Scan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
     @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,SourcePath,TaskPath,CommandLine,DisplayVersion,FileVersion,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
-    return [pscustomobject]@{Json=$jsonPath;Csv=$csvPath}
+    $startupItems = @($Scan.StartupInventory)
+    ConvertTo-Json -InputObject $startupItems -Depth 7 | Set-Content -LiteralPath $startupJsonPath -Encoding UTF8
+    $startupColumns = @('Name','SourcePath','StartupTarget','StartupArguments','StartupReinstallRisk','HeuristicReason','CommandLine','LastWriteTimeUtc','OriginalFilename','CompanyName','Signer','SignatureStatus')
+    if ($startupItems.Count -gt 0) {
+        $startupItems | Select-Object $startupColumns | Export-Csv -LiteralPath $startupCsvPath -NoTypeInformation -Encoding UTF8
+    } else {
+        ('"' + ($startupColumns -join '","') + '"') | Set-Content -LiteralPath $startupCsvPath -Encoding UTF8
+    }
+    return [pscustomobject]@{Json=$jsonPath;Csv=$csvPath;StartupJson=$startupJsonPath;StartupCsv=$startupCsvPath}
 }
 
 function Split-CompuTekUninstallCommand {
@@ -991,6 +1071,7 @@ Export-ModuleMember -Function @(
     'Get-CompuTekUninstallArtifacts',
     'Get-CompuTekProcessArtifacts',
     'Get-CompuTekServiceArtifacts',
+    'Get-CompuTekStartupCommandInfo',
     'Get-CompuTekPersistenceArtifacts',
     'Get-CompuTekTcpProcessMap',
     'Invoke-CompuTekRemoteAccessScan',

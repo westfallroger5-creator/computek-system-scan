@@ -791,6 +791,20 @@ function Remove-CandidateServices {
     }
 }
 
+function Remove-CandidateStartupItems {
+    param($Candidate)
+
+    foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'StartupFile' -and $_.SourcePath} | Sort-Object SourcePath -Unique)) {
+        $startupPath = [string]$finding.SourcePath
+        if (-not (Test-Path -LiteralPath $startupPath -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
+        if (Move-ToCandidateQuarantine -Candidate $Candidate -Path $startupPath -Kind 'startup-folder reinstall item' -AllowExactStartupItem) {
+            Write-RemediationLog "Removed startup-folder item before uninstall verification: $startupPath" 'Green'
+        } else {
+            Write-RemediationLog "Startup-folder item could not be removed: $startupPath" 'Red'
+        }
+    }
+}
+
 function Remove-CandidatePersistence {
     param($Candidate)
 
@@ -839,14 +853,14 @@ function Test-ProtectedRemediationPath {
 }
 
 function Move-ToCandidateQuarantine {
-    param($Candidate, [string]$Path, [string]$Kind)
+    param($Candidate, [string]$Path, [string]$Kind, [switch]$AllowExactStartupItem)
     if (-not (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue)) { return $false }
     $isDirectory = Test-Path -LiteralPath $Path -PathType Container -ErrorAction SilentlyContinue
     if (Test-ProtectedRemediationPath -Path $Path -Directory:$isDirectory) {
         Write-RemediationLog "Protected path was not moved automatically: $Path" 'Red'
         return $false
     }
-    if ($Candidate.IsUnknown -and ($isDirectory -or -not (Test-CompuTekUserWritablePath $Path))) {
+    if ($Candidate.IsUnknown -and -not $AllowExactStartupItem -and ($isDirectory -or -not (Test-CompuTekUserWritablePath $Path))) {
         Write-RemediationLog "Unknown artifact outside a user-writable file path was not moved automatically: $Path" 'Red'
         return $false
     }
@@ -926,6 +940,10 @@ function Invoke-FullCandidateRemoval {
         Remove-NativeRemoteFeature $Candidate
         return
     }
+
+    # Prevent a selected agent from being relaunched or reinstalled at sign-in
+    # while its registered vendor uninstaller is running.
+    Remove-CandidateStartupItems $Candidate
 
     $uninstallResult = Invoke-OfficialUninstall $Candidate
     if (-not $uninstallResult.Attempted) {
@@ -1049,6 +1067,10 @@ Write-Host "`n==================== SCAN STATUS ====================" -Foreground
 Write-Host "Artifacts inspected: $($scan.Stats.ArtifactsInspected)"
 Write-Host "Known remote product families: $($scan.Stats.KnownProducts)"
 Write-Host "Suspicious unknown artifacts: $($scan.Stats.SuspiciousUnknown)"
+Write-Host "Startup-folder items inspected: $($scan.Stats.StartupItems)"
+if ($scan.Stats.StartupReinstallRisks -gt 0) {
+    Write-Host "Startup-folder reinstall/download risks: $($scan.Stats.StartupReinstallRisks)" -ForegroundColor Red
+}
 if ($scan.IsComplete) {
     Write-Host 'Scan status: COMPLETE' -ForegroundColor Green
 } else {
@@ -1061,6 +1083,7 @@ if ($candidates.Count -eq 0) {
     Write-Host "`nNo cataloged remote-access software or suspicious remote-capable artifacts were found." -ForegroundColor $(if($scan.IsComplete){'Green'}else{'Yellow'})
     Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
     Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
+    Write-Host "Startup inventory: $($reportPaths.StartupCsv)" -ForegroundColor DarkGray
     Complete-CompuTekRun 'Scan complete.'
     exit 0
 }
@@ -1076,6 +1099,7 @@ foreach ($candidate in $candidates) {
 Write-Host "`nReports were saved before any remediation:" -ForegroundColor Cyan
 Write-Host "  $($reportPaths.Json)" -ForegroundColor DarkGray
 Write-Host "  $($reportPaths.Csv)" -ForegroundColor DarkGray
+Write-Host "  Startup items: $($reportPaths.StartupCsv)" -ForegroundColor DarkGray
 Write-Host 'A finding is not proof of malicious use. Verify company-approved support tools before removal.' -ForegroundColor Yellow
 
 $technicianName = ''
@@ -1230,12 +1254,14 @@ try {
         $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
         $decisionRecord.RemovalOutcome = $status
         $remainingLocations = @($remaining | ForEach-Object {
-            if ($_.Path) { [string]$_.Path }
+            if ($_.ArtifactType -eq 'StartupFile' -and $_.SourcePath) { [string]$_.SourcePath }
+            elseif ($_.Path) { [string]$_.Path }
             elseif ($_.InstallLocation) { [string]$_.InstallLocation }
             elseif ($_.SourcePath) { [string]$_.SourcePath }
             elseif ($_.RegistryPath) { [string]$_.RegistryPath }
         } | Where-Object {$_} | Sort-Object -Unique)
         $remainingServices = @($remaining | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Select-Object -ExpandProperty Name -Unique)
+        $remainingStartupItems = @($remaining | Where-Object {$_.ArtifactType -eq 'StartupFile' -and $_.SourcePath} | Select-Object -ExpandProperty SourcePath -Unique)
         $verificationSummary += [pscustomobject]@{
             CandidateId = $candidate.Id
             ProductName = $candidate.Name
@@ -1243,6 +1269,7 @@ try {
             InstallationScope = Get-CandidateLocationLabel $candidate
             Status = $status
             RemainingFindings = $remaining.Count
+            RemainingStartupItems = $remainingStartupItems.Count
             RemainingLocations = $remainingLocations -join '; '
         }
         Write-Host ("{0}: {1} ({2} remaining finding(s))" -f $candidate.Id,$status,$remaining.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
@@ -1253,6 +1280,7 @@ try {
                 DetectedVersion = $candidate.DetectedVersion
                 Locations = $remainingLocations
                 Services = $remainingServices
+                StartupItems = $remainingStartupItems
                 RemainingFindings = $remaining.Count
             }
         }
@@ -1262,6 +1290,12 @@ try {
     if (-not $verification.IsComplete) { Write-Host 'Verification scan was incomplete. No removal is marked verified; review its collector errors.' -ForegroundColor Red }
     Write-Host "After-remediation JSON: $($verificationPaths.Json)" -ForegroundColor DarkGray
     Write-Host "After-remediation CSV:  $($verificationPaths.Csv)" -ForegroundColor DarkGray
+    Write-Host "After-remediation startup inventory: $($verificationPaths.StartupCsv)" -ForegroundColor DarkGray
+    if ($verification.Stats.StartupReinstallRisks -gt 0) {
+        Write-Host "$($verification.Stats.StartupReinstallRisks) startup-folder item(s) can still download or reinstall software. Review the startup inventory before rebooting." -ForegroundColor Red
+    } else {
+        Write-Host 'No startup-folder download/reinstall commands remain flagged.' -ForegroundColor Green
+    }
 } catch {
     foreach ($record in @($decisions | Where-Object {$_.Decision -eq 'Remove'})) { $record.RemovalOutcome = 'NotVerified-ScanFailed' }
     Write-RemediationLog "Verification scan failed: $($_.Exception.Message)" 'Red'
@@ -1283,6 +1317,7 @@ if ($manualRemovalItems.Count -gt 0) {
         $manualLines += ("{0} - version {1} - review ID {2}" -f $item.ProductName,$(if($item.DetectedVersion){$item.DetectedVersion}else{'unavailable'}),$item.CandidateId)
         foreach ($location in @($item.Locations)) { $manualLines += ("  Location: {0}" -f $location) }
         foreach ($service in @($item.Services)) { $manualLines += ("  Service: {0}" -f $service) }
+        foreach ($startupItem in @($item.StartupItems)) { $manualLines += ("  Startup item: {0}" -f $startupItem) }
         $manualLines += ''
     }
     $manualLines | Set-Content -LiteralPath $manualRemovalText -Encoding UTF8

