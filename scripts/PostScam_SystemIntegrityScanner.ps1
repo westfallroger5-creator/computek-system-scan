@@ -701,13 +701,20 @@ $actionableSummaryText = Join-Path $caseRoot 'ActionableFindings.txt'
 $gapsPath = Join-Path $caseRoot 'CollectionGaps.txt'
 $summaryPath = Join-Path $caseRoot 'Summary.txt'
 
-@($script:Evidence) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidenceJson -Encoding UTF8
-@($script:Evidence) | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $evidenceCsv -NoTypeInformation -Encoding UTF8
-@($script:Supplemental) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $supplementalJson -Encoding UTF8
-@($script:Supplemental) | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $supplementalCsv -NoTypeInformation -Encoding UTF8
-@($script:Gaps) | Set-Content -LiteralPath $gapsPath -Encoding UTF8
+$evidenceRecords = [object[]]$script:Evidence.ToArray()
+$supplementalRecords = [object[]]$script:Supplemental.ToArray()
+$collectionGaps = [string[]]$script:Gaps.ToArray()
 
-$actionableGroups = @($script:Evidence | Group-Object {
+# Windows PowerShell 5.1 can throw "Argument types do not match" when @(...)
+# directly materializes a generic List[T]. Convert each list to a normal array
+# once before exporting so long-running collections always reach their summary.
+ConvertTo-Json -InputObject $evidenceRecords -Depth 8 | Set-Content -LiteralPath $evidenceJson -Encoding UTF8
+$evidenceRecords | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $evidenceCsv -NoTypeInformation -Encoding UTF8
+ConvertTo-Json -InputObject $supplementalRecords -Depth 8 | Set-Content -LiteralPath $supplementalJson -Encoding UTF8
+$supplementalRecords | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $supplementalCsv -NoTypeInformation -Encoding UTF8
+$collectionGaps | Set-Content -LiteralPath $gapsPath -Encoding UTF8
+
+$actionableGroups = @($evidenceRecords | Group-Object {
     '{0}|{1}|{2}' -f $_.Category,$_.Name,$_.Path
 } | ForEach-Object {
     $items = @($_.Group)
@@ -737,8 +744,8 @@ if ($actionableGroups.Count -eq 0) {
 }
 $actionableTextLines | Set-Content -LiteralPath $actionableSummaryText -Encoding UTF8
 
-$categoryCounts = @($script:Evidence | Group-Object Category | Sort-Object Name)
-$severityCounts = @($script:Evidence | Group-Object Severity | Sort-Object Name)
+$categoryCounts = @($evidenceRecords | Group-Object Category | Sort-Object Name)
+$severityCounts = @($evidenceRecords | Group-Object Severity | Sort-Object Name)
 $summaryLines = @(
     'COMPUTEK FOCUSED POST-SCAM SUMMARY',
     "Computer: $env:COMPUTERNAME",
