@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.26.4",
+  "catalogVersion": "2026.08.26.5",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "heuristicTerms": [
     "remote access", "remote desktop", "remote support", "remote control", "screen sharing",
@@ -56,6 +56,8 @@
       "name": "Splashtop Streamer / SOS",
       "category": "remote-support",
       "groupProductComponents": true,
+      "managedSuiteId": "syncro-splashtop",
+      "managedSuiteName": "SyncroMSP Agent + Splashtop (verify CompuTek service)",
       "aliases": ["splashtop", "splashtop streamer", "splashtop sos"],
       "executables": ["srservice.exe", "srmanager.exe", "strwinclt.exe", "splashtopsos.exe"],
       "originalFilenames": ["srservice.exe", "strwinclt.exe"],
@@ -497,6 +499,9 @@
       "name": "SyncroMSP Agent",
       "category": "rmm",
       "groupProductComponents": true,
+      "managedSuiteId": "syncro-splashtop",
+      "managedSuiteName": "SyncroMSP Agent + Splashtop (verify CompuTek service)",
+      "managedSuitePrimary": true,
       "aliases": ["syncromsp", "syncro agent", "syncro live"],
       "executables": ["syncroservice.exe", "syncro.live.exe", "kabuto.app.runner.exe"],
       "originalFilenames": ["syncroservice.exe"],

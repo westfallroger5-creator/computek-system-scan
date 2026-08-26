@@ -42,6 +42,7 @@ Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
 Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
 Assert-True ($remediationSource -match 'Which agent numbers should be kept' -and $remediationSource -match 'Which agent numbers should be removed' -and $remediationSource -match 'Every agent must be classified' -and $remediationSource -match 'CONFIRM DECISIONS') 'Technician must explicitly classify and confirm every numbered agent'
+Assert-True ($remediationSource -match 'OPEN 1' -and $remediationSource -match 'Open-CandidateInstallerFiles' -and $remediationSource -match '/select,' -and $remediationSource -match "Start-Process -FilePath 'explorer\.exe'") 'Technicians can show a numbered agent downloaded installer file in File Explorer before deciding'
 Assert-True ($remediationSource -match "APPLY REMOVALS" -and $remediationSource -notmatch 'A for all') 'Bulk removal cannot start without a final typed confirmation'
 Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
 Assert-True ($remediationSource -match 'PortableMedia-\$fileSystem-NormalPermissions' -and $remediationSource -notmatch '\bSet-Acl\b' -and $remediationSource -notmatch 'SetAccessRuleProtection') 'USB evidence keeps normal inherited permissions so technicians can remove old scan folders without elevation'
@@ -96,7 +97,7 @@ try {
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate','ConvertTo-CompuTekCandidateSelection')) {
+foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate','ConvertTo-CompuTekCandidateSelection')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -119,14 +120,45 @@ $syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Age
 $syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.29.18406'}
 $syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null;DisplayVersion='1.0.203.18518';FileVersion=$null}
 $syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall))
-Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].GroupByVersion -and $syncroScopes[0].DetectedVersion -eq '1.0.203.18518' -and $syncroScopes[0].Locations.Count -eq 3) 'Different Syncro component build numbers follow the single registered suite version'
+Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].IsManagedSuite -and $syncroScopes[0].DetectedVersion -eq '1.0.203.18518' -and $syncroScopes[0].Locations.Count -eq 3) 'Different Syncro component build numbers are shown once as the managed suite'
+
+$splashtopInstall = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='InstalledProgram';Name='Splashtop Streamer';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote';InstallLocation='C:\Program Files (x86)\Splashtop\Splashtop Remote';RegistryPath='HKLM:\Software\Uninstall\Splashtop';PackageFullName=$null;DisplayVersion='3.8.4.1';FileVersion=$null}
+$splashtopService = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='SplashtopRemoteService';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='3.82.2.9'}
+$syncroDownloadedInstaller = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='File';Name='SyncroSetup.exe';Path='C:\Users\Tech\Downloads\SyncroSetup.exe';SourcePath=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.203.18518'}
+$managedScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$syncroDownloadedInstaller))
+Assert-True ($managedScopes.Count -eq 1 -and $managedScopes[0].IsManagedSuite -and @($managedScopes[0].ProductIds).Count -eq 2 -and $managedScopes[0].Findings.Count -eq 6) 'Syncro, its bundled Splashtop components, and a passive downloaded installer collapse into one managed technician decision'
+Assert-True (Test-FindingBelongsToCandidate -Finding $splashtopService -Candidate $managedScopes[0]) 'Managed-suite removal verification includes remaining Splashtop components'
+$standaloneSplashtop = @(New-RemovalCandidates @($splashtopInstall,$splashtopService))
+Assert-True ($standaloneSplashtop.Count -eq 1 -and -not $standaloneSplashtop[0].IsManagedSuite) 'Standalone Splashtop remains a normal review finding when no Syncro primary agent is present'
+$hiddenSplashtop = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='HiddenSupport';Path='C:\Users\Victim\AppData\Roaming\Support\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='9.9.9'}
+$managedWithHidden = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$hiddenSplashtop))
+Assert-True ($managedWithHidden.Count -eq 2 -and @($managedWithHidden | Where-Object {$_.IsManagedSuite}).Count -eq 1 -and @($managedWithHidden | Where-Object {-not $_.IsManagedSuite -and $_.Findings.Path -contains $hiddenSplashtop.Path}).Count -eq 1) 'A hidden user-profile Splashtop copy stays separately flagged beside the standard managed suite'
 
 $keepSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'KEEP 1,3-5' -Maximum 7 -ExpectedAction KEEP)
 $removeSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 2,6-7' -Maximum 7 -ExpectedAction REMOVE)
-Assert-True (($keepSelection -join ',') -eq '1,3,4,5' -and ($removeSelection -join ',') -eq '2,6,7') 'Batch decisions accept comma-separated numbers and ranges'
+$openSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'OPEN 1,4-5' -Maximum 7 -ExpectedAction OPEN)
+Assert-True (($keepSelection -join ',') -eq '1,3,4,5' -and ($removeSelection -join ',') -eq '2,6,7' -and ($openSelection -join ',') -eq '1,4,5') 'Batch decisions and folder opening accept comma-separated numbers and ranges'
 $invalidSelectionRejected = $false
 try { ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 8' -Maximum 7 -ExpectedAction REMOVE | Out-Null } catch { $invalidSelectionRejected = $true }
 Assert-True $invalidSelectionRejected 'Batch decisions reject unavailable agent numbers'
+
+$installerTestRoot = Join-Path $artifactRoot ('InstallerOpenTest-' + [Guid]::NewGuid().ToString('N'))
+try {
+    $downloadFolder = New-Item -Path (Join-Path $installerTestRoot 'Downloads') -ItemType Directory -Force
+    $downloadedInstaller = Join-Path $downloadFolder.FullName 'RemoteSupportSetup.exe'
+    Set-Content -LiteralPath $downloadedInstaller -Value 'test' -Encoding ASCII
+    $installerCandidate = [pscustomobject]@{Findings=@(
+        [pscustomobject]@{ArtifactType='File';Path=$downloadedInstaller;SourcePath=$null},
+        [pscustomobject]@{ArtifactType='InstalledProgram';Path=$downloadFolder.FullName;SourcePath=$null}
+    )}
+    $installerFiles = @(Get-CandidateInstallerFiles $installerCandidate)
+    Assert-True ($installerFiles.Count -eq 1 -and $installerFiles[0] -eq $downloadedInstaller) 'OPEN targets a detected downloaded installer file rather than an installed-program folder'
+} finally {
+    $resolvedInstallerTestRoot = [IO.Path]::GetFullPath($installerTestRoot)
+    if ($resolvedInstallerTestRoot.StartsWith($artifactRoot + [IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedInstallerTestRoot)) {
+        Remove-Item -LiteralPath $resolvedInstallerTestRoot -Recurse -Force
+    }
+}
 
 $hiddenScreenConnect = New-TestEvidence @{
     ArtifactType='Service';Name='ScreenConnect Client 0123456789abcdef';DisplayName='ScreenConnect Client 0123456789abcdef'

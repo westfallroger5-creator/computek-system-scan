@@ -111,6 +111,9 @@ function Show-Finding {
 
 function Get-CandidateLocationLabel {
     param($Candidate)
+    if ($Candidate.IsManagedSuite) {
+        return ("{0} related installation location(s), consolidated as one managed suite" -f @($Candidate.Locations).Count)
+    }
     if ($Candidate.GroupByVersion) {
         return ("{0} related location(s), grouped for this version" -f @($Candidate.Locations).Count)
     }
@@ -134,7 +137,7 @@ function Show-CandidateSummary {
 
     Write-Host ("    Location: {0}" -f (Get-CandidateLocationLabel $Candidate)) -ForegroundColor Cyan
     if ($Candidate.DetectedVersion) {
-        Write-Host ("    Detected version: {0}" -f $Candidate.DetectedVersion) -ForegroundColor Cyan
+        Write-Host ("    Detected version{0}: {1}" -f $(if($Candidate.IsManagedSuite){'s'}else{''}),$Candidate.DetectedVersion) -ForegroundColor Cyan
     } else {
         Write-Host '    Detected version: unavailable; kept separate by location for safety' -ForegroundColor DarkYellow
     }
@@ -147,6 +150,13 @@ function Show-CandidateSummary {
     }
     if ($renamed.Count -gt 0) {
         Write-Host ("    WARNING: {0} renamed-file indicator(s) require review." -f $renamed.Count) -ForegroundColor Red
+    }
+    if ($Candidate.IsManagedSuite) {
+        Write-Host '    Managed suite: standard-path Syncro and Splashtop components are shown once. Confirm this agent belongs to CompuTek before KEEP.' -ForegroundColor Green
+    }
+    $installerFiles = @(Get-CandidateInstallerFiles $Candidate)
+    if ($installerFiles.Count -gt 0) {
+        Write-Host ("    Installer/portable file(s): {0}. Type OPEN {1} to show the downloaded file in File Explorer." -f $installerFiles.Count,$Candidate.Index) -ForegroundColor Cyan
     }
 
     if ($Candidate.GroupByVersion -and @($Candidate.Locations).Count -gt 1) {
@@ -168,6 +178,55 @@ function Show-CandidateSummary {
         }
         if ($Candidate.Findings.Count -gt $examples.Count) {
             Write-Host ("      ...{0} additional supporting item(s) are saved in JSON/CSV." -f ($Candidate.Findings.Count - $examples.Count)) -ForegroundColor DarkGray
+        }
+    }
+}
+
+function Get-CandidateInstallerFiles {
+    param($Candidate)
+
+    $installerFiles = New-Object System.Collections.Generic.List[string]
+    $installedRoots = @($env:ProgramFiles,${env:ProgramFiles(x86)},$env:ProgramData) | Where-Object {$_} | ForEach-Object {
+        ([IO.Path]::GetFullPath([string]$_)).TrimEnd('\')
+    }
+    foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'File'})) {
+        foreach ($value in @($finding.Path,$finding.SourcePath)) {
+            $path = [Environment]::ExpandEnvironmentVariables(([string]$value).Trim().Trim('"'))
+            if (-not $path) { continue }
+            try {
+                if (-not (Test-Path -LiteralPath $path -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
+                $path = [IO.Path]::GetFullPath($path)
+            } catch { continue }
+            if ([IO.Path]::GetExtension($path) -notmatch '(?i)^\.(exe|msi|msix|msixbundle|appx|appxbundle|zip)$') { continue }
+            $insideInstalledRoot = @($installedRoots | Where-Object {
+                $path.StartsWith(([string]$_).TrimEnd('\') + '\',[StringComparison]::OrdinalIgnoreCase)
+            }).Count -gt 0
+            if ($insideInstalledRoot) { continue }
+            if (-not $installerFiles.Contains($path)) { $installerFiles.Add($path) }
+        }
+    }
+    return @($installerFiles | Sort-Object @{Expression={if($_ -match '(?i)\\downloads\\'){0}elseif($_ -match '(?i)\\desktop\\'){1}elseif($_ -match '(?i)\\temp\\'){2}else{3}}},@{Expression={$_}})
+}
+
+function Open-CandidateInstallerFiles {
+    param($Candidate)
+
+    $installerFiles = @(Get-CandidateInstallerFiles $Candidate)
+    if ($installerFiles.Count -eq 0) {
+        Write-Host "No downloaded installer or portable remote-tool file was found for agent $($Candidate.Index). Installed-component paths remain in the saved JSON report." -ForegroundColor Yellow
+        return
+    }
+    $openedDirectories = @{}
+    foreach ($installerFile in $installerFiles) {
+        $directory = Split-Path -Parent $installerFile
+        $directoryKey = $directory.ToLowerInvariant()
+        if ($openedDirectories.ContainsKey($directoryKey)) { continue }
+        $openedDirectories[$directoryKey] = $true
+        try {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $installerFile) -ErrorAction Stop
+            Write-Host "Opened downloaded installer/portable file: $installerFile" -ForegroundColor Green
+        } catch {
+            Write-Host "Could not show ${installerFile}: $($_.Exception.Message)" -ForegroundColor Yellow
         }
     }
 }
@@ -217,9 +276,29 @@ function New-RemovalCandidates {
     param($Findings)
 
     $suiteProducts = @{}
+    $managedSuiteDefinitions = @{}
     foreach ($product in @($catalog.products)) {
         $groupProperty = $product.PSObject.Properties['groupProductComponents']
         if ($groupProperty -and [bool]$groupProperty.Value) { $suiteProducts[[string]$product.id] = $true }
+
+        $managedSuiteProperty = $product.PSObject.Properties['managedSuiteId']
+        if (-not $managedSuiteProperty -or [string]::IsNullOrWhiteSpace([string]$managedSuiteProperty.Value)) { continue }
+        $managedSuiteId = [string]$managedSuiteProperty.Value
+        if (-not $managedSuiteDefinitions.ContainsKey($managedSuiteId)) {
+            $managedSuiteDefinitions[$managedSuiteId] = [ordered]@{
+                Id = $managedSuiteId
+                Name = [string]$product.managedSuiteName
+                ProductIds = New-Object System.Collections.Generic.List[string]
+                PrimaryProductIds = New-Object System.Collections.Generic.List[string]
+            }
+        }
+        if (-not $managedSuiteDefinitions[$managedSuiteId].ProductIds.Contains([string]$product.id)) {
+            $managedSuiteDefinitions[$managedSuiteId].ProductIds.Add([string]$product.id)
+        }
+        $primaryProperty = $product.PSObject.Properties['managedSuitePrimary']
+        if ($primaryProperty -and [bool]$primaryProperty.Value -and -not $managedSuiteDefinitions[$managedSuiteId].PrimaryProductIds.Contains([string]$product.id)) {
+            $managedSuiteDefinitions[$managedSuiteId].PrimaryProductIds.Add([string]$product.id)
+        }
     }
 
     # Group every known product by its exact detected version. Supporting artifacts
@@ -324,12 +403,62 @@ function New-RemovalCandidates {
         $scopeGroups[$key].Findings.Add($finding)
     }
 
+    $entries = @($scopeGroups.Values)
+    foreach ($definition in @($managedSuiteDefinitions.Values)) {
+        $suiteEntries = @($entries | Where-Object {
+            if ($definition.ProductIds -notcontains [string]$_.ProductId) { return $false }
+            $suspiciousUserWritableEvidence = @($_.Findings | Where-Object {
+                if (-not $_.Path -or -not (Test-CompuTekUserWritablePath $_.Path)) { return $false }
+                $isPassiveDownloadedFile = (
+                    $_.ArtifactType -eq 'File' -and
+                    [IO.Path]::GetExtension([string]$_.Path) -match '(?i)^\.(exe|msi|msix|msixbundle|appx|appxbundle|zip)$' -and
+                    [string]$_.Path -match '(?i)\\(downloads|desktop|temp)\\'
+                )
+                return (-not $isPassiveDownloadedFile)
+            })
+            return ($suspiciousUserWritableEvidence.Count -eq 0)
+        })
+        $hasPrimary = @($suiteEntries | Where-Object {$definition.PrimaryProductIds -contains [string]$_.ProductId}).Count -gt 0
+        if (-not $hasPrimary) { continue }
+
+        $managedFindings = New-Object System.Collections.Generic.List[object]
+        $managedLocations = New-Object System.Collections.Generic.List[string]
+        foreach ($entry in $suiteEntries) {
+            foreach ($finding in $entry.Findings.ToArray()) { $managedFindings.Add($finding) }
+            foreach ($location in $entry.Locations.ToArray()) {
+                if ($location -and -not $managedLocations.Contains([string]$location)) { $managedLocations.Add([string]$location) }
+            }
+        }
+        $primaryVersions = @($suiteEntries | Where-Object {
+            $definition.PrimaryProductIds -contains [string]$_.ProductId -and $_.DetectedVersion
+        } | ForEach-Object {[string]$_.DetectedVersion} | Sort-Object -Unique)
+        $primaryProductId = [string]$definition.PrimaryProductIds[0]
+        $mergedEntry = [ordered]@{
+            ProductId = $primaryProductId
+            ProductIds = [string[]]$definition.ProductIds.ToArray()
+            ProductName = if ($definition.Name) {[string]$definition.Name} else {'Managed remote-support suite'}
+            Category = 'rmm'
+            ScopeKey = "managed-suite:$($definition.Id)"
+            ScopePath = $null
+            GroupByVersion = $false
+            DetectedVersion = ($primaryVersions -join ', ')
+            Locations = $managedLocations
+            Findings = $managedFindings
+            IsManagedSuite = $true
+            ManagedSuiteId = [string]$definition.Id
+        }
+        $mergedEntryKeys = @{}
+        foreach ($entry in $suiteEntries) { $mergedEntryKeys["$($entry.ProductId)|$($entry.ScopeKey)"] = $true }
+        $entries = @($entries | Where-Object {-not $mergedEntryKeys.ContainsKey("$($_.ProductId)|$($_.ScopeKey)")})
+        $entries += $mergedEntry
+    }
+
     $candidates = @()
     $productCounts = @{}
     $index = 0
-    foreach ($entry in @($scopeGroups.Values | Sort-Object ProductName,ScopeKey)) {
+    foreach ($entry in @($entries | Sort-Object ProductName,ScopeKey)) {
         $index++
-        $baseId = if ($entry.ProductId -eq 'unknown') { 'unknown' } else { $entry.ProductId }
+        $baseId = if ($entry.IsManagedSuite) { "managed-$($entry.ManagedSuiteId)" } elseif ($entry.ProductId -eq 'unknown') { 'unknown' } else { $entry.ProductId }
         if (-not $productCounts.ContainsKey($baseId)) { $productCounts[$baseId] = 0 }
         $productCounts[$baseId]++
         $id = '{0}-{1}' -f $baseId,$productCounts[$baseId]
@@ -342,6 +471,7 @@ function New-RemovalCandidates {
             Index = $index
             Id = $id
             ProductId = $entry.ProductId
+            ProductIds = if ($entry.ProductIds) {@($entry.ProductIds)} else {@([string]$entry.ProductId)}
             Name = [string]$name
             Category = $entry.Category
             ScopeKey = $entry.ScopeKey
@@ -351,6 +481,8 @@ function New-RemovalCandidates {
             Locations = @($entry.Locations | Sort-Object)
             Findings = @($entry.Findings | ForEach-Object {$_})
             IsUnknown = ($entry.ProductId -eq 'unknown')
+            IsManagedSuite = [bool]$entry.IsManagedSuite
+            ManagedSuiteId = [string]$entry.ManagedSuiteId
         }
     }
     return @($candidates)
@@ -818,7 +950,8 @@ function Invoke-FullCandidateRemoval {
 
 function Test-FindingBelongsToCandidate {
     param($Finding, $Candidate)
-    if ($Finding.ProductId -ne $Candidate.ProductId) { return $false }
+    if (@($Candidate.ProductIds) -notcontains [string]$Finding.ProductId) { return $false }
+    if ($Candidate.IsManagedSuite) { return $true }
     if ($Candidate.GroupByVersion) {
         $findingVersion = Get-FindingDetectedVersion $Finding
         if ($findingVersion) {
@@ -855,11 +988,11 @@ function ConvertTo-CompuTekCandidateSelection {
     param(
         [AllowEmptyString()][string]$Text,
         [Parameter(Mandatory)][ValidateRange(1,10000)][int]$Maximum,
-        [Parameter(Mandatory)][ValidateSet('KEEP','REMOVE')][string]$ExpectedAction
+        [Parameter(Mandatory)][ValidateSet('KEEP','REMOVE','OPEN')][string]$ExpectedAction
     )
 
     $value = ([string]$Text).Trim()
-    $actionMatch = [regex]::Match($value,'(?i)^(KEEP|REMOVE)\b\s*(.*)$')
+    $actionMatch = [regex]::Match($value,'(?i)^(KEEP|REMOVE|OPEN)\b\s*(.*)$')
     if ($actionMatch.Success) {
         if ($actionMatch.Groups[1].Value.ToUpperInvariant() -ne $ExpectedAction) {
             throw "This answer must start with $ExpectedAction."
@@ -935,8 +1068,8 @@ if ($candidates.Count -eq 0) {
 Write-Host "`n===================== FINDINGS ======================" -ForegroundColor Cyan
 foreach ($candidate in $candidates) {
     $highest = if ($candidate.Findings.Confidence -contains 'High') {'High'} elseif ($candidate.Findings.Confidence -contains 'Medium') {'Medium'} else {'Low'}
-    $displayClass = if ($candidate.IsUnknown) {$highest} else {'Known'}
-    Write-Host ("{0,2}. [{1}] {2}" -f $candidate.Index,$displayClass,$candidate.Name) -ForegroundColor $(if($candidate.IsUnknown -and $highest -eq 'High'){'Red'}elseif($candidate.IsUnknown){'Yellow'}else{'Cyan'})
+    $displayClass = if ($candidate.IsManagedSuite) {'Managed'} elseif ($candidate.IsUnknown) {$highest} else {'Known'}
+    Write-Host ("{0,2}. [{1}] {2}" -f $candidate.Index,$displayClass,$candidate.Name) -ForegroundColor $(if($candidate.IsManagedSuite){'Green'}elseif($candidate.IsUnknown -and $highest -eq 'High'){'Red'}elseif($candidate.IsUnknown){'Yellow'}else{'Cyan'})
     Show-CandidateSummary $candidate
 }
 
@@ -956,18 +1089,32 @@ $decisions = @()
 $decisionById = @{}
 
 Write-Host "`nClassify the numbered agents in two batches. Every number must be placed in KEEP or REMOVE before continuing." -ForegroundColor Cyan
-Write-Host 'Examples: KEEP 1,3-5    REMOVE 2,6-8    KEEP ALL    REMOVE NONE' -ForegroundColor Gray
+Write-Host 'Examples: KEEP 1,3-5    REMOVE 2,6-8    OPEN 1    KEEP ALL    REMOVE NONE' -ForegroundColor Gray
+Write-Host 'At either decision prompt, type OPEN followed by agent numbers to show detected installer/portable files in Downloads, Desktop, Temp, or another non-installed location. The prompt will then repeat.' -ForegroundColor Green
 $keepNumbers = @()
 $removeNumbers = @()
 while ($true) {
     try {
-        $keepAnswer = Read-CompuTekInput 'Which agent numbers should be kept? Type KEEP numbers, KEEP ALL, or KEEP NONE (Q aborts)'
+        $keepAnswer = Read-CompuTekInput 'Which agent numbers should be kept? Type KEEP numbers, OPEN numbers, or Q to abort'
         if ($keepAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
+        if ($keepAnswer -match '(?i)^\s*OPEN\b') {
+            $openNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $keepAnswer -Maximum $candidates.Count -ExpectedAction OPEN)
+            foreach ($number in $openNumbers) { Open-CandidateInstallerFiles $candidates[$number - 1] }
+            continue
+        }
         $keepNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $keepAnswer -Maximum $candidates.Count -ExpectedAction KEEP)
 
-        $removeAnswer = Read-CompuTekInput 'Which agent numbers should be removed? Type REMOVE numbers, REMOVE ALL, or REMOVE NONE (Q aborts)'
-        if ($removeAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
-        $removeNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $removeAnswer -Maximum $candidates.Count -ExpectedAction REMOVE)
+        while ($true) {
+            $removeAnswer = Read-CompuTekInput 'Which agent numbers should be removed? Type REMOVE numbers, OPEN numbers, or Q to abort'
+            if ($removeAnswer -match '^[Qq]$') { Write-Host 'Technician review aborted. Nothing was changed.' -ForegroundColor Yellow; exit 0 }
+            if ($removeAnswer -match '(?i)^\s*OPEN\b') {
+                $openNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $removeAnswer -Maximum $candidates.Count -ExpectedAction OPEN)
+                foreach ($number in $openNumbers) { Open-CandidateInstallerFiles $candidates[$number - 1] }
+                continue
+            }
+            $removeNumbers = @(ConvertTo-CompuTekCandidateSelection -Text $removeAnswer -Maximum $candidates.Count -ExpectedAction REMOVE)
+            break
+        }
     } catch {
         Write-Host $_.Exception.Message -ForegroundColor Yellow
         Write-Host 'Re-enter both KEEP and REMOVE selections.' -ForegroundColor Yellow
@@ -1004,7 +1151,9 @@ foreach ($candidate in $candidates) {
         CandidateNumber = $candidate.Index
         CandidateId = $candidate.Id
         ProductId = $candidate.ProductId
+        ProductIds = @($candidate.ProductIds)
         ProductName = $candidate.Name
+        IsManagedSuite = [bool]$candidate.IsManagedSuite
         DetectedVersion = $candidate.DetectedVersion
         InstallationScope = Get-CandidateLocationLabel $candidate
         Decision = $decision
@@ -1019,7 +1168,7 @@ foreach ($candidate in $candidates) {
 }
 
 $decisionDocument = [pscustomobject][ordered]@{
-    SchemaVersion = 2
+    SchemaVersion = 3
     ComputerName = $env:COMPUTERNAME
     CaseFolder = $caseRoot
     Technician = $technicianName
