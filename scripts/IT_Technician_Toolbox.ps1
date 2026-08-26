@@ -113,6 +113,8 @@ function Invoke-ToolboxChkdsk {
 }
 
 # --- Menu Loop ---
+$exitToolbox = $false
+$rebootStarted = $false
 do {
     Write-Host "`n[1] System Information"
     Write-Host "[2] Network Information"
@@ -128,8 +130,10 @@ do {
     Write-Host "[0] Reboot System"
     Write-Host "[X] Exit Toolbox"
     $choice = Read-CompuTekInput "Choose an option"
+    $normalizedChoice = ([string]$choice).Trim().ToUpperInvariant()
 
-    switch ($choice.ToUpper()) {
+    try {
+    switch ($normalizedChoice) {
         "1" {
             Write-Host "`n--- SYSTEM INFORMATION ---" -ForegroundColor Yellow
             systeminfo
@@ -146,8 +150,15 @@ do {
             Write-Host "Releasing IP..."
             ipconfig /release
             Write-Host "Renewing IP..."
+            Write-Host 'Windows may take several minutes while each network adapter waits for DHCP. The toolbox will return to the menu when Windows finishes.' -ForegroundColor Cyan
             ipconfig /renew
-            Log "Flushed DNS and renewed IP"
+            $renewExitCode = $LASTEXITCODE
+            if ($renewExitCode -eq 0) {
+                Write-Host 'DNS flush and IP renewal completed. Returning to the toolbox menu.' -ForegroundColor Green
+            } else {
+                Write-Host "IP renewal finished with exit code $renewExitCode. Review the network information before continuing." -ForegroundColor Yellow
+            }
+            Log "Flushed DNS and renewed IP; ipconfig /renew exit code $renewExitCode"
         }
         "4" {
             Write-Host "`nTesting internet connection..." -ForegroundColor Yellow
@@ -379,7 +390,8 @@ do {
             if ($confirmReboot -match "^[Yy]$") {
                 Write-Host "`nRebooting system..." -ForegroundColor Yellow
                 Log "System reboot initiated"
-                Restart-Computer -Force
+                Restart-Computer -Force -ErrorAction Stop
+                $rebootStarted = $true
             } else {
                 Write-Host "Reboot canceled." -ForegroundColor DarkGray
             }
@@ -387,21 +399,27 @@ do {
         "X" {
             Write-Host "`nExiting IT Technician Toolbox..." -ForegroundColor Cyan
             Log "Exited Toolbox"
+            $exitToolbox = $true
             break
         }
         default {
             Write-Host "Invalid selection. Try again." -ForegroundColor Red
         }
     }
+    } catch {
+        Write-Host "The selected toolbox action could not finish: $($_.Exception.Message)" -ForegroundColor Red
+        Log "Toolbox option $normalizedChoice failed: $($_.Exception.Message)"
+        Write-Host 'Returning to the toolbox menu.' -ForegroundColor Yellow
+    }
 
-    if ($choice.ToUpper() -ne "X") {
+    if (-not $exitToolbox -and -not $rebootStarted) {
         Write-Host "`nPress Enter to continue..." -ForegroundColor DarkGray
         [void](Read-CompuTekInput 'Press Enter to continue')
         if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
         Write-Host "=== IT TECHNICIAN TOOLBOX ===`n" -ForegroundColor Cyan
     }
 
-} while ($choice.ToUpper() -ne "X")
+} while (-not $exitToolbox -and -not $rebootStarted)
 
 Write-Host "`nGoodbye!" -ForegroundColor Cyan
 Start-Sleep 1

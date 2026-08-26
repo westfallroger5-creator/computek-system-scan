@@ -31,6 +31,7 @@ End-of-job readiness checklist:
 ### IT_Technician_Toolbox.ps1
 Quick access maintenance menu with logs saved beside the EXE under `CompuTekData/<COMPUTERNAME>/TechnicianToolbox` on the service USB:
 - System and network information, DNS flush + IP renew, internet connectivity tests.
+- Every completed or failed action returns to the toolbox menu. DNS/IP refresh explains that Windows DHCP renewal can take several minutes and is allowed to finish without a forced timeout.
 - Temp file cleanup, SFC, CHKDSK (drive picker), DISM restore health, Task Manager launch, and print queue reset.
 - CHKDSK always starts with a read-only scan. `/F` or `/R` is offered only after a nonzero scan result and requires an exact technician approval; the toolbox never reboots automatically.
 - BitLocker “used space only” enablement workflow that requires typed technician approval, saves and reads back complete 48-digit recovery passwords under `BitLockerKeys/<COMPUTERNAME>` on the service USB before encryption, and uses TPM protection for the Windows drive.
@@ -51,6 +52,7 @@ Read-only, focused post-scam integrity review with a configurable 7-day default 
 - Uses Security event 4663 when file-object auditing was enabled to identify possible file access. It clearly distinguishes evidence of access or staging from proof of exfiltration.
 - Records every unavailable log or collector as a collection gap; an incomplete collection is never reported as clean.
 - Writes a timestamped case folder beside the EXE under `CompuTekData/<COMPUTERNAME>/PostScam/Cases` on the service USB and does not change system state.
+- Uses Windows PowerShell 5.1-safe evidence-array exports so large collections reliably reach the actionable summary files.
 
 ### RemoteAccessScanAndRemove.ps1
 Evidence-first detection and interactive remediation of remote-access software:

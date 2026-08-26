@@ -56,6 +56,7 @@ Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSourc
 Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remoteSource -match 'CompuTekData' -and $postScamSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $postScamSource -match 'CompuTekData') 'Remote and post-scam evidence is stored beside the EXE on the service USB'
 Assert-AppTest ($postScamSource -match '\$script:Supplemental' -and $postScamSource -match 'ActionableFindings\.txt' -and $postScamSource -match '\[switch\]\$ExtendedForensics' -and $postScamSource -match 'Select-Object -First 12') 'Post-scam default output is consolidated to actionable findings while optional extended leads stay in USB reports'
+Assert-AppTest ($postScamSource -match '\$script:Evidence\.ToArray\(\)' -and $postScamSource -match '\$script:Supplemental\.ToArray\(\)' -and $postScamSource -notmatch '@\(\$script:Evidence\)') 'Post-scam export materializes generic lists safely for Windows PowerShell 5.1'
 Assert-AppTest ($remoteSource -match 'Get-FindingDetectedVersion' -and $remoteSource -match 'GroupByVersion' -and $moduleSource -match 'DisplayVersion') 'Remote findings are grouped by detected product version'
 Assert-AppTest ($remoteSource -match 'ConvertTo-CompuTekCandidateSelection' -and $remoteSource -match 'KEEP 1,3-5' -and $remoteSource -match 'REMOVE 2,6-8' -and $remoteSource -match 'CONFIRM DECISIONS') 'Numbered agents support confirmed batch KEEP and REMOVE ranges'
 Assert-AppTest ($moduleSource -match '\$actionableMatches' -and $moduleSource -match "category -ne 'native-feature'") 'Ordinary Windows-native remote features are excluded from removal candidates'
@@ -86,6 +87,8 @@ $chkdskRepairChoiceIndex = $toolboxSource.IndexOf("`$repairChoice = Read-CompuTe
 $chkdskRepairIndex = $toolboxSource.IndexOf("`$repairExitCode = Invoke-ToolboxChkdsk")
 Assert-AppTest ($chkdskScanIndex -ge 0 -and $chkdskRepairChoiceIndex -gt $chkdskScanIndex -and $chkdskRepairIndex -gt $chkdskRepairChoiceIndex -and $toolboxSource -match 'RUN CHKDSK \$\(\$repairSwitch\.ToUpper\(\)\) \$target') 'CHKDSK /F or /R requires a technician choice and exact typed approval after the read-only scan'
 Assert-AppTest ($toolboxSource -match 'This toolbox will not reboot automatically' -and $toolboxSource -match 'CHKDSK_\{0\}_ReadOnly') 'Toolbox preserves CHKDSK reports on USB and never automatically reboots after a repair request'
+Assert-AppTest ($toolboxSource -match '\$exitToolbox = \$false' -and $toolboxSource -match '\$rebootStarted = \$false' -and $toolboxSource -match '} while \(-not \$exitToolbox -and -not \$rebootStarted\)') 'Every completed toolbox action returns to the menu except Exit and a successfully started reboot'
+Assert-AppTest ($toolboxSource -match 'Windows may take several minutes while each network adapter waits for DHCP' -and $toolboxSource -match 'Returning to the toolbox menu\.' -and $toolboxSource -notmatch 'WaitForExit') 'Slow IP renewal remains uninterrupted and toolbox action errors return safely to the menu'
 
 $preCloneTokens = $null
 $preCloneErrors = $null
@@ -187,7 +190,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.2.0') 'Built EXE reports version 1.4.2.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.3.0') 'Built EXE reports version 1.4.3.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}
