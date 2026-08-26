@@ -55,6 +55,8 @@ Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSourc
 Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remoteSource -match 'CompuTekData' -and $postScamSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $postScamSource -match 'CompuTekData') 'Remote and post-scam evidence is stored beside the EXE on the service USB'
 Assert-AppTest ($postScamSource -match '\$script:Supplemental' -and $postScamSource -match 'ActionableFindings\.txt' -and $postScamSource -match '\[switch\]\$ExtendedForensics' -and $postScamSource -match 'Select-Object -First 12') 'Post-scam default output is consolidated to actionable findings while optional extended leads stay in USB reports'
+Assert-AppTest ($remoteSource -match 'Get-FindingDetectedVersion' -and $remoteSource -match 'GroupByVersion' -and $moduleSource -match 'DisplayVersion') 'Remote findings are grouped by detected product version'
+Assert-AppTest ($remoteSource -match 'retry after blockers were stopped' -and $remoteSource -match 'ManualRemovalRequired\.txt') 'Failed uninstallers get one blocker-stop retry and incomplete removal locations are saved for technicians'
 Assert-AppTest ($mainFormSource -match 'CreateSessionLog' -and $mainFormSource -match 'ApplicationSessions' -and $mainFormSource -match 'File\.AppendAllText' -and $mainFormSource -match 'USB session log could not be updated') 'Every application run saves its displayed output to a USB session log and visibly warns if USB writing stops'
 Assert-AppTest ($moduleSource -match '\$portableDataRoot' -and $moduleSource -match 'Join-Path \$env:COMPUTEK_SCANNER_PORTABLE_ROOT ''CompuTekData''') 'File discovery excludes the scanner data it saved on the service USB'
 Assert-AppTest ($mainFormSource -match 'ConfirmSensitiveTool' -and $mainFormSource -match 'MessageBoxDefaultButton\.Button2') 'Advanced technician workflows require a warning with safe default cancellation'
@@ -182,7 +184,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.0.0') 'Built EXE reports version 1.4.0.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.1.0') 'Built EXE reports version 1.4.1.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}
