@@ -6,6 +6,8 @@ CompuTek's portable Windows program for remote-access review/removal, post-scam 
 
 `CompuTekScanner.exe` provides one technician-facing Windows interface for the remote-access scanner, post-scam collector, IT Technician Toolbox, Final System Check, and Pre-Clone Preparation. It embeds the trusted scripts, displays live output and technician questions in one window, and removes the BAT-to-PowerShell launch requirement.
 
+The CompuTek logo is embedded into the EXE and appears in the application header and Windows program icon; no separate image file is required on the service USB.
+
 The remote-software catalog remains an external `RemoteAccessSignatures.json` file, so signatures can be updated without rebuilding the EXE. See [docs/ScannerApp.md](docs/ScannerApp.md) for technician use, signature updates, build instructions, and code-signing guidance.
 
 Build and test it on Windows with:

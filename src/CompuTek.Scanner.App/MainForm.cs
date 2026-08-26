@@ -25,6 +25,7 @@ namespace CompuTek.Scanner.App
         private readonly Button preCloneButton = new Button();
         private readonly Button reloadButton = new Button();
         private readonly Button openCaseButton = new Button();
+        private readonly PictureBox brandLogo = new PictureBox();
         private readonly RichTextBox output = new RichTextBox();
         private readonly Label catalogLabel = new Label();
         private readonly Label promptLabel = new Label();
@@ -55,6 +56,7 @@ namespace CompuTek.Scanner.App
             BackColor = LightBackground;
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
             AutoScaleMode = AutoScaleMode.Dpi;
+            try { Icon = Branding.CreateWindowIcon(); } catch { }
             BuildInterface();
             runningTimer.Interval = 1000;
             runningTimer.Tick += UpdateRunningStatus;
@@ -81,19 +83,27 @@ namespace CompuTek.Scanner.App
             header.Size = new Size(ClientSize.Width, 92);
             header.BackColor = Navy;
 
+            brandLogo.BackColor = Color.Transparent;
+            brandLogo.Location = new Point(18, 14);
+            brandLogo.Size = new Size(96, 64);
+            brandLogo.SizeMode = PictureBoxSizeMode.Zoom;
+            brandLogo.TabStop = false;
+            try { brandLogo.Image = Branding.CreateLogoImage(); } catch { }
+            header.Controls.Add(brandLogo);
+
             Label title = new Label();
             title.Text = "CompuTek Scanner";
             title.ForeColor = Color.White;
             title.Font = new Font("Segoe UI Semibold", 22F, FontStyle.Bold, GraphicsUnit.Point);
             title.AutoSize = true;
-            title.Location = new Point(20, 12);
+            title.Location = new Point(128, 12);
             header.Controls.Add(title);
 
             Label subtitle = new Label();
             subtitle.Text = "Security scanning, verified remediation, evidence collection, and technician utilities";
             subtitle.ForeColor = Color.FromArgb(215, 230, 240);
             subtitle.AutoSize = true;
-            subtitle.Location = new Point(23, 56);
+            subtitle.Location = new Point(131, 56);
             header.Controls.Add(subtitle);
 
             catalogLabel.ForeColor = Color.White;

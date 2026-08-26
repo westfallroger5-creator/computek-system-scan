@@ -26,6 +26,7 @@ $sourceRoot = Join-Path $repoRoot 'src\CompuTek.Scanner.App'
 $sourceFiles = @(
     'Program.cs',
     'MainForm.cs',
+    'Branding.cs',
     'CatalogValidator.cs',
     'EmbeddedEngine.cs',
     'ScannerEngineHost.cs',
@@ -48,6 +49,64 @@ foreach ($resourcePath in $engineResources.Keys) {
     if (-not (Test-Path -LiteralPath $resourcePath -PathType Leaf)) { throw "Scanner engine resource is missing: $resourcePath" }
 }
 
+$logoBase64Path = Join-Path $sourceRoot 'CompuTekLogo.png.base64'
+if (-not (Test-Path -LiteralPath $logoBase64Path -PathType Leaf)) { throw "CompuTek logo source is missing: $logoBase64Path" }
+$systemTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+$buildTempDirectory = Join-Path $systemTempRoot ('CompuTekScannerBuild-' + [Guid]::NewGuid().ToString('N'))
+New-Item -Path $buildTempDirectory -ItemType Directory -Force | Out-Null
+
+try {
+    $logoBase64 = (Get-Content -LiteralPath $logoBase64Path -Raw -ErrorAction Stop) -replace '\s',''
+    $logoBytes = [Convert]::FromBase64String($logoBase64)
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $logoHash = ([BitConverter]::ToString($sha256.ComputeHash($logoBytes))).Replace('-','') } finally { $sha256.Dispose() }
+    if ($logoHash -ne 'C8894EA95E7062A8E720471CFC53BBEDEB5A3E337CE00B1301619B9A741338A1') {
+        throw "CompuTek logo failed its integrity check: $logoHash"
+    }
+
+    Add-Type -AssemblyName System.Drawing
+    $logoPngPath = Join-Path $buildTempDirectory 'CompuTekLogo.png'
+    $logoIconPngPath = Join-Path $buildTempDirectory 'CompuTekLogo.Icon.png'
+    $logoIconPath = Join-Path $buildTempDirectory 'CompuTekLogo.ico'
+    [IO.File]::WriteAllBytes($logoPngPath,$logoBytes)
+
+    $sourceLogo = [Drawing.Image]::FromFile($logoPngPath)
+    try {
+        if ($sourceLogo.Width -ne 86 -or $sourceLogo.Height -ne 57) { throw 'CompuTek logo dimensions are not the approved 86x57 pixels.' }
+        $iconCanvas = [Drawing.Bitmap]::new(128,128)
+        try {
+            $graphics = [Drawing.Graphics]::FromImage($iconCanvas)
+            try {
+                $graphics.Clear([Drawing.Color]::Transparent)
+                $graphics.CompositingQuality = [Drawing.Drawing2D.CompositingQuality]::HighQuality
+                $graphics.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $graphics.SmoothingMode = [Drawing.Drawing2D.SmoothingMode]::HighQuality
+                $scale = [Math]::Min(116.0 / $sourceLogo.Width,116.0 / $sourceLogo.Height)
+                $drawWidth = [int][Math]::Round($sourceLogo.Width * $scale)
+                $drawHeight = [int][Math]::Round($sourceLogo.Height * $scale)
+                $destination = [Drawing.Rectangle]::new([int]((128-$drawWidth)/2),[int]((128-$drawHeight)/2),$drawWidth,$drawHeight)
+                $graphics.DrawImage($sourceLogo,$destination)
+            } finally { $graphics.Dispose() }
+            $iconCanvas.Save($logoIconPngPath,[Drawing.Imaging.ImageFormat]::Png)
+        } finally { $iconCanvas.Dispose() }
+    } finally { $sourceLogo.Dispose() }
+
+    $iconPngBytes = [IO.File]::ReadAllBytes($logoIconPngPath)
+    $iconHeader = New-Object byte[] 22
+    [BitConverter]::GetBytes([UInt16]1).CopyTo($iconHeader,2)
+    [BitConverter]::GetBytes([UInt16]1).CopyTo($iconHeader,4)
+    $iconHeader[6] = 128
+    $iconHeader[7] = 128
+    [BitConverter]::GetBytes([UInt16]1).CopyTo($iconHeader,10)
+    [BitConverter]::GetBytes([UInt16]32).CopyTo($iconHeader,12)
+    [BitConverter]::GetBytes([UInt32]$iconPngBytes.Length).CopyTo($iconHeader,14)
+    [BitConverter]::GetBytes([UInt32]22).CopyTo($iconHeader,18)
+    $iconBytes = New-Object byte[] ($iconHeader.Length + $iconPngBytes.Length)
+    [Array]::Copy($iconHeader,0,$iconBytes,0,$iconHeader.Length)
+    [Array]::Copy($iconPngBytes,0,$iconBytes,$iconHeader.Length,$iconPngBytes.Length)
+    [IO.File]::WriteAllBytes($logoIconPath,$iconBytes)
+    $engineResources[$logoPngPath] = 'CompuTek.Scanner.Branding.CompuTekLogo.png'
+
 $executable = Join-Path $OutputDirectory 'CompuTekScanner.exe'
 $manifest = Join-Path $sourceRoot 'app.manifest'
 $arguments = @(
@@ -60,6 +119,7 @@ $arguments = @(
     '/utf8output',
     "/out:$executable",
     "/win32manifest:$manifest",
+    "/win32icon:$logoIconPath",
     '/reference:System.dll',
     '/reference:System.Core.dll',
     '/reference:System.Drawing.dll',
@@ -109,4 +169,11 @@ return [pscustomobject]@{
     Executable = $executable
     Catalog = $catalogDestination
     OutputDirectory = $OutputDirectory
+}
+} finally {
+    $resolvedBuildTemp = [IO.Path]::GetFullPath($buildTempDirectory)
+    $allowedPrefix = $systemTempRoot + '\CompuTekScannerBuild-'
+    if ($resolvedBuildTemp.StartsWith($allowedPrefix,[StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $resolvedBuildTemp)) {
+        Remove-Item -LiteralPath $resolvedBuildTemp -Recurse -Force
+    }
 }
