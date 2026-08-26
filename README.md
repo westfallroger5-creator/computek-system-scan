@@ -22,6 +22,7 @@ Build and test it on Windows with:
 
 ### FinalSystemCheck_CompuTek.ps1
 End-of-job readiness checklist:
+- Appears on the first/default application page with a large keyboard-accessible button because it is the store's most-used workflow.
 - Reports Windows edition and activation status, disables hibernation, and confirms BitLocker policy flags are not blocking encryption.
 - Checks antivirus posture (Defender or third-party), Splashtop service health, pending Windows Updates, and Device Manager errors.
 - Enables System Protection when needed and creates the required end-of-job restore point when Windows policy allows it.
@@ -42,9 +43,11 @@ Pre-imaging helper focused on BitLocker and disk health:
 - Runs non-destructive CHKDSK scans, preserves each result, and reports **READY FOR ACRONIS CLONE: YES** only when BitLocker inspection, complete decryption, and all disk checks pass.
 
 ### PostScam_SystemIntegrityScanner.ps1
-Read-only post-scam evidence collection with a configurable 30-day default lookback:
+Read-only, focused post-scam integrity review with a configurable 30-day default lookback:
 - Runs the shared remote-access inventory, including every user profile's AppData, and preserves the results as JSON and CSV.
-- Collects service/task/account changes, RDP, Quick Assist and WinRM events, suspicious PowerShell and process activity, Defender changes, WMI subscriptions, registry backdoors, local administrators, SSH keys, active connections, BITS jobs, firewall/proxy/DNS/hosts state, browser extensions, Prefetch, recent archives, possible Temp/AppData staging, and Recent Items links.
+- Flags actionable persistence, hidden access, security-control changes, suspicious execution, remote sessions, account changes, SSH keys, firewall/proxy/hosts changes, and other customer-harm indicators.
+- Consolidates repeated evidence into a short `ActionableFindings.txt` report and shows at most 12 finding groups in the application. Normal inventory and low-confidence leads are saved separately instead of being flagged.
+- Expensive data-access/staging leads are available only through the direct-script `-ExtendedForensics` option, keeping the normal store workflow focused and faster.
 - Uses Security event 4663 when file-object auditing was enabled to identify possible file access. It clearly distinguishes evidence of access or staging from proof of exfiltration.
 - Records every unavailable log or collector as a collection gap; an incomplete collection is never reported as clean.
 - Writes a timestamped case folder beside the EXE under `CompuTekData/<COMPUTERNAME>/PostScam/Cases` on the service USB and does not change system state.
@@ -57,6 +60,8 @@ Evidence-first detection and interactive remediation of remote-access software:
 - Separately flags unknown services or persistence in user-writable paths and network-connected processes running from those locations.
 - Makes no changes while scanning. It displays every finding and exports JSON/CSV evidence beside the EXE under `CompuTekData/<COMPUTERNAME>/RemoteScanner/Cases` on the service USB.
 - Separates findings by installation location, even when two copies use the same product. A technician must classify every location with a typed `KEEP <review-id>` or `REMOVE <review-id>` decision, so the approved company support agent can remain while a hidden AppData copy is removed.
+- Groups known multi-folder product suites such as Syncro and Splashtop into one decision while keeping distinct ScreenConnect installation paths separate. Supporting processes, shortcuts, and files are summarized instead of printed line by line; complete evidence remains in JSON/CSV.
+- Does not treat an ordinary recent unsigned file in Temp/AppData as remote access by itself. Unknown services, persistence, and network-connected processes in user-writable locations remain flagged.
 - Always offers technician-reviewed removal when findings exist. It saves the technician identity, ticket/case reference, every keep/remove decision, and a final verification result in the USB case folder. No remediation begins until all findings are classified and the technician types `APPLY REMOVALS`.
 - For each approved removal, preserves product logs, configuration, hashes, and registry evidence first; runs the registered vendor uninstaller; then removes residual processes, services, scheduled tasks, autoruns, AppX/provisioned packages, uninstall registrations, and executable artifacts. Residual files are moved to quarantine instead of being permanently erased.
 - Rescans each removed installation scope. It reports `RemovalVerified` only when that scope is gone and the verification scan completed without collector errors; a kept copy of the same product does not cause a false removal failure.
@@ -88,6 +93,7 @@ powershell.exe -ExecutionPolicy Bypass -File .\tests\Scanner.Tests.ps1
 - USB deployments use `CompuTekScanner.exe`; the obsolete BAT and PowerShell launchers have been removed.
 - The EXE contains the trusted workflow scripts. Keep `RemoteAccessSignatures.json` beside it so remote-software signatures can be updated without rebuilding.
 - Every application session writes a readable log under `CompuTekData/<COMPUTERNAME>/ApplicationSessions` beside the EXE. Remote, post-scam, Toolbox, and Pre-Clone workflows also save their detailed reports in USB folders.
+- Scan reports and quarantine folders retain the USB drive's normal inherited permissions, so technicians can archive or delete old cases without an administrator-only folder lock.
 - BitLocker recovery-password files are confidential. Secure or remove them from the service USB after the clone job.
 - Remote-access software is dual-use. Confirm whether a detected product is an approved company support tool before remediation.
 - A post-scam scan cannot prove that no data was stolen or that no custom/fileless backdoor exists. Preserve the case folder and use router, firewall, identity-provider, banking, email, EDR, and other available logs when the incident warrants it.

@@ -14,7 +14,8 @@
 param(
     [ValidateRange(1,365)][int]$LookbackDays = 30,
     [switch]$DeepScan,
-    [switch]$IncludeFileHashes
+    [switch]$IncludeFileHashes,
+    [switch]$ExtendedForensics
 )
 
 $ErrorActionPreference = 'Stop'
@@ -45,6 +46,7 @@ if (-not (Test-IsAdministrator)) {
     $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $PSCommandPath),'-LookbackDays',[string]$LookbackDays)
     if ($DeepScan) { $arguments += '-DeepScan' }
     if ($IncludeFileHashes) { $arguments += '-IncludeFileHashes' }
+    if ($ExtendedForensics) { $arguments += '-ExtendedForensics' }
     Start-Process powershell.exe -ArgumentList $arguments -Verb RunAs
     exit
 }
@@ -62,8 +64,15 @@ $caseRoot = Join-Path $portableRoot ("CompuTekData\{0}\PostScam\Cases\{1}" -f $e
 New-Item -Path $caseRoot -ItemType Directory -Force | Out-Null
 
 $script:Evidence = New-Object System.Collections.Generic.List[object]
+$script:Supplemental = New-Object System.Collections.Generic.List[object]
 $script:Gaps = New-Object System.Collections.Generic.List[string]
 $script:TextLog = Join-Path $caseRoot 'PostScam_Audit.log'
+$script:ActionableCategories = @(
+    'RemoteAccess','PersistenceEvent','SecurityEvent','RemoteSession','SuspiciousExecution',
+    'SecurityControl','SysmonEvidence','Persistence','WmiPersistence','RegistryBackdoor',
+    'RemoteAccessKey','NetworkConnection','FirewallBackdoor','NetworkConfiguration',
+    'BrowserExtension','ExecutionArtifact'
+)
 
 $remoteTerms = @($catalog.products | ForEach-Object { @($_.aliases) + @($_.executables) } | Where-Object {$_} | ForEach-Object {[regex]::Escape([string]$_)} | Sort-Object -Unique)
 $remoteRegex = if ($remoteTerms.Count -gt 0) { '(?i)(' + ($remoteTerms -join '|') + ')' } else { '(?!)' }
@@ -79,7 +88,8 @@ function Write-Audit {
 function Add-Gap {
     param([string]$Message)
     if (-not $script:Gaps.Contains($Message)) { $script:Gaps.Add($Message) }
-    Write-Audit "COLLECTION GAP: $Message" 'Yellow'
+    $line = '[{0}] COLLECTION GAP: {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$Message
+    $line | Out-File -LiteralPath $script:TextLog -Append -Encoding UTF8
 }
 
 function Add-Evidence {
@@ -95,7 +105,7 @@ function Add-Evidence {
         [Nullable[int]]$EventId,
         $Data
     )
-    $script:Evidence.Add([pscustomobject][ordered]@{
+    $record = [pscustomobject][ordered]@{
         Category = $Category
         Severity = $Severity
         TimeCreatedUtc = if ($TimeCreated) { $TimeCreated.ToUniversalTime() } else { $null }
@@ -106,7 +116,9 @@ function Add-Evidence {
         Source = $Source
         EventId = $EventId
         Data = $Data
-    })
+    }
+    $isActionable = ($Severity -in @('High','Medium') -and $Category -in $script:ActionableCategories)
+    if ($isActionable) { $script:Evidence.Add($record) } else { $script:Supplemental.Add($record) }
 }
 
 function Get-TruncatedText {
@@ -198,36 +210,32 @@ try {
     $remoteScan = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeFileHashes
     $remoteReports = Export-CompuTekScanReport -Scan $remoteScan -Directory $caseRoot -BaseName 'RemoteAccessInventory'
     foreach ($finding in @($remoteScan.Findings)) {
-        $severity = if ($finding.Confidence -eq 'High') {'High'} elseif ($finding.Confidence -eq 'Medium') {'Medium'} else {'Review'}
+        $isUserWritable = $finding.Path -and (Test-CompuTekUserWritablePath $finding.Path)
+        $isPersistence = $finding.ArtifactType -in @('Service','RunKey','ScheduledTask','StartupFile','NativeFeature')
+        $isActionableRemote = (
+            ($finding.ProductId -eq 'unknown' -and $finding.Confidence -in @('High','Medium')) -or
+            $finding.Category -eq 'native-feature' -or
+            ($finding.ProductId -ne 'unknown' -and $isUserWritable -and ($isPersistence -or $finding.ConnectionCount -gt 0))
+        )
+        $severity = if ($isActionableRemote -and $finding.Confidence -eq 'High') {'High'} elseif ($isActionableRemote) {'Medium'} else {'Informational'}
         Add-Evidence -Category 'RemoteAccess' -Severity $severity -Name $finding.ProductName -Details ("{0}; {1}; artifact={2}; original={3}; signer={4}; signature={5}" -f $finding.Disposition,$finding.Evidence,$finding.ArtifactType,$finding.OriginalFilename,$finding.Signer,$finding.SignatureStatus) -Path $finding.Path -Source $finding.Source -Data $finding
     }
 
-    # Preserve product configuration and connection-log metadata. Text extraction is
-    # limited to server/session hints and redacts obvious credential/token values.
-    $configurationDirectories = @{}
-    foreach ($finding in @($remoteScan.Findings | Where-Object {$_.ProductId -ne 'unknown' -and $_.Path})) {
-        $directory = if (Test-Path -LiteralPath $finding.Path -PathType Container -ErrorAction SilentlyContinue) { $finding.Path } else { Split-Path -Parent $finding.Path }
-        if (-not $directory -or -not (Test-Path -LiteralPath $directory -PathType Container -ErrorAction SilentlyContinue)) { continue }
-        $normalized = $directory.TrimEnd('\').ToLowerInvariant()
-        if ($normalized -in @(
-            ([string]$env:ProgramFiles).TrimEnd('\').ToLowerInvariant(),
-            ([string]${env:ProgramFiles(x86)}).TrimEnd('\').ToLowerInvariant(),
-            ([string]$env:ProgramData).TrimEnd('\').ToLowerInvariant()
-        )) { continue }
-        $configurationDirectories[$normalized] = [pscustomobject]@{Path=$directory;ProductId=$finding.ProductId;ProductName=$finding.ProductName}
-    }
-    foreach ($entry in $configurationDirectories.Values) {
-        $configFiles = @(Get-CompuTekCandidateFilesSafe -Root $entry.Path -Extensions @('.config','.conf','.ini','.xml','.json','.log','.txt','.db') -MaxDepth 6 | Select-Object -First 300)
-        foreach ($file in $configFiles) {
-            $fileEvidence = Get-CompuTekFileEvidence -Path $file.FullName -IncludeHash
-            $hints = ''
-            if ($file.Extension.ToLowerInvariant() -ne '.db' -and $file.Length -le 5242880) {
-                try {
-                    $hintLines = @(Select-String -LiteralPath $file.FullName -Pattern '(?i)(server|host|relay|gateway|url|session|client.?id|instance|connect)' -ErrorAction Stop | Select-Object -First 20 | ForEach-Object {Protect-CommandText $_.Line})
-                    $hints = Get-TruncatedText ($hintLines -join "`n") 3000
-                } catch {}
+    if ($ExtendedForensics) {
+        # Optional deep evidence inventory. This is deliberately excluded from the
+        # concise actionable list because legitimate support products can have
+        # hundreds of configuration and log files.
+        $configurationDirectories = @{}
+        foreach ($finding in @($remoteScan.Findings | Where-Object {$_.ProductId -ne 'unknown' -and $_.Path})) {
+            $directory = if (Test-Path -LiteralPath $finding.Path -PathType Container -ErrorAction SilentlyContinue) { $finding.Path } else { Split-Path -Parent $finding.Path }
+            if (-not $directory -or -not (Test-Path -LiteralPath $directory -PathType Container -ErrorAction SilentlyContinue)) { continue }
+            $configurationDirectories[$directory.TrimEnd('\').ToLowerInvariant()] = [pscustomobject]@{Path=$directory;ProductId=$finding.ProductId;ProductName=$finding.ProductName}
+        }
+        foreach ($entry in $configurationDirectories.Values) {
+            foreach ($file in @(Get-CompuTekCandidateFilesSafe -Root $entry.Path -Extensions @('.config','.conf','.ini','.xml','.json','.log','.txt','.db') -MaxDepth 4 | Select-Object -First 100)) {
+                $fileEvidence = Get-CompuTekFileEvidence -Path $file.FullName -IncludeHash:$IncludeFileHashes
+                Add-Evidence -Category 'RemoteAccessConfiguration' -Severity 'Informational' -Name "$($entry.ProductName) configuration/log artifact" -Details ("size={0}; modified={1:u}; SHA256={2}" -f $file.Length,$file.LastWriteTime,$fileEvidence.SHA256) -TimeCreated $file.LastWriteTime -Path $file.FullName -Source 'Remote product directory' -Data @{ProductId=$entry.ProductId;SHA256=$fileEvidence.SHA256}
             }
-            Add-Evidence -Category 'RemoteAccessConfiguration' -Severity 'High' -Name "$($entry.ProductName) configuration/log artifact" -Details ("size={0}; modified={1:u}; SHA256={2}; hints={3}" -f $file.Length,$file.LastWriteTime,$fileEvidence.SHA256,$hints) -TimeCreated $file.LastWriteTime -Path $file.FullName -Source 'Remote product directory' -Data @{ProductId=$entry.ProductId;SHA256=$fileEvidence.SHA256}
         }
     }
 
@@ -236,12 +244,15 @@ try {
         foreach ($key in Get-ChildItem $servicesRoot -ErrorAction Stop | Where-Object {$_.PSChildName -like 'ScreenConnect Client*'}) {
             $values = Get-ItemProperty $key.PSPath -ErrorAction Stop
             $details = Protect-CommandText (Get-TruncatedText ($values | Select-Object DisplayName,ImagePath,ObjectName,Start,Description | Out-String) 4000)
-            Add-Evidence -Category 'RemoteAccessConfiguration' -Severity 'High' -Name "ScreenConnect service registry: $($key.PSChildName)" -Details $details -Path $key.PSPath -Source 'Registry' -Data $null
+            $serviceExecutable = Get-CompuTekExecutablePath ([string]$values.ImagePath)
+            $severity = if ($serviceExecutable -and (Test-CompuTekUserWritablePath $serviceExecutable)) {'High'} else {'Informational'}
+            Add-Evidence -Category $(if($severity -eq 'High'){'RemoteAccess'}else{'RemoteAccessConfiguration'}) -Severity $severity -Name "ScreenConnect service registry: $($key.PSChildName)" -Details $details -Path $serviceExecutable -Source 'Registry' -Data $null
         }
     } catch { Add-Gap "ScreenConnect service registry details could not be collected: $($_.Exception.Message)" }
 
     foreach ($errorMessage in @($remoteScan.Errors)) { Add-Gap "Remote-access collector: $errorMessage" }
-    Write-Audit "Remote-access findings: $($remoteScan.Findings.Count). Reports: $($remoteReports.Json)" $(if($remoteScan.Findings.Count){'Yellow'}else{'Green'})
+    $actionableRemoteCount = @($script:Evidence | Where-Object {$_.Category -eq 'RemoteAccess'}).Count
+    Write-Audit "Remote-access inventory saved. Actionable persistence/hidden-access findings: $actionableRemoteCount" $(if($actionableRemoteCount){'Yellow'}else{'Green'})
 } catch {
     Add-Gap "Remote-access scan failed: $($_.Exception.Message)"
 }
@@ -250,57 +261,67 @@ try {
 Write-Audit "`n[2/12] Service, task, account, logon, and audit-log events" 'Cyan'
 foreach ($event in Get-RecentEvents -LogName 'System' -Ids @(7040,7045) -Maximum 2000) {
     $data = Get-EventDataMap $event
-    $severity = if ($event.Id -eq 7045) {'High'} else {'Medium'}
-    Add-WindowsEventEvidence $event 'PersistenceEvent' $severity "System event $($event.Id): service installed or changed" $data
+    $eventText = (Get-EventMessage $event) + ' ' + (($data.Values | ForEach-Object {[string]$_}) -join ' ')
+    $include = ($event.Id -eq 7045 -or $eventText -match $remoteRegex -or $eventText -match $suspiciousCommandRegex -or $eventText -match '(?i)\\users\\[^\\]+\\appdata\\|\\windows\\temp\\')
+    if ($include) {
+        $severity = if ($event.Id -eq 7045) {'High'} else {'Medium'}
+        Add-WindowsEventEvidence $event 'PersistenceEvent' $severity "System event $($event.Id): service installed or suspiciously changed" $data
+    }
 }
 
 $securityIds = @(1102,4624,4648,4672,4688,4697,4698,4720,4722,4728,4732,4756)
 foreach ($event in Get-RecentEvents -LogName 'Security' -Ids $securityIds -Maximum 5000) {
     $data = Get-EventDataMap $event
-    $include = $true
+    $include = $false
     $severity = 'Medium'
     $name = "Security event $($event.Id)"
     switch ($event.Id) {
-        1102 { $severity='High'; $name='Windows audit log was cleared' }
+        1102 { $include=$true; $severity='High'; $name='Windows audit log was cleared' }
         4624 {
             $logonType = [string]$data['LogonType']
-            $include = ($logonType -in @('3','10'))
-            $severity = if ($logonType -eq '10') {'High'} else {'Review'}
-            $name = "Successful remote/network logon (type $logonType)"
+            $include = ($logonType -eq '10')
+            $severity = 'High'
+            $name = 'Successful Remote Desktop logon'
         }
-        4648 { $name='Explicit credentials were used'; $severity='Medium' }
-        4672 { $name='Special privileges assigned at logon'; $severity='Review' }
+        4648 {
+            $processName = [string]$data['ProcessName']
+            $include = ($processName -match $remoteRegex -or $processName -match $suspiciousCommandRegex -or (Test-CompuTekUserWritablePath $processName))
+            $name='Explicit credentials used by a suspicious process'; $severity='Medium'
+        }
+        4672 { $include=$false }
         4688 {
             $command = ([string]$data['CommandLine']) + ' ' + ([string]$data['NewProcessName'])
             $include = ($command -match $remoteRegex -or $command -match $suspiciousCommandRegex -or (Test-CompuTekUserWritablePath $command))
             $severity = 'High'; $name='Suspicious process creation'
         }
-        4697 { $name='Service installed through Security auditing'; $severity='High' }
-        4698 { $name='Scheduled task created'; $severity='High' }
-        4720 { $name='Local/domain user account created'; $severity='High' }
-        4722 { $name='User account enabled'; $severity='Medium' }
-        4728 { $name='Member added to a global security group'; $severity='High' }
-        4732 { $name='Member added to a local security group'; $severity='High' }
-        4756 { $name='Member added to a universal security group'; $severity='High' }
+        4697 { $include=$true; $name='Service installed through Security auditing'; $severity='High' }
+        4698 { $include=$true; $name='Scheduled task created'; $severity='High' }
+        4720 { $include=$true; $name='Local/domain user account created'; $severity='High' }
+        4722 { $include=$true; $name='User account enabled'; $severity='Medium' }
+        4728 { $include=$true; $name='Member added to a global security group'; $severity='High' }
+        4732 { $include=$true; $name='Member added to a local security group'; $severity='High' }
+        4756 { $include=$true; $name='Member added to a universal security group'; $severity='High' }
     }
     if ($include) { Add-WindowsEventEvidence $event 'SecurityEvent' $severity $name $data }
 }
 
-# File-object access auditing is frequently disabled. When present, it can show access,
-# but cannot prove that a file was transmitted to the scammer.
-$objectAccessFound = 0
-foreach ($event in Get-RecentEvents -LogName 'Security' -Ids @(4663) -Maximum 3000) {
-    $data = Get-EventDataMap $event
-    $objectName = [string]$data['ObjectName']
-    if ($objectName -match '(?i)\\users\\[^\\]+\\(desktop|documents|onedrive|downloads)\\') {
-        $objectAccessFound++
-        Add-Evidence -Category 'PossibleDataAccess' -Severity 'Review' -Name 'Audited access to a user file' -Details 'Windows recorded access to this object. This is not proof the file was viewed or exfiltrated.' -TimeCreated $event.TimeCreated -Path $objectName -User ([string]$data['SubjectUserName']) -Source 'Security' -EventId 4663 -Data $data
+if ($ExtendedForensics) {
+    # Optional lead collection. File-object auditing can produce thousands of normal
+    # records and does not prove that data left the computer.
+    foreach ($event in Get-RecentEvents -LogName 'Security' -Ids @(4663) -Maximum 1000) {
+        $data = Get-EventDataMap $event
+        $objectName = [string]$data['ObjectName']
+        if ($objectName -match '(?i)\\users\\[^\\]+\\(desktop|documents|onedrive|downloads)\\') {
+            Add-Evidence -Category 'PossibleDataAccess' -Severity 'Review' -Name 'Audited access to a user file' -Details 'Windows recorded access to this object. This is not proof the file was viewed or exfiltrated.' -TimeCreated $event.TimeCreated -Path $objectName -User ([string]$data['SubjectUserName']) -Source 'Security' -EventId 4663 -Data $data
+        }
     }
 }
-if ($objectAccessFound -eq 0) { Add-Gap 'No relevant Security 4663 file-access events were found. File-object auditing is commonly disabled, so exact files accessed may be unknowable from this computer alone.' }
 
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-TaskScheduler/Operational' -Ids @(106,140,141) -Maximum 1500) {
-    Add-WindowsEventEvidence $event 'PersistenceEvent' 'Medium' "Task Scheduler event $($event.Id)" (Get-EventDataMap $event)
+    $message = Get-EventMessage $event
+    if ($message -match $remoteRegex -or $message -match $suspiciousCommandRegex -or $message -match '(?i)\\users\\[^\\]+\\appdata\\|\\windows\\temp\\') {
+        Add-WindowsEventEvidence $event 'PersistenceEvent' 'Medium' "Suspicious Task Scheduler event $($event.Id)" (Get-EventDataMap $event)
+    }
 }
 
 # ------------------ REMOTE SESSION EVIDENCE ------------------
@@ -350,8 +371,12 @@ foreach ($event in Get-RecentEvents -LogName 'Windows PowerShell' -Ids @(400,403
     }
 }
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-Windows Defender/Operational' -Ids @(1116,1117,5001,5007,5013) -Maximum 2000) {
-    $severity = if ($event.Id -in @(5001,5013)) {'High'} else {'Medium'}
-    Add-WindowsEventEvidence $event 'SecurityControl' $severity "Microsoft Defender event $($event.Id)" (Get-EventDataMap $event)
+    $message = Get-EventMessage $event
+    $include = ($event.Id -in @(1116,1117,5001,5013) -or ($event.Id -eq 5007 -and $message -match '(?i)(exclusion|disable|realtime|behavior|script.?scanning|cloud|tamper)'))
+    if ($include) {
+        $severity = if ($event.Id -in @(5001,5013)) {'High'} else {'Medium'}
+        Add-WindowsEventEvidence $event 'SecurityControl' $severity "Microsoft Defender event $($event.Id)" (Get-EventDataMap $event)
+    }
 }
 
 try {
@@ -565,8 +590,9 @@ try {
     }
 } catch { Add-Gap "Hosts file could not be read: $($_.Exception.Message)" }
 
-# ------------------ STAGING, ARCHIVES, RECENT FILE LINKS, PREFETCH ------------------
-Write-Audit "`n[8/12] Possible data staging, archives, recent-file links, and transfer tools" 'Cyan'
+# ------------------ OPTIONAL EXTENDED DATA-ACCESS LEADS ------------------
+if ($ExtendedForensics) {
+Write-Audit "`n[8/12] Extended data-staging and recent-file leads" 'Cyan'
 try {
     foreach ($file in Get-RecentFileCandidates -Extensions @('.zip','.7z','.rar','.tar','.gz','.tgz')) {
         if ($file.Length -lt 102400) { continue }
@@ -597,7 +623,10 @@ try {
         }
     }
 } catch { Add-Gap "Recent-file shortcuts could not be inspected: $($_.Exception.Message)" }
+}
 
+# Prefetch matching remains in the focused scan because execution of remote-control,
+# credential-dumping, or transfer tools can be an actionable harm indicator.
 try {
     $prefetchPath = Join-Path $env:SystemRoot 'Prefetch'
     $prefetch = @(Get-ChildItem -LiteralPath $prefetchPath -Filter '*.pf' -File -Force -ErrorAction Stop | Where-Object {$_.LastWriteTime -ge $cutoff} | Select-Object Name,Length,CreationTimeUtc,LastWriteTimeUtc)
@@ -611,7 +640,7 @@ try {
 
 # ------------------ BROWSER EXTENSIONS ------------------
 Write-Audit "`n[9/12] Browser extensions with remote or high-risk permissions" 'Cyan'
-$highRiskPermissions = @('nativeMessaging','desktopCapture','tabCapture','proxy','cookies','clipboardRead','clipboardWrite','downloads','debugger','management','privacy','webRequest','webRequestBlocking','<all_urls>')
+$highRiskPermissions = @('nativeMessaging','desktopCapture','tabCapture','proxy','debugger','management')
 foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directory -Force -ErrorAction SilentlyContinue) {
     foreach ($browserRoot in @(
         (Join-Path $profile.FullName 'AppData\Local\Google\Chrome\User Data'),
@@ -625,9 +654,8 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
                 $permissions = @($manifest.permissions) + @($manifest.host_permissions)
                 $risky = @($permissions | Where-Object {$highRiskPermissions -contains [string]$_})
                 $text = ([string]$manifest.name) + ' ' + ([string]$manifest.description)
-                if ($risky.Count -gt 0 -or $text -match $remoteRegex -or $manifestFile.LastWriteTime -ge $cutoff) {
-                    $severity = if ($text -match $remoteRegex -or $risky -contains 'nativeMessaging' -or $risky -contains 'desktopCapture') {'Medium'} else {'Review'}
-                    Add-Evidence -Category 'BrowserExtension' -Severity $severity -Name ([string]$manifest.name) -Details ("version={0}; risky permissions={1}; all permissions={2}" -f $manifest.version,($risky -join ','),($permissions -join ',')) -TimeCreated $manifestFile.LastWriteTime -Path $manifestFile.FullName -User $profile.Name -Source 'Chromium extension manifest' -Data @{Permissions=$permissions;Version=$manifest.version}
+                if ($risky.Count -gt 0 -or $text -match $remoteRegex) {
+                    Add-Evidence -Category 'BrowserExtension' -Severity 'Medium' -Name ([string]$manifest.name) -Details ("version={0}; high-risk permissions={1}" -f $manifest.version,($risky -join ',')) -TimeCreated $manifestFile.LastWriteTime -Path $manifestFile.FullName -User $profile.Name -Source 'Chromium extension manifest' -Data @{Permissions=$permissions;Version=$manifest.version}
                 }
             } catch {}
         }
@@ -666,21 +694,59 @@ try {
 Write-Audit "`n[12/12] Exporting evidence and summary" 'Cyan'
 $evidenceJson = Join-Path $caseRoot 'Evidence.json'
 $evidenceCsv = Join-Path $caseRoot 'Evidence.csv'
+$supplementalJson = Join-Path $caseRoot 'SupplementalLeads.json'
+$supplementalCsv = Join-Path $caseRoot 'SupplementalLeads.csv'
+$actionableSummaryJson = Join-Path $caseRoot 'ActionableFindings.json'
+$actionableSummaryText = Join-Path $caseRoot 'ActionableFindings.txt'
 $gapsPath = Join-Path $caseRoot 'CollectionGaps.txt'
 $summaryPath = Join-Path $caseRoot 'Summary.txt'
 
 @($script:Evidence) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $evidenceJson -Encoding UTF8
 @($script:Evidence) | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $evidenceCsv -NoTypeInformation -Encoding UTF8
+@($script:Supplemental) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $supplementalJson -Encoding UTF8
+@($script:Supplemental) | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $supplementalCsv -NoTypeInformation -Encoding UTF8
 @($script:Gaps) | Set-Content -LiteralPath $gapsPath -Encoding UTF8
+
+$actionableGroups = @($script:Evidence | Group-Object {
+    '{0}|{1}|{2}' -f $_.Category,$_.Name,$_.Path
+} | ForEach-Object {
+    $items = @($_.Group)
+    $sample = $items | Select-Object -First 1
+    [pscustomobject][ordered]@{
+        Severity = if ($items.Severity -contains 'High') {'High'} else {'Medium'}
+        Category = $sample.Category
+        Name = $sample.Name
+        Occurrences = $items.Count
+        LatestTimeUtc = @($items.TimeCreatedUtc | Where-Object {$_} | Sort-Object -Descending | Select-Object -First 1)[0]
+        Path = $sample.Path
+        Details = Get-TruncatedText ([string]$sample.Details) 700
+        Sources = @($items.Source | Where-Object {$_} | Sort-Object -Unique) -join ', '
+    }
+} | Sort-Object @{Expression={if($_.Severity -eq 'High'){0}else{1}}},Category,Name,Path)
+$actionableGroups | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $actionableSummaryJson -Encoding UTF8
+$actionableTextLines = @('COMPUTEK ACTIONABLE POST-SCAM FINDINGS','')
+if ($actionableGroups.Count -eq 0) {
+    $actionableTextLines += 'No actionable persistence, hidden-access, or customer-harm indicators were identified by the focused scan.'
+} else {
+    foreach ($finding in $actionableGroups) {
+        $actionableTextLines += ('[{0}] {1} - {2} (occurrences: {3})' -f $finding.Severity,$finding.Category,$finding.Name,$finding.Occurrences)
+        if ($finding.Path) { $actionableTextLines += ('  Location: {0}' -f $finding.Path) }
+        $actionableTextLines += ('  Details: {0}' -f $finding.Details)
+        $actionableTextLines += ''
+    }
+}
+$actionableTextLines | Set-Content -LiteralPath $actionableSummaryText -Encoding UTF8
 
 $categoryCounts = @($script:Evidence | Group-Object Category | Sort-Object Name)
 $severityCounts = @($script:Evidence | Group-Object Severity | Sort-Object Name)
 $summaryLines = @(
-    'COMPUTEK POST-SCAM EVIDENCE SUMMARY',
+    'COMPUTEK FOCUSED POST-SCAM SUMMARY',
     "Computer: $env:COMPUTERNAME",
     "Collected: $((Get-Date).ToString('u'))",
     "Lookback start: $($cutoff.ToString('u'))",
-    "Evidence items: $($script:Evidence.Count)",
+    "Actionable finding groups: $($actionableGroups.Count)",
+    "Actionable evidence records: $($script:Evidence.Count)",
+    "Supplemental leads saved (not flagged): $($script:Supplemental.Count)",
     "Collection gaps: $($script:Gaps.Count)",
     '',
     'Severity counts:'
@@ -694,15 +760,24 @@ $summaryLines = @(
 )
 $summaryLines | Set-Content -LiteralPath $summaryPath -Encoding UTF8
 
-Write-Host "`n======================= SUMMARY =======================" -ForegroundColor Cyan
-foreach ($group in $severityCounts) {
-    $color = if ($group.Name -eq 'High') {'Red'} elseif ($group.Name -eq 'Medium') {'Yellow'} else {'Gray'}
-    Write-Host ("{0,-14}: {1}" -f $group.Name,$group.Count) -ForegroundColor $color
+Write-Host "`n=============== ACTIONABLE POST-SCAM FINDINGS ===============" -ForegroundColor Cyan
+if ($actionableGroups.Count -eq 0) {
+    Write-Host 'No actionable persistence, hidden-access, or customer-harm indicators were identified.' -ForegroundColor Green
+} else {
+    foreach ($finding in @($actionableGroups | Select-Object -First 12)) {
+        $color = if ($finding.Severity -eq 'High') {'Red'} else {'Yellow'}
+        Write-Host ("[{0}] {1}: {2} ({3} occurrence(s))" -f $finding.Severity,$finding.Category,$finding.Name,$finding.Occurrences) -ForegroundColor $color
+        if ($finding.Path) { Write-Host ("    {0}" -f $finding.Path) -ForegroundColor Gray }
+    }
+    if ($actionableGroups.Count -gt 12) {
+        Write-Host ("...{0} additional actionable finding group(s) are saved in ActionableFindings.txt." -f ($actionableGroups.Count - 12)) -ForegroundColor Yellow
+    }
 }
 Write-Host ("Collection gaps: {0}" -f $script:Gaps.Count) -ForegroundColor $(if($script:Gaps.Count){'Yellow'}else{'Green'})
 Write-Host "Case folder: $caseRoot" -ForegroundColor Cyan
-Write-Host "Summary:     $summaryPath" -ForegroundColor DarkGray
-Write-Host "Evidence:    $evidenceJson" -ForegroundColor DarkGray
+Write-Host "Open this first: $actionableSummaryText" -ForegroundColor Cyan
+Write-Host "Full actionable evidence: $evidenceJson" -ForegroundColor DarkGray
+Write-Host "Supplemental leads (not flagged): $supplementalJson" -ForegroundColor DarkGray
 Write-Host 'This report cannot prove that no other backdoor exists or identify every file that may have been viewed or copied.' -ForegroundColor Yellow
 Write-Host 'If the scammer had administrator access, consider the machine untrusted until the evidence is reviewed and the remediation decision is made.' -ForegroundColor Yellow
 Complete-CompuTekRun 'Post-scam evidence collection complete.'

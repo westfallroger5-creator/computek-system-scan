@@ -41,17 +41,20 @@ $preCloneSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\PreClon
 $finalCheckSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1') -Raw
 $brandingSource = Get-Content -LiteralPath (Join-Path $repoRoot 'src\CompuTek.Scanner.App\Branding.cs') -Raw
 Assert-AppTest ($moduleSource -match 'SCAN STAGE:' -and $moduleSource -match 'Step 10 of 10' -and $moduleSource -match '\[Console\]::Out\.Flush\(\)') 'Remote scan publishes flushed, named progress stages to the EXE'
-Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'Still working' -and $mainFormSource -match 'elapsedText') 'The Windows application shows elapsed-time heartbeats during quiet collectors'
-Assert-AppTest ($mainFormSource -match 'writeHeartbeatToOutput' -and $mainFormSource -match '!String\.Equals\(displayName, "IT Technician Toolbox"' -and $mainFormSource -match 'if \(writeHeartbeatToOutput &&') 'Technician Toolbox suppresses repetitive output heartbeats while the status bar keeps elapsed time'
+Assert-AppTest ($mainFormSource -match 'runningTimer' -and $mainFormSource -match 'elapsedText' -and $mainFormSource -notmatch 'Still working' -and $mainFormSource -notmatch 'writeHeartbeatToOutput') 'Elapsed time remains in the status bar without adding heartbeat lines to tool output'
 Assert-AppTest ($moduleSource -match 'Get-CompuTekCandidateFilesSafe' -and $moduleSource -match 'FileAttributes\]::ReparsePoint' -and $moduleSource -notmatch 'Get-ChildItem -LiteralPath \$root -Recurse') 'Default file discovery uses a junction-safe bounded traversal'
 Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} else \{ 5 \}') 'Full-depth file traversal is reserved for explicit Deep Scan mode'
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
 Assert-AppTest ($moduleSource -match '\[string\[\]\]\$endpoints = @\(\)' -and $moduleSource -match '\$file\.Name -ieq ''desktop\.ini''') 'Process endpoint counting and Startup-folder noise from the field report are corrected'
 Assert-AppTest ($mainFormSource -match 'Technician tools' -and $mainFormSource -match 'StartTechnicianToolbox' -and $mainFormSource -match 'StartFinalSystemCheck' -and $mainFormSource -match 'StartPreClone') 'The Windows application restores the legacy technician tool entry points'
+$finalTabIndex = $mainFormSource.IndexOf('toolTabs.TabPages.Add(finalCheckTab)')
+$securityTabIndex = $mainFormSource.IndexOf('toolTabs.TabPages.Add(securityTab)')
+Assert-AppTest ($finalTabIndex -ge 0 -and $securityTabIndex -gt $finalTabIndex -and $mainFormSource -match 'toolTabs\.SelectedTab = finalCheckTab' -and $mainFormSource -match 'AccessibleName = "Run Final System Check"') 'Final System Check is the accessible first page and default tab'
 Assert-AppTest ($mainFormSource -match 'PictureBox brandLogo' -and $mainFormSource -match 'Branding\.CreateLogoImage' -and $brandingSource -match 'CompuTek\.Scanner\.Branding\.CompuTekLogo\.png') 'The application header loads the embedded CompuTek logo'
 Assert-AppTest ($toolboxSource -match '__COMPUTEK_PROMPT__:' -and $preCloneSource -match '__COMPUTEK_PROMPT__:' -and $finalCheckSource -match '__COMPUTEK_PROMPT__:') 'Interactive technician tools use the EXE technician-response bridge'
 Assert-AppTest ($toolboxSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $preCloneSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT') 'BitLocker recovery output is redirected to the portable USB folder'
 Assert-AppTest ($remoteSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remoteSource -match 'CompuTekData' -and $postScamSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $postScamSource -match 'CompuTekData') 'Remote and post-scam evidence is stored beside the EXE on the service USB'
+Assert-AppTest ($postScamSource -match '\$script:Supplemental' -and $postScamSource -match 'ActionableFindings\.txt' -and $postScamSource -match '\[switch\]\$ExtendedForensics' -and $postScamSource -match 'Select-Object -First 12') 'Post-scam default output is consolidated to actionable findings while optional extended leads stay in USB reports'
 Assert-AppTest ($mainFormSource -match 'CreateSessionLog' -and $mainFormSource -match 'ApplicationSessions' -and $mainFormSource -match 'File\.AppendAllText' -and $mainFormSource -match 'USB session log could not be updated') 'Every application run saves its displayed output to a USB session log and visibly warns if USB writing stops'
 Assert-AppTest ($moduleSource -match '\$portableDataRoot' -and $moduleSource -match 'Join-Path \$env:COMPUTEK_SCANNER_PORTABLE_ROOT ''CompuTekData''') 'File discovery excludes the scanner data it saved on the service USB'
 Assert-AppTest ($mainFormSource -match 'ConfirmSensitiveTool' -and $mainFormSource -match 'MessageBoxDefaultButton\.Button2') 'Advanced technician workflows require a warning with safe default cancellation'
@@ -179,7 +182,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.3.1.0') 'Built EXE reports version 1.3.1.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.0.0') 'Built EXE reports version 1.4.0.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

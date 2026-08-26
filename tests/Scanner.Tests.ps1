@@ -40,17 +40,18 @@ Assert-True (@($catalog.products).Count -ge 60) 'Catalog contains at least 60 re
 Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.products).Count) 'Catalog product IDs are unique'
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
-Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-Finding') 'Every remote-access scan displays its findings and enters technician review'
+Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
 Assert-True ($remediationSource -match 'KEEP \$\(\$candidate\.Id\)' -and $remediationSource -match 'REMOVE \$\(\$candidate\.Id\)') 'Technician must explicitly keep or remove every installation scope'
 Assert-True ($remediationSource -match "APPLY REMOVALS" -and $remediationSource -notmatch 'A for all') 'Bulk removal cannot start without a final typed confirmation'
 Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
-Assert-True ($remediationSource -match 'Protect-CompuTekEvidenceDirectory' -and $remediationSource -match 'S-1-5-32-544' -and $remediationSource -match 'PortableMedia-\$fileSystem-NoAcl') 'Evidence uses administrator-only ACLs where supported and records the portable-media fallback for FAT/exFAT USB drives'
+Assert-True ($remediationSource -match 'PortableMedia-\$fileSystem-NormalPermissions' -and $remediationSource -notmatch '\bSet-Acl\b' -and $remediationSource -notmatch 'SetAccessRuleProtection') 'USB evidence keeps normal inherited permissions so technicians can remove old scan folders without elevation'
 Assert-True ($remediationSource -match 'COMPUTEK_SCANNER_PORTABLE_ROOT' -and $remediationSource -match 'CompuTekData' -and $remediationSource -match 'EvidenceStorageSecurity') 'Cases, decisions, and quarantine evidence are stored and labeled on the service USB'
 Assert-True ($remediationSource -match 'sc\.exe delete' -and $remediationSource -match 'Unregister-ScheduledTask') 'Full removal deletes residual service and scheduled-task persistence'
 Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource -match 'NotVerified-ScanIncomplete') 'Removal is only verified after a complete follow-up scan'
 
 $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
+Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or invalidly signed executable") 'Unsigned Temp files alone are not treated as remote-access removal candidates'
 
 $singleEndpointArtifacts = @(& $scannerModule {
     function Get-CimInstance {
@@ -98,10 +99,17 @@ foreach ($functionName in @('Get-FindingScopePath','New-RemovalCandidates')) {
 $legitimateInstall = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='InstalledProgram';Name='Company Support';Path='C:\Program Files\ScreenConnect';InstallLocation='C:\Program Files\ScreenConnect';RegistryPath='HKLM:\Software\Uninstall\CompanySupport';PackageFullName=$null}
 $legitimateService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
 $hiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden';Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
-$scopes = @(New-RemovalCandidates @($legitimateInstall,$legitimateService,$hiddenService))
-Assert-True ($scopes.Count -eq 2) 'Approved and hidden copies of the same product are presented as separate technician decisions'
+$secondHiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Second Hidden';Path='C:\Users\Victim\AppData\Local\Support\Client.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
+$scopes = @(New-RemovalCandidates @($legitimateInstall,$legitimateService,$hiddenService,$secondHiddenService))
+Assert-True ($scopes.Count -eq 3) 'Three ScreenConnect installation paths remain three separate technician decisions'
 Assert-True (@($scopes | Where-Object {$_.ScopePath -eq 'C:\Program Files\ScreenConnect'}).Findings.Count -eq 2) 'Subfolder services are grouped with their registered installation'
 Assert-True (@($scopes | Where-Object {$_.ScopePath -eq 'C:\Users\Victim\AppData\Roaming\Adobe'}).Count -eq 1) 'Hidden AppData copy remains isolated from the approved installation'
+
+$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
+$syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null}
+$syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null}
+$syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall))
+Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].GroupProductComponents -and $syncroScopes[0].Locations.Count -eq 3) 'Related Syncro services, live agent, and installed program are presented as one product decision'
 
 $hiddenScreenConnect = New-TestEvidence @{
     ArtifactType='Service';Name='ScreenConnect Client 0123456789abcdef';DisplayName='ScreenConnect Client 0123456789abcdef'
