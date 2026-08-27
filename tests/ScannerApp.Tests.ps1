@@ -84,6 +84,7 @@ Assert-AppTest ($preCloneSource -match 'Disable-BitLockerAutoUnlock' -and $preCl
 Assert-AppTest ($preCloneSource -match 'Get-CompuTekPortableMediaInfo' -and $preCloneSource -match 'Get-Partition -DriveLetter' -and $preCloneSource -match '\$portableMedia\.DiskNumber' -and $preCloneSource -match 'Pre-Clone must be launched from removable service media') 'Pre-Clone proves the service USB physical disk and excludes every partition on it'
 Assert-AppTest ($preCloneSource -match '\$bitLockerPreparationReady' -and $preCloneSource -match '\$encryptionPolicyReady' -and $preCloneSource -notmatch '\$decryptionStartedAny') 'Pre-Clone prevents automatic re-encryption even when target drives were already decrypted'
 Assert-AppTest ($finalCheckSource -match 'powercfg\.exe /hibernate off' -and $finalCheckSource -match 'Checkpoint-Computer' -and $finalCheckSource -match 'Did you clearly hear the speaker test' -and $finalCheckSource -match 'SystemSounds') 'Final System Check keeps hibernation, restore-point, and default-audio technician verification actions'
+Assert-AppTest ($finalCheckSource -match '55c92734-d682-4d71-983e-d6ec3f16059f' -and $finalCheckSource -match 'LicenseIsAddon' -and $finalCheckSource -match "'NotActivated'" -and $finalCheckSource -notmatch 'Where-Object \{ \$_\.PartialProductKey -and \$_\.LicenseStatus -eq 1 \}') 'Final activation checks only the base Windows OS license instead of accepting Office or an add-on'
 Assert-AppTest ($finalCheckSource -match 'SYSTEM READY: ATTENTION REQUIRED' -and $finalCheckSource -match 'exit \$finalExitCode' -and $mainFormSource -match 'ExitCode == 5') 'Final System Check returns a visible attention result when a required readiness check fails'
 Assert-AppTest ($finalCheckSource -match "Set-Service -Name 'BDESVC' -StartupType Manual") 'Final System Check repairs BitLocker service state left by older Pre-Clone versions'
 Assert-AppTest ($finalCheckSource -match 'PreClonePolicyBackup\.json' -and $finalCheckSource -match 'PreClonePolicyRestored\.json' -and $finalCheckSource -match '\$setting\.WasPresent' -and $finalCheckSource -match '\$setting\.PreviousValue') 'Final System Check restores each saved pre-clone policy state once instead of blindly deleting or repeatedly replaying it'
@@ -102,6 +103,27 @@ Assert-AppTest ($toolboxSource -match '\$exitToolbox = \$false' -and $toolboxSou
 Assert-AppTest ($toolboxSource -match 'Windows may take several minutes while each network adapter waits for DHCP' -and $toolboxSource -match 'Returning to the toolbox menu\.' -and $toolboxSource -notmatch 'WaitForExit') 'Slow IP renewal remains uninterrupted and toolbox action errors return safely to the menu'
 Assert-AppTest ($toolboxSource -match 'finally\s*\{[\s\S]+?Start-Service -Name Spooler -ErrorAction Stop' -and $toolboxSource -match 'Get-ChildItem -LiteralPath \$printDir') 'Clear Print Queue restarts the spooler even when queue deletion fails and reports deletion errors'
 Assert-AppTest ($embeddedEngineSource -match 'PrepareProtectedDirectory\(compuTekRoot\)' -and $embeddedEngineSource -match 'PrepareProtectedDirectory\(engineRoot\)' -and $embeddedEngineSource -match 'RejectReparsePoint' -and $embeddedEngineSource -match 'File\.Delete\(destination\)' -and $embeddedEngineSource -match 'File\.Move\(temporary, destination\)' -and $embeddedEngineSource.IndexOf('File.Exists(portableCatalog)') -lt $embeddedEngineSource.IndexOf('File.Exists(managedCatalog)')) 'Engine staging protects the full ProgramData hierarchy, replaces unsafe inherited file ACLs, rejects reparse points, and prefers the USB catalog'
+
+$activationTokens = $null
+$activationErrors = $null
+$activationAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1'),[ref]$activationTokens,[ref]$activationErrors)
+foreach ($functionName in @('Get-CompuTekLicenseStatusName','Get-CompuTekWindowsActivationStatus')) {
+    $functionAst = @($activationAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
+    Invoke-Expression $functionAst.Extent.Text
+}
+$windowsApplicationId = '55c92734-d682-4d71-983e-d6ec3f16059f'
+$officeLicensed = [pscustomobject]@{ApplicationID='0ff1ce15-a989-479d-af46-f275c6370663';PartialProductKey='OFFCE';LicenseIsAddon=$false;LicenseStatus=1;LicenseStatusReason=0;Name='Office Professional'}
+$windowsNotification = [pscustomobject]@{ApplicationID=$windowsApplicationId;PartialProductKey='WIN10';LicenseIsAddon=$false;LicenseStatus=5;LicenseStatusReason=[uint32]3221549108;Name='Windows(R), Professional edition'}
+$activationResult = Get-CompuTekWindowsActivationStatus -Products @($officeLicensed,$windowsNotification)
+Assert-AppTest ($activationResult.State -eq 'NotActivated' -and $activationResult.Details -match 'Notification') 'An activated Office license cannot hide an unactivated Windows operating-system license'
+$licensedWindowsAddon = [pscustomobject]@{ApplicationID=$windowsApplicationId;PartialProductKey='ADDON';LicenseIsAddon=$true;LicenseStatus=1;LicenseStatusReason=0;Name='Windows add-on license'}
+$activationResult = Get-CompuTekWindowsActivationStatus -Products @($windowsNotification,$licensedWindowsAddon)
+Assert-AppTest ($activationResult.State -eq 'NotActivated' -and $activationResult.Products.Count -eq 1) 'A licensed Windows add-on cannot hide an unactivated base Windows license'
+$windowsLicensed = [pscustomobject]@{ApplicationID=$windowsApplicationId;PartialProductKey='WIN11';LicenseIsAddon=$false;LicenseStatus=1;LicenseStatusReason=0;Name='Windows(R), Professional edition'}
+$activationResult = Get-CompuTekWindowsActivationStatus -Products @($officeLicensed,$windowsLicensed)
+Assert-AppTest ($activationResult.State -eq 'Activated' -and $activationResult.LicensedProducts.Count -eq 1) 'A licensed base Windows operating-system record passes activation readiness'
+$activationResult = Get-CompuTekWindowsActivationStatus -Products @()
+Assert-AppTest ($activationResult.State -eq 'Unknown') 'Missing Windows licensing data requires technician attention instead of passing'
 
 $preCloneTokens = $null
 $preCloneErrors = $null
@@ -203,7 +225,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.11.0') 'Built EXE reports version 1.4.11.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.12.0') 'Built EXE reports version 1.4.12.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

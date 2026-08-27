@@ -23,7 +23,7 @@ Build and test it on Windows with:
 ### FinalSystemCheck_CompuTek.ps1
 End-of-job readiness checklist:
 - Appears on the first/default application page with a large keyboard-accessible button because it is the store's most-used workflow.
-- Reports Windows edition and activation status, disables hibernation, and confirms BitLocker policy flags are not blocking encryption.
+- Reports Windows edition and validates the base Windows operating-system license specifically (not Office or licensed Windows add-ons), disables hibernation, and confirms BitLocker policy flags are not blocking encryption.
 - Checks antivirus posture (Defender or third-party), Splashtop service health, pending Windows Updates, and Device Manager errors.
 - Enables System Protection when needed and creates the required end-of-job restore point when Windows policy allows it.
 - Verifies audio devices, un-mutes/sets volume to 50%, plays Windows test sounds through the default audio endpoint, and requires the technician to confirm that they were heard.
