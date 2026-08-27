@@ -62,7 +62,8 @@ Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or 
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
-Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match 'current-user Store apps were still checked') 'Store-app collection falls back to the current user while reporting an all-user collection gap'
+Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match '\$currentUserPackages\s*=\s*@\(Get-AppxPackage' -and $moduleSource -match 'Get-StartApps') 'Store-app collection always combines all-user, current-user, and Start-app registration views'
+Assert-True ($remediationSource -match 'Remove-CandidateStoreProducts' -and $remediationSource -match "'--source','msstore'" -and $remediationSource -match "'--disable-interactivity'") 'A selected unresolved Store app can use its exact catalog ID for non-interactive WinGet removal before verification'
 Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
 Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
 
@@ -137,6 +138,44 @@ try {
         Remove-Item -LiteralPath $resolvedStartupTestRoot -Recurse -Force
     }
 }
+
+$currentUserStoreArtifacts = @(& $scannerModule {
+    function Get-AppxPackage {
+        [CmdletBinding()]
+        param([switch]$AllUsers)
+        if ($AllUsers) { return @() }
+        return [pscustomobject]@{
+            Name='YellowElephantProductions.TeamRemoteDesktop'
+            PackageFullName='YellowElephantProductions.TeamRemoteDesktop_1.0.0.0_x64__p3e1zgp7z7szg'
+            PackageFamilyName='YellowElephantProductions.TeamRemoteDesktop_p3e1zgp7z7szg'
+            InstallLocation='C:\Program Files\WindowsApps\YellowElephantProductions.TeamRemoteDesktop_1.0.0.0_x64__p3e1zgp7z7szg'
+            Publisher='CN=Yellow Elephant Productions';Version=[version]'1.0.0.0'
+        }
+    }
+    function Get-StartApps { [CmdletBinding()] param(); return @() }
+    try { Get-CompuTekAppxArtifacts } finally {
+        Remove-Item Function:\Get-AppxPackage -Force -ErrorAction SilentlyContinue
+        Remove-Item Function:\Get-StartApps -Force -ErrorAction SilentlyContinue
+    }
+})
+Assert-True ($currentUserStoreArtifacts.Count -eq 1 -and $currentUserStoreArtifacts[0].PackageFullName -match 'TeamRemoteDesktop') 'A Store package omitted by -AllUsers is retained from the always-run current-user query'
+
+$startAppFallbackArtifacts = @(& $scannerModule {
+    function Get-AppxPackage { [CmdletBinding()] param([switch]$AllUsers); return @() }
+    function Get-StartApps {
+        [CmdletBinding()]
+        param()
+        return @(
+            [pscustomobject]@{Name='TeamViewer Remote';AppID='TeamViewer.Remote'},
+            [pscustomobject]@{Name='Team Remote Desktop';AppID='YellowElephantProductions.TeamRemoteDesktop_p3e1zgp7z7szg!App'}
+        )
+    }
+    try { Get-CompuTekAppxArtifacts } finally {
+        Remove-Item Function:\Get-AppxPackage -Force -ErrorAction SilentlyContinue
+        Remove-Item Function:\Get-StartApps -Force -ErrorAction SilentlyContinue
+    }
+})
+Assert-True ($startAppFallbackArtifacts.Count -eq 2 -and @($startAppFallbackArtifacts | Where-Object {$_.ArtifactType -eq 'StartApp'}).Count -eq 2) 'Start registrations retain Store-delivered remote apps when package inventory returns no records'
 
 $remediationTokens = $null
 $remediationErrors = $null
@@ -244,17 +283,16 @@ $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $legacyNable)
 Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'n-able-rmm') 'A legacy N-able Windows Agent is detected from its vendor-specific installation path without treating every agent.exe as RMM'
 
 $teamViewerStore = New-TestEvidence @{
-    ArtifactType='InstalledProgram';Name='TeamViewer Remote';DisplayName='TeamViewer Remote';Path='C:\Program Files\TeamViewer\TeamViewer.exe'
-    ProductName='TeamViewer Remote';Publisher='TeamViewer';FileName='TeamViewer.exe';OriginalFilename='TeamViewer.exe'
+    ArtifactType='StartApp';Name='TeamViewer Remote';DisplayName='TeamViewer Remote';PackageName='TeamViewer.Remote'
 }
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $teamViewerStore)
-Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'teamviewer') 'TeamViewer Remote installed through the Microsoft Store is detected'
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'teamviewer' -and @($matches[0].Product.storeProductIds) -contains 'XPDM17HK323C4X') 'TeamViewer Remote is detected through its Start registration and retains its exact Store product ID'
 $teamRemoteDesktopStore = New-TestEvidence @{
-    ArtifactType='AppxPackage';Name='YellowElephantProductions.TeamRemoteDesktop';DisplayName='YellowElephantProductions.TeamRemoteDesktop'
-    PackageName='YellowElephantProductions.TeamRemoteDesktop';Path='C:\Program Files\WindowsApps\YellowElephantProductions.TeamRemoteDesktop_1.0.0.0_x64__p3e1zgp7z7szg'
+    ArtifactType='StartApp';Name='Team Remote Desktop';DisplayName='Team Remote Desktop'
+    PackageName='YellowElephantProductions.TeamRemoteDesktop_p3e1zgp7z7szg!App'
 }
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $teamRemoteDesktopStore)
-Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'team-remote-desktop') 'The exact Team Remote Desktop Microsoft Store package is detected'
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'team-remote-desktop' -and @($matches[0].Product.storeProductIds) -contains '9P90CMJ610D0') 'The exact Team Remote Desktop Start registration and Store product ID are detected'
 
 $goToAssistService = New-TestEvidence @{
     ArtifactType='Service';Name='GoToAssist Remote Support Customer';DisplayName='GoToAssist Remote Support Customer'

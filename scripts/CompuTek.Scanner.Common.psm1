@@ -291,7 +291,7 @@ function Find-CompuTekProductMatch {
                 }
             }
         }
-        if ($artifactType -eq 'AppxPackage') {
+        if ($artifactType -in @('AppxPackage','StartApp')) {
             foreach ($pattern in (ConvertTo-CompuTekArray $product.packagePatterns)) {
                 if ($Evidence.PackageName -like $pattern -or $Evidence.DisplayName -like $pattern) {
                     $reasons.Add("package:$pattern")
@@ -447,19 +447,40 @@ function Get-CompuTekUninstallArtifacts {
 function Get-CompuTekAppxArtifacts {
     [CmdletBinding()]
     param()
-    if (-not (Get-Command Get-AppxPackage -ErrorAction SilentlyContinue)) { return @() }
     $items = @()
-    $packages = @()
-    try {
-        $packages = @(Get-AppxPackage -AllUsers -ErrorAction Stop)
-    } catch {
-        Add-CompuTekCollectorWarning "All-user AppX inventory failed; current-user Store apps were still checked: $($_.Exception.Message)"
+    $packageByIdentity = @{}
+    $allUserPackages = @()
+    $currentUserPackages = @()
+    $appxCommand = Get-Command Get-AppxPackage -ErrorAction SilentlyContinue
+    if ($appxCommand) {
         try {
-            $packages = @(Get-AppxPackage -ErrorAction Stop)
+            $allUserPackages = @(Get-AppxPackage -AllUsers -ErrorAction Stop)
         } catch {
-            throw "AppX inventory failed for all users and the current user: $($_.Exception.Message)"
+            Add-CompuTekCollectorWarning "All-user AppX inventory failed; current-user and Start-app registrations were still checked: $($_.Exception.Message)"
+        }
+        try {
+            # Always query the current user too. Some Store registrations visible to
+            # the signed-in user have been absent from otherwise successful -AllUsers
+            # results on field systems.
+            $currentUserPackages = @(Get-AppxPackage -ErrorAction Stop)
+        } catch {
+            Add-CompuTekCollectorWarning "Current-user AppX inventory failed; all-user and Start-app registrations were still checked: $($_.Exception.Message)"
+        }
+        if ($allUserPackages.Count -eq 0 -and $currentUserPackages.Count -eq 0) {
+            Add-CompuTekCollectorWarning 'Both all-user and current-user AppX inventories returned no packages; Start-app registrations were still checked.'
+        }
+    } else {
+        Add-CompuTekCollectorWarning 'The AppX PowerShell cmdlets are unavailable; only Start-app registrations could be checked for Store software.'
+    }
+
+    foreach ($pkg in @($allUserPackages + $currentUserPackages)) {
+        $identity = [string]$pkg.PackageFullName
+        if (-not $identity) { $identity = "{0}|{1}|{2}" -f $pkg.Name,$pkg.Version,$pkg.InstallLocation }
+        if (-not $packageByIdentity.ContainsKey($identity.ToLowerInvariant())) {
+            $packageByIdentity[$identity.ToLowerInvariant()] = $pkg
         }
     }
+    $packages = @($packageByIdentity.Values)
     foreach ($pkg in $packages) {
         $items += New-CompuTekArtifact @{
             ArtifactType = 'AppxPackage'; Source = 'Appx'; Name = $pkg.Name; DisplayName = $pkg.Name
@@ -467,6 +488,35 @@ function Get-CompuTekAppxArtifacts {
             PackageFullName = $pkg.PackageFullName; DisplayVersion = [string]$pkg.Version
             RemediationKind = 'RemoveAppx'
         }
+    }
+
+    # Get-StartApps is a second, independent current-user view. It catches both
+    # packaged Store apps and Store-delivered Win32 apps that can be visible in
+    # Start even when AppX/ARP inventory is incomplete.
+    $startAppsCommand = Get-Command Get-StartApps -ErrorAction SilentlyContinue
+    if ($startAppsCommand) {
+        $knownFamilyNames = @{}
+        foreach ($pkg in $packages) {
+            $familyName = [string]$pkg.PackageFamilyName
+            if ($familyName) { $knownFamilyNames[$familyName.ToLowerInvariant()] = $true }
+        }
+        try {
+            foreach ($startApp in @(Get-StartApps -ErrorAction Stop)) {
+                $appId = [string]$startApp.AppID
+                $displayName = [string]$startApp.Name
+                if (-not $appId -and -not $displayName) { continue }
+                $familyName = if ($appId -match '^([^!]+)!') { [string]$Matches[1] } else { $null }
+                if ($familyName -and $knownFamilyNames.ContainsKey($familyName.ToLowerInvariant())) { continue }
+                $items += New-CompuTekArtifact @{
+                    ArtifactType = 'StartApp'; Source = 'CurrentUserStartApps'; Name = $displayName; DisplayName = $displayName
+                    PackageName = $appId; RemediationKind = 'RemoveStoreApp'
+                }
+            }
+        } catch {
+            Add-CompuTekCollectorWarning "Current-user Start-app inventory failed: $($_.Exception.Message)"
+        }
+    } else {
+        Add-CompuTekCollectorWarning 'Get-StartApps is unavailable; the redundant current-user Store-app check could not run.'
     }
     return @($items)
 }
@@ -860,6 +910,7 @@ function ConvertTo-CompuTekFinding {
         InstallLocation      = $Artifact.InstallLocation
         PackageName          = $Artifact.PackageName
         PackageFullName      = $Artifact.PackageFullName
+        StoreProductIds      = if ($product) { @(ConvertTo-CompuTekArray $product.storeProductIds) } else { @() }
         TaskPath             = $Artifact.TaskPath
         SourcePath           = $Artifact.SourcePath
         StartupTarget        = $Artifact.StartupTarget
@@ -1026,7 +1077,7 @@ function Export-CompuTekScanReport {
     $startupJsonPath = Join-Path $Directory ($BaseName + '.StartupItems.json')
     $startupCsvPath = Join-Path $Directory ($BaseName + '.StartupItems.csv')
     $Scan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
-    @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,SourcePath,TaskPath,CommandLine,DisplayVersion,FileVersion,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
+    @($Scan.Findings) | Select-Object ProductId,ProductName,Category,Confidence,Disposition,Evidence,ArtifactType,Source,Name,Path,SourcePath,TaskPath,CommandLine,DisplayVersion,FileVersion,OriginalFilename,CompanyName,Signer,SignatureStatus,RegistryPath,PackageFullName,@{Name='StoreProductIds';Expression={@($_.StoreProductIds) -join ';'}},ServiceState,ServiceStartMode,ConnectionCount,@{Name='RemoteEndpoints';Expression={@($_.RemoteEndpoints) -join ';'}} | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding UTF8
     $startupItems = @($Scan.StartupInventory)
     ConvertTo-Json -InputObject $startupItems -Depth 7 | Set-Content -LiteralPath $startupJsonPath -Encoding UTF8
     $startupColumns = @('Name','SourcePath','StartupTarget','StartupArguments','StartupReinstallRisk','HeuristicReason','CommandLine','LastWriteTimeUtc','OriginalFilename','CompanyName','Signer','SignatureStatus')
