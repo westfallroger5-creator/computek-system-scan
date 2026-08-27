@@ -26,7 +26,7 @@ End-of-job readiness checklist:
 - Reports Windows edition and validates the base Windows operating-system license specifically (not Office or licensed Windows add-ons), disables hibernation, and confirms BitLocker policy flags are not blocking encryption.
 - Checks antivirus posture (Defender or third-party), Splashtop service health, pending Windows Updates, and Device Manager errors.
 - Enables System Protection when needed and creates the required end-of-job restore point when Windows policy allows it.
-- Verifies audio devices, un-mutes/sets volume to 50%, plays Windows test sounds through the default audio endpoint, and requires the technician to confirm that they were heard.
+- Asks whether the PC requires speaker output before running audio checks. A PC without speakers can be explicitly skipped without failing readiness. When required, it verifies audio devices, un-mutes/sets volume to 50%, and plays Windows test sounds through the default endpoint; `NO` replays the sounds and only `FAIL` marks audio as needing attention.
 - Ends with a clear **SYSTEM READY: YES** or **ATTENTION REQUIRED** result; failed required checks no longer appear as a successful green completion in the application.
 
 ### IT_Technician_Toolbox.ps1
