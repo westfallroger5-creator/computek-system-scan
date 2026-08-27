@@ -41,6 +41,10 @@ foreach ($relativePath in @(
 }
 Assert-True (@($catalog.products).Count -ge 60) 'Catalog contains at least 60 remote-access/RMM product families'
 Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.products).Count) 'Catalog product IDs are unique'
+Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\Teams\current\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed Teams executable in its expected per-user folder is trusted'
+Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\OneDrive\OneDrive.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed OneDrive executable in its expected per-user folder is trusted'
+Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\Teams\current\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer '' -SignatureStatus 'NotSigned')) 'An unsigned Teams-named executable is not trusted'
+Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Roaming\Adobe\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid')) 'A Teams-named executable outside Microsoft expected folders is still suspicious'
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
 Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
@@ -61,6 +65,7 @@ Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSo
 Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or invalidly signed executable") 'Unsigned Temp files alone are not treated as remote-access removal candidates'
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
+Assert-True ($moduleSource -match 'Test-CompuTekTrustedMicrosoftApplication' -and $moduleSource -match "ArtifactType -eq 'Process'[\s\S]+?ConnectionCount -gt 0[\s\S]+?Test-CompuTekTrustedMicrosoftApplication") 'Signed Teams and OneDrive processes in expected folders are excluded from the generic user-writable network heuristic'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
 Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match '\$currentUserPackages\s*=\s*@\(Get-AppxPackage' -and $moduleSource -match 'Get-StartApps') 'Store-app collection always combines all-user, current-user, and Start-app registration views'
 Assert-True ($moduleSource -match 'Get-CompuTekPropertyValue \$product ''storeProductIds''') 'Optional Store product IDs are read safely under strict mode'
@@ -431,10 +436,14 @@ Assert-True ($msi.FilePath -eq 'msiexec.exe' -and @($msi.Arguments) -contains '/
 $postScamTokens = $null
 $postScamErrors = $null
 $postScamAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'),[ref]$postScamTokens,[ref]$postScamErrors)
-$postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-CompuTekPostScamPersistenceText'},$true))[0]
-Invoke-Expression $postScamFunction.Extent.Text
+foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText')) {
+    $postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
+    Invoke-Expression $postScamFunction.Extent.Text
+}
 $remoteRegex = '(?i)(screenconnect|anydesk)'
 $suspiciousCommandRegex = '(?i)(encodedcommand|invoke-webrequest)'
+$script:PostScamUserWritableTextRegex = '(?i)\\users\\[^\\]+\\(?:appdata|downloads|desktop)\\|\\windows\\temp\\'
+$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
 Assert-True (-not (Test-CompuTekPostScamPersistenceText 'Service FileSyncHelper installed under C:\Program Files\Vendor')) 'An ordinary recent service installation is supplemental evidence, not an actionable scam backdoor'
 Assert-True (Test-CompuTekPostScamPersistenceText 'ScreenConnect Client service installed') 'A remote-software service installation remains actionable'
 Assert-True (Test-CompuTekPostScamPersistenceText 'powershell.exe -EncodedCommand AAAA') 'A suspicious persistence command remains actionable'

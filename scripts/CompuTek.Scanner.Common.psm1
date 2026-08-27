@@ -240,6 +240,38 @@ function Get-CompuTekFileEvidence {
     return [pscustomobject]$result
 }
 
+function Test-CompuTekTrustedMicrosoftApplication {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Path,
+        [AllowNull()][string]$CompanyName,
+        [AllowNull()][string]$Signer,
+        [AllowNull()][string]$SignatureStatus
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"'))
+    $normalized = $expanded.ToLowerInvariant()
+    $isExpectedMicrosoftPath = (
+        $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\teams\\(?:current\\teams|update)\.exe$' -or
+        $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivestandaloneupdater|filecoauth))\.exe$' -or
+        $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\windowsapps\\ms-teams\.exe$'
+    )
+    if (-not $isExpectedMicrosoftPath) { return $false }
+
+    if ([string]::IsNullOrWhiteSpace($CompanyName) -and [string]::IsNullOrWhiteSpace($Signer) -and [string]::IsNullOrWhiteSpace($SignatureStatus)) {
+        $fileEvidence = Get-CompuTekFileEvidence -Path $expanded
+        $CompanyName = [string]$fileEvidence.CompanyName
+        $Signer = [string]$fileEvidence.Signer
+        $SignatureStatus = [string]$fileEvidence.SignatureStatus
+    }
+
+    return (
+        $SignatureStatus -eq 'Valid' -and
+        ("$CompanyName $Signer" -match '(?i)\bMicrosoft(?: Corporation)?\b')
+    )
+}
+
 function Find-CompuTekProductMatch {
     [CmdletBinding()]
     param(
@@ -1013,11 +1045,16 @@ function Invoke-CompuTekRemoteAccessScan {
         } elseif (
             $artifact.ArtifactType -in @('RunKey','ScheduledTask','StartupFile') -and
             (Test-CompuTekUserWritablePath $artifact.Path) -and
-            -not ($artifact.SignatureStatus -eq 'Valid' -and ("$($artifact.CompanyName) $($artifact.Signer)" -match '(?i)Microsoft'))
+            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus)
         ) {
             $reason = 'Persistence launches an executable from a user-writable location'
             $confidence = if ($artifact.SignatureStatus -eq 'Valid') {'Low'} else {'Medium'}
-        } elseif ($artifact.ArtifactType -eq 'Process' -and (Test-CompuTekUserWritablePath $artifact.Path) -and $artifact.ConnectionCount -gt 0) {
+        } elseif (
+            $artifact.ArtifactType -eq 'Process' -and
+            (Test-CompuTekUserWritablePath $artifact.Path) -and
+            $artifact.ConnectionCount -gt 0 -and
+            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus)
+        ) {
             $reason = 'Running executable in a user-writable location has active network connections'
             $confidence = 'Medium'
         } elseif ($artifact.HeuristicReason -and ([string]$artifact.Path -notmatch '(?i)\\AppData\\Local\\Microsoft\\WindowsApps\\')) {
@@ -1130,6 +1167,7 @@ Export-ModuleMember -Function @(
     'Get-CompuTekCatalog',
     'Get-CompuTekExecutablePath',
     'Test-CompuTekUserWritablePath',
+    'Test-CompuTekTrustedMicrosoftApplication',
     'Get-CompuTekFileEvidence',
     'Get-CompuTekCandidateFilesSafe',
     'Find-CompuTekProductMatch',
