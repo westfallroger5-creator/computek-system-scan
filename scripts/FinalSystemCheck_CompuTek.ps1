@@ -20,6 +20,53 @@ function Read-CompuTekInput {
     return Read-Host $Prompt
 }
 
+function Get-CompuTekLicenseStatusName {
+    param([int]$LicenseStatus)
+    switch ($LicenseStatus) {
+        0 { return 'Unlicensed' }
+        1 { return 'Licensed' }
+        2 { return 'Out-of-box grace' }
+        3 { return 'Out-of-tolerance grace' }
+        4 { return 'Non-genuine grace' }
+        5 { return 'Notification' }
+        6 { return 'Extended grace' }
+        default { return "Unknown status $LicenseStatus" }
+    }
+}
+
+function Get-CompuTekWindowsActivationStatus {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][object[]]$Products)
+
+    $windowsApplicationId = '55c92734-d682-4d71-983e-d6ec3f16059f'
+    if (-not $PSBoundParameters.ContainsKey('Products')) {
+        $Products = @(Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "ApplicationID = '$windowsApplicationId' AND PartialProductKey IS NOT NULL" -ErrorAction Stop)
+    }
+
+    $windowsProducts = @($Products | Where-Object {
+        $applicationId = [string]$_.ApplicationID
+        $partialKey = [string]$_.PartialProductKey
+        $addonProperty = $_.PSObject.Properties['LicenseIsAddon']
+        $isAddon = ($addonProperty -and [bool]$addonProperty.Value)
+        $applicationId -ieq $windowsApplicationId -and $partialKey -and -not $isAddon
+    })
+    $licensedProducts = @($windowsProducts | Where-Object {[int]$_.LicenseStatus -eq 1})
+    $state = if ($licensedProducts.Count -gt 0) {'Activated'} elseif ($windowsProducts.Count -gt 0) {'NotActivated'} else {'Unknown'}
+    $details = @($windowsProducts | ForEach-Object {
+        $name = if ($_.Name) {[string]$_.Name} else {'Windows operating system license'}
+        $statusCode = [int]$_.LicenseStatus
+        $reasonProperty = $_.PSObject.Properties['LicenseStatusReason']
+        $reason = if ($reasonProperty -and $null -ne $reasonProperty.Value) {'; reason 0x{0:X8}' -f [uint32]$reasonProperty.Value} else {''}
+        '{0}: {1} ({2}{3})' -f $name,(Get-CompuTekLicenseStatusName $statusCode),$statusCode,$reason
+    })
+    return [pscustomobject]@{
+        State = $state
+        Products = $windowsProducts
+        LicensedProducts = $licensedProducts
+        Details = $details
+    }
+}
+
 function Restore-CompuTekPreClonePolicy {
     $regPaths = @(
         'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker',
@@ -102,16 +149,23 @@ $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion
 Write-Host "[INFO] Windows Edition: $edition" -ForegroundColor Cyan
 
 try {
-    $l = Get-CimInstance SoftwareLicensingProduct |
-         Where-Object { $_.PartialProductKey -and $_.LicenseStatus -eq 1 }
-    if ($l) {
-        Write-Host "[OK] Windows is activated." -ForegroundColor Green
-        $ActivationFailed = $false
-    } else {
-        Write-Host "[WARN] Windows not activated!" -ForegroundColor Yellow
+    $activation = Get-CompuTekWindowsActivationStatus
+    switch ($activation.State) {
+        'Activated' {
+            $licensedNames = @($activation.LicensedProducts | Select-Object -ExpandProperty Name -Unique)
+            Write-Host ("[OK] Windows activation is confirmed{0}." -f $(if($licensedNames){': ' + ($licensedNames -join ', ')}else{''})) -ForegroundColor Green
+            $ActivationFailed = $false
+        }
+        'NotActivated' {
+            Write-Host '[WARN] The Windows operating-system license is not activated.' -ForegroundColor Yellow
+            foreach ($detail in $activation.Details) { Write-Host "       $detail" -ForegroundColor Yellow }
+        }
+        default {
+            Write-Host '[WARN] No base Windows operating-system license record could be verified.' -ForegroundColor Yellow
+        }
     }
 } catch {
-    Write-Host "[WARN] Unable to determine activation status." -ForegroundColor Yellow
+    Write-Host "[WARN] Unable to determine Windows activation status: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 # --- 1b. Disable and verify Hibernation ---
