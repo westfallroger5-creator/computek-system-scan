@@ -701,9 +701,14 @@ function Invoke-OfficialUninstall {
 
 function Remove-CandidateAppxPackages {
     param($Candidate)
-    if (-not (Get-Command Remove-AppxPackage -ErrorAction SilentlyContinue)) { return }
+    $attempted = $false
+    $allSucceeded = $true
+    if (-not (Get-Command Remove-AppxPackage -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{Attempted=$false;Success=$false}
+    }
 
     foreach ($package in @($Candidate.Findings | Where-Object {$_.PackageFullName} | Select-Object -ExpandProperty PackageFullName -Unique)) {
+        $attempted = $true
         try {
             $command = Get-Command Remove-AppxPackage -ErrorAction Stop
             if ($command.Parameters.ContainsKey('AllUsers')) {
@@ -712,18 +717,26 @@ function Remove-CandidateAppxPackages {
                 Remove-AppxPackage -Package $package -ErrorAction Stop
             }
             Write-RemediationLog "Removed AppX package: $package" 'Green'
-        } catch { Write-RemediationLog "Could not remove AppX package ${package}: $($_.Exception.Message)" 'Red' }
+        } catch {
+            $allSucceeded = $false
+            Write-RemediationLog "Could not remove AppX package ${package}: $($_.Exception.Message)" 'Red'
+        }
     }
 
     if (Get-Command Get-AppxProvisionedPackage -ErrorAction SilentlyContinue) {
         $packageNames = @($Candidate.Findings | Where-Object {$_.PackageName} | Select-Object -ExpandProperty PackageName -Unique)
         foreach ($package in @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object {$packageNames -contains $_.DisplayName})) {
+            $attempted = $true
             try {
                 Remove-AppxProvisionedPackage -Online -PackageName $package.PackageName -ErrorAction Stop | Out-Null
                 Write-RemediationLog "Removed provisioned AppX package: $($package.PackageName)" 'Green'
-            } catch { Write-RemediationLog "Could not remove provisioned package $($package.PackageName): $($_.Exception.Message)" 'Red' }
+            } catch {
+                $allSucceeded = $false
+                Write-RemediationLog "Could not remove provisioned package $($package.PackageName): $($_.Exception.Message)" 'Red'
+            }
         }
     }
+    return [pscustomobject]@{Attempted=$attempted;Success=($attempted -and $allSucceeded)}
 }
 
 function Stop-CandidateProcesses {
@@ -763,15 +776,28 @@ function Stop-CandidateProcesses {
 }
 
 function Remove-CandidateStoreProducts {
-    param($Candidate, [switch]$RegisteredUninstallSucceeded)
+    param(
+        $Candidate,
+        [switch]$RegisteredUninstallSucceeded,
+        [switch]$AppxRemovalSucceeded,
+        [switch]$AllowProductWideFallback
+    )
 
-    $unresolvedStartApps = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'StartApp' -and -not $_.PackageFullName})
-    if ($unresolvedStartApps.Count -eq 0) { return }
+    $storeEvidence = @($Candidate.Findings | Where-Object {$_.ArtifactType -in @('AppxPackage','StartApp')})
+    if ($storeEvidence.Count -eq 0) { return }
     if ($RegisteredUninstallSucceeded) {
-        Write-RemediationLog 'The registered vendor uninstaller succeeded; the verification scan will confirm that its Start-app registration was removed.' 'Green'
+        Write-RemediationLog 'The registered vendor uninstaller succeeded; the verification scan will confirm that its Store registration was removed.' 'Green'
         return
     }
-    $storeProductIds = @($unresolvedStartApps | ForEach-Object {@($_.StoreProductIds)} | Where-Object {$_} | Sort-Object -Unique)
+    if ($AppxRemovalSucceeded) {
+        Write-RemediationLog 'Windows package removal succeeded; the verification scan will confirm that every Store registration was removed.' 'Green'
+        return
+    }
+    if (-not $AllowProductWideFallback) {
+        Write-RemediationLog 'Exact Store-ID fallback was skipped because another version of this product was approved to keep. Verification will report any remaining selected package for manual removal.' 'Yellow'
+        return
+    }
+    $storeProductIds = @($storeEvidence | ForEach-Object {@($_.StoreProductIds)} | Where-Object {$_} | Sort-Object -Unique)
     if ($storeProductIds.Count -eq 0) { return }
 
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
@@ -984,7 +1010,7 @@ function Remove-CandidateRegistration {
 }
 
 function Invoke-FullCandidateRemoval {
-    param($Candidate)
+    param($Candidate, [switch]$AllowProductWideStoreFallback)
 
     $backup = Backup-CandidateEvidence $Candidate
     Write-RemediationLog "Evidence backup created: $backup" 'Cyan'
@@ -1017,8 +1043,8 @@ function Invoke-FullCandidateRemoval {
     Stop-CandidateProcesses $Candidate
     Remove-CandidateServices $Candidate
     Remove-CandidatePersistence $Candidate
-    Remove-CandidateAppxPackages $Candidate
-    Remove-CandidateStoreProducts -Candidate $Candidate -RegisteredUninstallSucceeded:$uninstallResult.Success
+    $appxResult = Remove-CandidateAppxPackages $Candidate
+    Remove-CandidateStoreProducts -Candidate $Candidate -RegisteredUninstallSucceeded:$uninstallResult.Success -AppxRemovalSucceeded:$appxResult.Success -AllowProductWideFallback:$AllowProductWideStoreFallback
     Remove-CandidateResidualFiles $Candidate
     Remove-CandidateRegistration $Candidate
 }
@@ -1027,6 +1053,20 @@ function Test-FindingBelongsToCandidate {
     param($Finding, $Candidate)
     if (@($Candidate.ProductIds) -notcontains [string]$Finding.ProductId) { return $false }
     if ($Candidate.IsManagedSuite) { return $true }
+    $storeArtifactTypes = @('AppxPackage','StartApp')
+    $candidateHasStoreEvidence = @($Candidate.Findings | Where-Object {$_.ArtifactType -in $storeArtifactTypes}).Count -gt 0
+    if ($candidateHasStoreEvidence -and $Finding.ArtifactType -in $storeArtifactTypes) {
+        # Windows can expose the same Store installation through AppX during one
+        # scan and only through its Start registration during the next. Treat the
+        # cross-view evidence as remaining software. A versioned AppX finding can
+        # still distinguish a separately kept version; an unversioned Start entry
+        # is deliberately conservative so removal is never falsely marked verified.
+        $findingStoreVersion = Get-FindingDetectedVersion $Finding
+        if ($Candidate.GroupByVersion -and $findingStoreVersion) {
+            return ($findingStoreVersion -ieq $Candidate.DetectedVersion)
+        }
+        return $true
+    }
     if ($Candidate.GroupByVersion) {
         $findingVersion = Get-FindingDetectedVersion $Finding
         if ($findingVersion) {
@@ -1054,6 +1094,18 @@ function Test-FindingBelongsToCandidate {
     if ($scopePath -and $Candidate.ScopePath -and $scopePath -ieq $Candidate.ScopePath) { return $true }
     foreach ($original in @($Candidate.Findings)) {
         if ($original.ArtifactType -eq $Finding.ArtifactType -and $original.Name -and $original.Name -ieq $Finding.Name) { return $true }
+    }
+    return $false
+}
+
+function Test-CandidateHasKeptProductPeer {
+    param($Candidate, $AllCandidates, $DecisionById)
+    foreach ($otherCandidate in @($AllCandidates)) {
+        if ($DecisionById[$otherCandidate.Id] -ne 'KeepApproved') { continue }
+        $sharedProduct = @($otherCandidate.ProductIds | Where-Object {
+            @($Candidate.ProductIds) -contains [string]$_
+        }).Count -gt 0
+        if ($sharedProduct) { return $true }
     }
     return $false
 }
@@ -1295,7 +1347,8 @@ foreach ($candidate in $selected) {
     $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
     $decisionRecord.RemovalOutcome = 'RemovalAttempted'
     try {
-        Invoke-FullCandidateRemoval $candidate
+        $sameProductKept = Test-CandidateHasKeptProductPeer -Candidate $candidate -AllCandidates $candidates -DecisionById $decisionById
+        Invoke-FullCandidateRemoval -Candidate $candidate -AllowProductWideStoreFallback:(-not $sameProductKept)
     } catch {
         $decisionRecord.RemovalOutcome = 'RemovalError'
         Write-RemediationLog "Remediation failed for $($candidate.Id): $($_.Exception.Message)" 'Red'
