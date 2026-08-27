@@ -83,7 +83,7 @@ Assert-AppTest ($preCloneSource -notmatch "Set-Service[^\r\n]+BDESVC[^\r\n]+Disa
 Assert-AppTest ($preCloneSource -match 'Disable-BitLockerAutoUnlock' -and $preCloneSource -match '\$current\.AutoUnlockEnabled') 'Pre-Clone handles auto-unlock data volumes before decryption'
 Assert-AppTest ($preCloneSource -match 'Get-CompuTekPortableMediaInfo' -and $preCloneSource -match 'Get-Partition -DriveLetter' -and $preCloneSource -match '\$portableMedia\.DiskNumber' -and $preCloneSource -match 'Pre-Clone must be launched from removable service media') 'Pre-Clone proves the service USB physical disk and excludes every partition on it'
 Assert-AppTest ($preCloneSource -match '\$bitLockerPreparationReady' -and $preCloneSource -match '\$encryptionPolicyReady' -and $preCloneSource -notmatch '\$decryptionStartedAny') 'Pre-Clone prevents automatic re-encryption even when target drives were already decrypted'
-Assert-AppTest ($finalCheckSource -match 'powercfg\.exe /hibernate off' -and $finalCheckSource -match 'Checkpoint-Computer' -and $finalCheckSource -match 'Did you clearly hear the speaker test' -and $finalCheckSource -match 'SystemSounds') 'Final System Check keeps hibernation, restore-point, and default-audio technician verification actions'
+Assert-AppTest ($finalCheckSource -match 'powercfg\.exe /hibernate off' -and $finalCheckSource -match 'Checkpoint-Computer' -and $finalCheckSource -match 'Does this PC have speakers or headphones' -and $finalCheckSource -match 'NO = replay' -and $finalCheckSource -match 'SpeakerTestSkipped' -and $finalCheckSource -match 'SystemSounds') 'Final System Check keeps required actions while allowing a no-speaker skip and replaying audio after NO'
 Assert-AppTest ($finalCheckSource -match '55c92734-d682-4d71-983e-d6ec3f16059f' -and $finalCheckSource -match 'LicenseIsAddon' -and $finalCheckSource -match "'NotActivated'" -and $finalCheckSource -notmatch 'Where-Object \{ \$_\.PartialProductKey -and \$_\.LicenseStatus -eq 1 \}') 'Final activation checks only the base Windows OS license instead of accepting Office or an add-on'
 Assert-AppTest ($finalCheckSource -match 'SYSTEM READY: ATTENTION REQUIRED' -and $finalCheckSource -match 'exit \$finalExitCode' -and $mainFormSource -match 'ExitCode == 5') 'Final System Check returns a visible attention result when a required readiness check fails'
 Assert-AppTest ($finalCheckSource -match "Set-Service -Name 'BDESVC' -StartupType Manual") 'Final System Check repairs BitLocker service state left by older Pre-Clone versions'
@@ -107,7 +107,7 @@ Assert-AppTest ($embeddedEngineSource -match 'PrepareProtectedDirectory\(compuTe
 $activationTokens = $null
 $activationErrors = $null
 $activationAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1'),[ref]$activationTokens,[ref]$activationErrors)
-foreach ($functionName in @('Get-CompuTekLicenseStatusName','Get-CompuTekWindowsActivationStatus')) {
+foreach ($functionName in @('Read-CompuTekYesNoChoice','Confirm-CompuTekSpeakerOutput','Get-CompuTekLicenseStatusName','Get-CompuTekWindowsActivationStatus')) {
     $functionAst = @($activationAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -124,6 +124,31 @@ $activationResult = Get-CompuTekWindowsActivationStatus -Products @($officeLicen
 Assert-AppTest ($activationResult.State -eq 'Activated' -and $activationResult.LicensedProducts.Count -eq 1) 'A licensed base Windows operating-system record passes activation readiness'
 $activationResult = Get-CompuTekWindowsActivationStatus -Products @()
 Assert-AppTest ($activationResult.State -eq 'Unknown') 'Missing Windows licensing data requires technician attention instead of passing'
+
+$audioSkipResult = & {
+    function Read-CompuTekInput { param($Prompt); return 'NO' }
+    Read-CompuTekYesNoChoice 'Audio required?'
+}
+Assert-AppTest (-not $audioSkipResult) 'The technician can mark audio not required for a PC without speakers'
+$audioReplayResult = & {
+    $responses = New-Object 'System.Collections.Generic.Queue[string]'
+    $responses.Enqueue('NO')
+    $responses.Enqueue('YES')
+    $state = [pscustomobject]@{PlaybackCount=0}
+    function Read-CompuTekInput { param($Prompt); return $responses.Dequeue() }
+    function Invoke-CompuTekSpeakerPlayback { $state.PlaybackCount++ }
+    $confirmed = Confirm-CompuTekSpeakerOutput
+    [pscustomobject]@{Confirmed=$confirmed;PlaybackCount=$state.PlaybackCount}
+}
+Assert-AppTest ($audioReplayResult.Confirmed -and $audioReplayResult.PlaybackCount -eq 2) 'Answering NO replays the audio test instead of immediately failing readiness'
+$audioFailResult = & {
+    $state = [pscustomobject]@{PlaybackCount=0}
+    function Read-CompuTekInput { param($Prompt); return 'FAIL' }
+    function Invoke-CompuTekSpeakerPlayback { $state.PlaybackCount++ }
+    $confirmed = Confirm-CompuTekSpeakerOutput
+    [pscustomobject]@{Confirmed=$confirmed;PlaybackCount=$state.PlaybackCount}
+}
+Assert-AppTest (-not $audioFailResult.Confirmed -and $audioFailResult.PlaybackCount -eq 1) 'Only an explicit FAIL response marks a required audio test unsuccessful'
 
 $preCloneTokens = $null
 $preCloneErrors = $null
@@ -225,7 +250,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.12.0') 'Built EXE reports version 1.4.12.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.13.0') 'Built EXE reports version 1.4.13.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

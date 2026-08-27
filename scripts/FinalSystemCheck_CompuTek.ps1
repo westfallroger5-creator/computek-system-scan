@@ -20,6 +20,45 @@ function Read-CompuTekInput {
     return Read-Host $Prompt
 }
 
+function Read-CompuTekYesNoChoice {
+    param([Parameter(Mandatory)][string]$Prompt)
+    while ($true) {
+        $response = ([string](Read-CompuTekInput $Prompt)).Trim()
+        if ($response -match '^(?i:Y|YES)$') { return $true }
+        if ($response -match '^(?i:N|NO)$') { return $false }
+        Write-Host 'Please enter YES or NO.' -ForegroundColor Yellow
+    }
+}
+
+function Invoke-CompuTekSpeakerPlayback {
+    Write-Host '[INFO] Playing the Windows speaker test through the default audio output...' -ForegroundColor Cyan
+    foreach ($sound in @(
+        [System.Media.SystemSounds]::Asterisk,
+        [System.Media.SystemSounds]::Exclamation,
+        [System.Media.SystemSounds]::Hand
+    )) {
+        $sound.Play()
+        Start-Sleep -Milliseconds 900
+    }
+    Write-Host '[INFO] Speaker test finished.' -ForegroundColor Cyan
+}
+
+function Confirm-CompuTekSpeakerOutput {
+    while ($true) {
+        Invoke-CompuTekSpeakerPlayback
+        while ($true) {
+            $response = ([string](Read-CompuTekInput 'Did you clearly hear the speaker test? YES = pass, NO = replay, FAIL = attention')).Trim()
+            if ($response -match '^(?i:Y|YES)$') { return $true }
+            if ($response -match '^(?i:N|NO)$') {
+                Write-Host '[INFO] Audio was not heard. Replaying the speaker test...' -ForegroundColor Cyan
+                break
+            }
+            if ($response -match '^(?i:F|FAIL)$') { return $false }
+            Write-Host 'Please enter YES, NO, or FAIL.' -ForegroundColor Yellow
+        }
+    }
+}
+
 function Get-CompuTekLicenseStatusName {
     param([int]$LicenseStatus)
     switch ($LicenseStatus) {
@@ -135,6 +174,7 @@ Write-Host "===================================================`n" -ForegroundCo
 
 $BitLockerSkipped = $false
 $SpeakerTestFailed = $false
+$SpeakerTestSkipped = $false
 $HibernationFailed = $false
 $RestorePointFailed = $false
 $ActivationFailed = $true
@@ -406,10 +446,16 @@ try {
 }
 
 # --- 8. Audio Device / Speaker Check ---
-try {
-    Write-Host ""
-    Write-Host "---------------------------------------------------"
-    Write-Host "[8/8] Checking audio output devices..." -ForegroundColor Cyan
+Write-Host ""
+Write-Host "---------------------------------------------------"
+Write-Host "[8/8] Audio output verification" -ForegroundColor Cyan
+$audioTestRequired = Read-CompuTekYesNoChoice 'Does this PC have speakers or headphones that need to be tested before it leaves the store? (YES/NO)'
+if (-not $audioTestRequired) {
+    $SpeakerTestSkipped = $true
+    Write-Host '[INFO] Audio test skipped by the technician because this PC does not require speaker output.' -ForegroundColor Cyan
+} else {
+  try {
+    Write-Host '[INFO] Checking audio output devices...' -ForegroundColor Cyan
 
     $audioDevices = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue
     $activeAudio  = $audioDevices | Where-Object { $_.Status -eq "OK" }
@@ -501,21 +547,10 @@ public class VolumeControl {
         }
 
         try {
-            Write-Host "[INFO] Playing the Windows speaker test through the default audio output..." -ForegroundColor Cyan
-            foreach ($sound in @(
-                [System.Media.SystemSounds]::Asterisk,
-                [System.Media.SystemSounds]::Exclamation,
-                [System.Media.SystemSounds]::Hand
-            )) {
-                $sound.Play()
-                Start-Sleep -Milliseconds 900
-            }
-            Write-Host "[INFO] Speaker test finished." -ForegroundColor Cyan
-            $heardResponse = Read-CompuTekInput 'Did you clearly hear the speaker test? (Y/N)'
-            if ($heardResponse -match '^[Yy]$') {
+            if (Confirm-CompuTekSpeakerOutput) {
                 Write-Host "[OK] Technician confirmed audible speaker output." -ForegroundColor Green
             } else {
-                Write-Host "[WARN] Technician did not confirm audible speaker output." -ForegroundColor Yellow
+                Write-Host "[WARN] Technician explicitly marked the audio test as failed." -ForegroundColor Yellow
                 $SpeakerTestFailed = $true
             }
         } catch {
@@ -533,6 +568,7 @@ public class VolumeControl {
 } catch {
     Write-Host "[WARN] Unable to query audio devices." -ForegroundColor Yellow
     $SpeakerTestFailed = $true
+  }
 }
 
 # --- Summary ---
@@ -544,6 +580,9 @@ if ($BitLockerSkipped) {
 }
 if ($SpeakerTestFailed) {
     Write-Host "[WARN] Speaker readiness failed -- audible output was not confirmed." -ForegroundColor Yellow
+}
+if ($SpeakerTestSkipped) {
+    Write-Host '[INFO] Speaker test was marked not required for this PC.' -ForegroundColor DarkGray
 }
 if ($HibernationFailed) {
     Write-Host "[WARN] Required final action failed: hibernation is not confirmed off." -ForegroundColor Yellow
