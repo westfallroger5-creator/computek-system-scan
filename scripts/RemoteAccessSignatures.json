@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.26.8",
+  "catalogVersion": "2026.08.26.9",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "heuristicTerms": [
     "remote access", "remote desktop", "remote support", "remote control", "screen sharing",
@@ -27,6 +27,7 @@
       "originalFilenames": ["teamviewer.exe", "teamviewer_service.exe", "teamviewerqs.exe"],
       "servicePatterns": ["TeamViewer*"],
       "packagePatterns": ["*TeamViewer*", "*TeamViewerRemoteControl*"],
+      "storeProductIds": ["XPDM17HK323C4X"],
       "pathPatterns": ["*\\teamviewer\\*", "*\\teamviewer remote\\*"]
     },
     {
@@ -38,6 +39,7 @@
       "originalFilenames": ["team remote desktop.exe", "teamremotedesktop.exe"],
       "servicePatterns": ["Team Remote Desktop*", "TeamRemoteDesktop*"],
       "packagePatterns": ["YellowElephantProductions.TeamRemoteDesktop*", "*TeamRemoteDesktop*"],
+      "storeProductIds": ["9P90CMJ610D0"],
       "pathPatterns": ["*\\yellowelephantproductions.teamremotedesktop_*", "*\\team remote desktop\\*"]
     },
     {

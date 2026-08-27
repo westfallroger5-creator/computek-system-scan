@@ -169,7 +169,7 @@ function Show-CandidateSummary {
     }
 
     if ($Detailed) {
-        $priority = @{InstalledProgram=1;Service=2;NativeFeature=3;AppxPackage=4;RunKey=5;ScheduledTask=6;StartupFile=7;Process=8;File=9}
+        $priority = @{InstalledProgram=1;Service=2;NativeFeature=3;AppxPackage=4;StartApp=5;RunKey=6;ScheduledTask=7;StartupFile=8;Process=9;File=10}
         $examples = @($Candidate.Findings | Sort-Object @{Expression={if($priority.ContainsKey($_.ArtifactType)){$priority[$_.ArtifactType]}else{99}}},Path,Name | Select-Object -First 6)
         Write-Host '    Key items:' -ForegroundColor Gray
         foreach ($finding in $examples) {
@@ -762,6 +762,40 @@ function Stop-CandidateProcesses {
     }
 }
 
+function Remove-CandidateStoreProducts {
+    param($Candidate, [switch]$RegisteredUninstallSucceeded)
+
+    $unresolvedStartApps = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'StartApp' -and -not $_.PackageFullName})
+    if ($unresolvedStartApps.Count -eq 0) { return }
+    if ($RegisteredUninstallSucceeded) {
+        Write-RemediationLog 'The registered vendor uninstaller succeeded; the verification scan will confirm that its Start-app registration was removed.' 'Green'
+        return
+    }
+    $storeProductIds = @($unresolvedStartApps | ForEach-Object {@($_.StoreProductIds)} | Where-Object {$_} | Sort-Object -Unique)
+    if ($storeProductIds.Count -eq 0) { return }
+
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if (-not $winget) {
+        Write-RemediationLog ("Windows Package Manager is unavailable. Store product ID(s) require manual removal if still present: {0}" -f ($storeProductIds -join ', ')) 'Red'
+        return
+    }
+
+    foreach ($storeProductId in $storeProductIds) {
+        Write-RemediationLog "Running exact Microsoft Store uninstall for product ID $storeProductId." 'Yellow'
+        try {
+            $arguments = @('uninstall','--id',[string]$storeProductId,'--exact','--source','msstore','--silent','--accept-source-agreements','--disable-interactivity')
+            $process = Start-Process -FilePath $winget.Source -ArgumentList $arguments -Wait -PassThru -NoNewWindow -ErrorAction Stop
+            if ($process.ExitCode -eq 0) {
+                Write-RemediationLog "Microsoft Store uninstall completed for product ID $storeProductId." 'Green'
+            } else {
+                Write-RemediationLog "Microsoft Store uninstall returned exit code $($process.ExitCode) for product ID $storeProductId; verification will determine whether it remains." 'Red'
+            }
+        } catch {
+            Write-RemediationLog "Microsoft Store uninstall failed for product ID ${storeProductId}: $($_.Exception.Message)" 'Red'
+        }
+    }
+}
+
 function Stop-CandidateServices {
     param($Candidate)
     foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Sort-Object Name -Unique)) {
@@ -974,6 +1008,7 @@ function Invoke-FullCandidateRemoval {
         Stop-CandidateServices $Candidate
         Stop-CandidateProcesses $Candidate
         $retryResult = Invoke-OfficialUninstall -Candidate $Candidate -AttemptLabel 'retry after blockers were stopped'
+        if ($retryResult.Success) { $uninstallResult = $retryResult }
         if (-not $retryResult.Success) {
             Write-RemediationLog 'The registered uninstaller retry also failed; continuing with exact residual removal and verification.' 'Red'
         }
@@ -983,6 +1018,7 @@ function Invoke-FullCandidateRemoval {
     Remove-CandidateServices $Candidate
     Remove-CandidatePersistence $Candidate
     Remove-CandidateAppxPackages $Candidate
+    Remove-CandidateStoreProducts -Candidate $Candidate -RegisteredUninstallSucceeded:$uninstallResult.Success
     Remove-CandidateResidualFiles $Candidate
     Remove-CandidateRegistration $Candidate
 }
