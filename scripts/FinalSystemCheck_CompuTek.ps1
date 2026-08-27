@@ -31,16 +31,33 @@ function Read-CompuTekYesNoChoice {
 }
 
 function Invoke-CompuTekSpeakerPlayback {
-    Write-Host '[INFO] Playing the Windows speaker test through the default audio output...' -ForegroundColor Cyan
-    foreach ($sound in @(
-        [System.Media.SystemSounds]::Asterisk,
-        [System.Media.SystemSounds]::Exclamation,
-        [System.Media.SystemSounds]::Hand
-    )) {
-        $sound.Play()
-        Start-Sleep -Milliseconds 900
+    Write-Host '[INFO] Playing the Compu-Tek speaker test melody through the default audio output...' -ForegroundColor Cyan
+
+    $notes = @{
+        G = 392
+        A = 440
+        B = 494
+        C = 522
+        D = 588
+        E = 658
     }
-    Write-Host '[INFO] Speaker test finished.' -ForegroundColor Cyan
+    $melody = @(
+        @('G',200),@('G',200),@('G',200),
+        @('C',600),@('E',200),
+        @('G',200),@('G',200),@('G',200),
+        @('C',600),@('E',200),
+        @('C',200),@('C',200),
+        @('B',200),@('B',200),
+        @('A',200),@('A',200),
+        @('G',600)
+    )
+
+    foreach ($note in $melody) {
+        $duration = [Math]::Max(150,[int]$note[1])
+        [Console]::Beep([int]$notes[[string]$note[0]],$duration)
+        Start-Sleep -Milliseconds 150
+    }
+    Write-Host '[INFO] Compu-Tek speaker test melody finished.' -ForegroundColor Cyan
 }
 
 function Confirm-CompuTekSpeakerOutput {
