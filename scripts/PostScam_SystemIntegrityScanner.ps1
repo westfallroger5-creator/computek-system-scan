@@ -77,6 +77,22 @@ $script:ActionableCategories = @(
 $remoteTerms = @($catalog.products | ForEach-Object { @($_.aliases) + @($_.executables) } | Where-Object {$_} | ForEach-Object {[regex]::Escape([string]$_)} | Sort-Object -Unique)
 $remoteRegex = if ($remoteTerms.Count -gt 0) { '(?i)(' + ($remoteTerms -join '|') + ')' } else { '(?!)' }
 $suspiciousCommandRegex = '(?i)(downloadstring|invoke-expression|\biex\b|frombase64string|encodedcommand|invoke-webrequest|\bcurl(?:\.exe)?\b|\bwget\b|bitsadmin|certutil|mshta|regsvr32|rundll32|comsvcs|installutil|wmic|psexec|procdump|mimikatz|nanodump|secretsdump|browserpassview|webbrowserpassview|rclone|megacmd|megasync|winscp|pscp|compress-archive|7z(?:\.exe)?|rar(?:\.exe)?|tar(?:\.exe)?)'
+$script:PostScamUserWritableTextRegex = '(?i)\\users\\[^\\]+\\(?:appdata|downloads|desktop)\\|\\windows\\temp\\'
+$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
+
+function Test-CompuTekPostScamUserWritableRisk {
+    param([AllowNull()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text -notmatch $script:PostScamUserWritableTextRegex) { return $false }
+
+    $untrustedText = [string]$Text
+    foreach ($match in [regex]::Matches($Text,$script:PostScamTrustedMicrosoftPathRegex)) {
+        $candidatePath = [string]$match.Value
+        if (Test-CompuTekTrustedMicrosoftApplication -Path $candidatePath) {
+            $untrustedText = $untrustedText.Replace($candidatePath,'<trusted-microsoft-application>')
+        }
+    }
+    return ($untrustedText -match $script:PostScamUserWritableTextRegex)
+}
 
 function Test-CompuTekPostScamPersistenceText {
     param([AllowNull()][string]$Text)
@@ -84,7 +100,7 @@ function Test-CompuTekPostScamPersistenceText {
     return (
         $Text -match $remoteRegex -or
         $Text -match $suspiciousCommandRegex -or
-        $Text -match '(?i)\\users\\[^\\]+\\(appdata|downloads|desktop)\\|\\windows\\temp\\'
+        (Test-CompuTekPostScamUserWritableRisk $Text)
     )
 }
 
@@ -221,9 +237,10 @@ try {
     $remoteReports = Export-CompuTekScanReport -Scan $remoteScan -Directory $caseRoot -BaseName 'RemoteAccessInventory'
     foreach ($finding in @($remoteScan.Findings)) {
         $isUserWritable = $finding.Path -and (Test-CompuTekUserWritablePath $finding.Path)
+        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $finding.Path -CompanyName $finding.CompanyName -Signer $finding.Signer -SignatureStatus $finding.SignatureStatus
         $isPersistence = $finding.ArtifactType -in @('Service','RunKey','ScheduledTask','StartupFile','NativeFeature')
         $isActionableRemote = (
-            ($finding.ProductId -eq 'unknown' -and $finding.Confidence -in @('High','Medium')) -or
+            ($finding.ProductId -eq 'unknown' -and -not $isTrustedMicrosoftApp -and $finding.Confidence -in @('High','Medium')) -or
             $finding.Category -eq 'native-feature' -or
             ($finding.ProductId -ne 'unknown' -and $isUserWritable -and ($isPersistence -or $finding.ConnectionCount -gt 0))
         )
@@ -296,13 +313,13 @@ foreach ($event in Get-RecentEvents -LogName 'Security' -Ids $securityIds -Maxim
         }
         4648 {
             $processName = [string]$data['ProcessName']
-            $include = ($processName -match $remoteRegex -or $processName -match $suspiciousCommandRegex -or (Test-CompuTekUserWritablePath $processName))
+            $include = ($processName -match $remoteRegex -or $processName -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $processName))
             $name='Explicit credentials used by a suspicious process'; $severity='Medium'
         }
         4672 { $include=$false }
         4688 {
             $command = ([string]$data['CommandLine']) + ' ' + ([string]$data['NewProcessName'])
-            $include = ($command -match $remoteRegex -or $command -match $suspiciousCommandRegex -or (Test-CompuTekUserWritablePath $command))
+            $include = ($command -match $remoteRegex -or $command -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $command))
             $severity = 'High'; $name='Suspicious process creation'
         }
         4697 {
@@ -336,7 +353,7 @@ if ($ExtendedForensics) {
 
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-TaskScheduler/Operational' -Ids @(106,140,141) -Maximum 1500) {
     $message = Get-EventMessage $event
-    if ($message -match $remoteRegex -or $message -match $suspiciousCommandRegex -or $message -match '(?i)\\users\\[^\\]+\\appdata\\|\\windows\\temp\\') {
+    if (Test-CompuTekPostScamPersistenceText $message) {
         Add-WindowsEventEvidence $event 'PersistenceEvent' 'Medium' "Suspicious Task Scheduler event $($event.Id)" (Get-EventDataMap $event)
     }
 }
@@ -420,7 +437,7 @@ try {
     if ($sysmonLog.IsEnabled) {
         foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-Sysmon/Operational' -Ids @(1,3,11,12,13,22,23,26) -Maximum 4000) {
             $message = Get-EventMessage $event
-            if ($message -match $remoteRegex -or $message -match $suspiciousCommandRegex -or $message -match '(?i)\\users\\[^\\]+\\appdata\\|\\windows\\temp\\') {
+            if (Test-CompuTekPostScamPersistenceText $message) {
                 Add-Evidence -Category 'SysmonEvidence' -Severity 'Medium' -Name "Sysmon event $($event.Id)" -Details (Protect-CommandText $message) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
             }
         }
@@ -432,7 +449,8 @@ Write-Audit "`n[5/12] Autoruns, scheduled tasks, WMI subscriptions, and registry
 try {
     foreach ($artifact in Get-CompuTekPersistenceArtifacts) {
         $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $artifact)
-        $isSuspicious = ($matches.Count -gt 0 -or $artifact.CommandLine -match $suspiciousCommandRegex -or (Test-CompuTekUserWritablePath $artifact.Path))
+        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus
+        $isSuspicious = ($matches.Count -gt 0 -or $artifact.CommandLine -match $suspiciousCommandRegex -or ((Test-CompuTekUserWritablePath $artifact.Path) -and -not $isTrustedMicrosoftApp))
         if ($isSuspicious) {
             $matchedNames = @($matches | ForEach-Object {$_.Product.name}) -join ', '
             Add-Evidence -Category 'Persistence' -Severity $(if($matches.Count -gt 0){'High'}else{'Medium'}) -Name "$($artifact.ArtifactType): $($artifact.DisplayName)" -Details ("command={0}; matched={1}; original={2}; signer={3}" -f (Protect-CommandText $artifact.CommandLine),$matchedNames,$artifact.OriginalFilename,$artifact.Signer) -Path $artifact.Path -Source $artifact.Source -Data $artifact
@@ -561,7 +579,8 @@ try {
             SignatureStatus=if($fileEvidence){$fileEvidence.SignatureStatus}else{$null}
         }
         $connections += $row
-        if (($path -and (Test-CompuTekUserWritablePath $path)) -or $row.CommandLine -match $remoteRegex -or $row.CommandLine -match $suspiciousCommandRegex) {
+        $isTrustedMicrosoftApp = if ($fileEvidence) { Test-CompuTekTrustedMicrosoftApplication -Path $path -CompanyName $fileEvidence.CompanyName -Signer $fileEvidence.Signer -SignatureStatus $fileEvidence.SignatureStatus } else { $false }
+        if (($path -and (Test-CompuTekUserWritablePath $path) -and -not $isTrustedMicrosoftApp) -or $row.CommandLine -match $remoteRegex -or $row.CommandLine -match $suspiciousCommandRegex) {
             Add-Evidence -Category 'NetworkConnection' -Severity 'High' -Name 'Suspicious process has an active connection' -Details ("{0}:{1}; PID={2}; command={3}" -f $connection.RemoteAddress,$connection.RemotePort,$connection.OwningProcess,$row.CommandLine) -Path $path -Source 'Get-NetTCPConnection' -Data $row
         }
     }
@@ -580,7 +599,8 @@ try {
     foreach ($rule in Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop) {
         $program = $null
         try { $program = (Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop).Program } catch {}
-        if ($rule.DisplayName -match $remoteRegex -or ($program -and (Test-CompuTekUserWritablePath $program))) {
+        $isTrustedMicrosoftApp = if ($program) { Test-CompuTekTrustedMicrosoftApplication -Path $program } else { $false }
+        if ($rule.DisplayName -match $remoteRegex -or ($program -and (Test-CompuTekUserWritablePath $program) -and -not $isTrustedMicrosoftApp)) {
             Add-Evidence -Category 'FirewallBackdoor' -Severity 'High' -Name $rule.DisplayName -Details ("action={0}; profile={1}; program={2}" -f $rule.Action,$rule.Profile,$program) -Path $program -Source 'Windows Firewall' -Data $rule
         }
     }

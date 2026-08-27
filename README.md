@@ -53,6 +53,7 @@ Read-only, focused post-scam integrity review with a configurable 7-day default 
 - Flags actionable persistence, hidden access, security-control changes, suspicious execution, remote sessions, account changes, SSH keys, firewall/proxy/hosts changes, and other customer-harm indicators.
 - Consolidates repeated evidence into a short `ActionableFindings.txt` report and shows at most 12 finding groups in the application. Normal inventory and low-confidence leads are saved separately instead of being flagged.
 - Treats ordinary recent service/task installs, benign recent PowerShell profiles, and older browser extensions with broad permissions as supplemental review data. They become actionable only when remote-tool, suspicious-command, user-writable-path, or recent high-risk evidence supports it.
+- Recognizes legitimate per-user Teams and OneDrive components only when they are in Microsoft's expected folders and carry a valid Microsoft signature. Unsigned copies, renamed lookalikes, unexpected locations, and suspicious command lines remain actionable.
 - Expensive data-access/staging leads are available only through the direct-script `-ExtendedForensics` option, keeping the normal store workflow focused and faster.
 - Uses Security event 4663 when file-object auditing was enabled to identify possible file access. It clearly distinguishes evidence of access or staging from proof of exfiltration.
 - Records every unavailable log or collector as a collection gap; an incomplete collection is never reported as clean.
