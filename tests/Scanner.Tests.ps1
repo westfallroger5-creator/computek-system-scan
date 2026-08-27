@@ -63,6 +63,7 @@ Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyVa
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
 Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match '\$currentUserPackages\s*=\s*@\(Get-AppxPackage' -and $moduleSource -match 'Get-StartApps') 'Store-app collection always combines all-user, current-user, and Start-app registration views'
+Assert-True ($moduleSource -match 'Get-CompuTekPropertyValue \$product ''storeProductIds''') 'Optional Store product IDs are read safely under strict mode'
 Assert-True ($remediationSource -match 'Remove-CandidateStoreProducts' -and $remediationSource -match 'AppxRemovalSucceeded' -and $remediationSource -match "'--source','msstore'" -and $remediationSource -match "'--disable-interactivity'") 'A failed or unavailable AppX removal can use the selected product exact Store ID before verification'
 Assert-True ($remediationSource -match 'Test-CandidateHasKeptProductPeer' -and $remediationSource -match 'AllowProductWideStoreFallback' -and $remediationSource -match 'another version of this product was approved to keep') 'Product-wide Store fallback is blocked when a different version was approved to keep'
 Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
@@ -177,6 +178,31 @@ $startAppFallbackArtifacts = @(& $scannerModule {
     }
 })
 Assert-True ($startAppFallbackArtifacts.Count -eq 2 -and @($startAppFallbackArtifacts | Where-Object {$_.ArtifactType -eq 'StartApp'}).Count -eq 2) 'Start registrations retain Store-delivered remote apps when package inventory returns no records'
+
+$nonStoreFinding = & $scannerModule {
+    param($testCatalog)
+    $artifact = New-CompuTekArtifact @{ArtifactType='Service';Name='ScreenConnect Client Test';DisplayName='ScreenConnect Client Test'}
+    $product = @($testCatalog.products | Where-Object {$_.id -eq 'screenconnect'})[0]
+    ConvertTo-CompuTekFinding -Artifact $artifact -Match ([pscustomobject]@{Product=$product}) -Disposition 'KnownRemoteAccessSoftware' -Confidence 'High' -EvidenceText 'service:ScreenConnect*'
+} $catalog
+Assert-True ($nonStoreFinding.ProductId -eq 'screenconnect' -and @($nonStoreFinding.StoreProductIds).Count -eq 0) 'Analysis accepts ordinary catalog products that do not define an optional Store ID'
+
+$storeFinding = & $scannerModule {
+    param($testCatalog)
+    $artifact = New-CompuTekArtifact @{ArtifactType='StartApp';Name='TeamViewer Remote';DisplayName='TeamViewer Remote';PackageName='TeamViewer.Remote'}
+    $product = @($testCatalog.products | Where-Object {$_.id -eq 'teamviewer'})[0]
+    ConvertTo-CompuTekFinding -Artifact $artifact -Match ([pscustomobject]@{Product=$product}) -Disposition 'KnownRemoteAccessSoftware' -Confidence 'High' -EvidenceText 'package:*TeamViewer*'
+} $catalog
+Assert-True (@($storeFinding.StoreProductIds) -contains 'XPDM17HK323C4X') 'Analysis retains the exact Store ID when the catalog product defines one'
+
+$allCatalogFindings = @(& $scannerModule {
+    param($testCatalog)
+    foreach ($product in @($testCatalog.products)) {
+        $artifact = New-CompuTekArtifact @{ArtifactType='Service';Name=('Synthetic ' + $product.id);DisplayName=('Synthetic ' + $product.name)}
+        ConvertTo-CompuTekFinding -Artifact $artifact -Match ([pscustomobject]@{Product=$product}) -Disposition 'CatalogRegressionTest' -Confidence 'High' -EvidenceText 'synthetic'
+    }
+} $catalog)
+Assert-True ($allCatalogFindings.Count -eq @($catalog.products).Count) 'Analysis materializes every catalog family under strict mode, including products without optional fields'
 
 $remediationTokens = $null
 $remediationErrors = $null

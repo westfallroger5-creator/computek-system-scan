@@ -910,7 +910,7 @@ function ConvertTo-CompuTekFinding {
         InstallLocation      = $Artifact.InstallLocation
         PackageName          = $Artifact.PackageName
         PackageFullName      = $Artifact.PackageFullName
-        StoreProductIds      = if ($product) { @(ConvertTo-CompuTekArray $product.storeProductIds) } else { @() }
+        StoreProductIds      = if ($product) { @(ConvertTo-CompuTekArray (Get-CompuTekPropertyValue $product 'storeProductIds')) } else { @() }
         TaskPath             = $Artifact.TaskPath
         SourcePath           = $Artifact.SourcePath
         StartupTarget        = $Artifact.StartupTarget
