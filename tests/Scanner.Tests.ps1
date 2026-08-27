@@ -63,7 +63,8 @@ Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyVa
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
 Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match '\$currentUserPackages\s*=\s*@\(Get-AppxPackage' -and $moduleSource -match 'Get-StartApps') 'Store-app collection always combines all-user, current-user, and Start-app registration views'
-Assert-True ($remediationSource -match 'Remove-CandidateStoreProducts' -and $remediationSource -match "'--source','msstore'" -and $remediationSource -match "'--disable-interactivity'") 'A selected unresolved Store app can use its exact catalog ID for non-interactive WinGet removal before verification'
+Assert-True ($remediationSource -match 'Remove-CandidateStoreProducts' -and $remediationSource -match 'AppxRemovalSucceeded' -and $remediationSource -match "'--source','msstore'" -and $remediationSource -match "'--disable-interactivity'") 'A failed or unavailable AppX removal can use the selected product exact Store ID before verification'
+Assert-True ($remediationSource -match 'Test-CandidateHasKeptProductPeer' -and $remediationSource -match 'AllowProductWideStoreFallback' -and $remediationSource -match 'another version of this product was approved to keep') 'Product-wide Store fallback is blocked when a different version was approved to keep'
 Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
 Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
 
@@ -180,7 +181,7 @@ Assert-True ($startAppFallbackArtifacts.Count -eq 2 -and @($startAppFallbackArti
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Test-FindingBelongsToCandidate','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
+foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -206,6 +207,42 @@ $version24Candidate = @($scopes | Where-Object {$_.DetectedVersion -eq '24.1.0'}
 Assert-True (Test-FindingBelongsToCandidate -Finding $legitimateService -Candidate $version24Candidate) 'Verification keeps an anchored component build with its installed product version'
 $differentVersionSameName = [pscustomobject]@{ProductId='screenconnect';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
 Assert-True (-not (Test-FindingBelongsToCandidate -Finding $differentVersionSameName -Candidate $version24Candidate)) 'Verification does not confuse a remaining different version with the version that was removed'
+
+$teamViewerStartFinding = [pscustomobject]@{ProductId='teamviewer';ProductName='TeamViewer';Category='remote-support';ArtifactType='StartApp';Name='TeamViewer Remote';Path=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion=$null;StoreProductIds=@('XPDM17HK323C4X')}
+$teamViewerStartCandidate = @(New-RemovalCandidates @($teamViewerStartFinding))[0]
+$teamViewerAppxRemaining = [pscustomobject]@{ProductId='teamviewer';ProductName='TeamViewer';Category='remote-support';ArtifactType='AppxPackage';Name='TeamViewer.Remote';Path='C:\Program Files\WindowsApps\TeamViewer.Remote_15.0.0.0_x64';InstallLocation=$null;RegistryPath=$null;PackageFullName='TeamViewer.Remote_15.0.0.0_x64__publisher';DisplayVersion='15.0.0.0';FileVersion=$null;StoreProductIds=@('XPDM17HK323C4X')}
+Assert-True (Test-FindingBelongsToCandidate -Finding $teamViewerAppxRemaining -Candidate $teamViewerStartCandidate) 'A Store app first seen through Start remains tied to the candidate when verification sees it through AppX'
+
+$teamViewerAppxCandidate = @(New-RemovalCandidates @($teamViewerAppxRemaining))[0]
+$teamViewerStartRemaining = [pscustomobject]@{ProductId='teamviewer';ProductName='TeamViewer';Category='remote-support';ArtifactType='StartApp';Name='TeamViewer Remote';Path=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion=$null;StoreProductIds=@('XPDM17HK323C4X')}
+Assert-True (Test-FindingBelongsToCandidate -Finding $teamViewerStartRemaining -Candidate $teamViewerAppxCandidate) 'A Store app first seen through AppX cannot be falsely verified removed when only its Start registration remains'
+$teamViewerDifferentAppxVersion = $teamViewerAppxRemaining.PSObject.Copy()
+$teamViewerDifferentAppxVersion.DisplayVersion = '16.0.0.0'
+$teamViewerDifferentAppxVersion.PackageFullName = 'TeamViewer.Remote_16.0.0.0_x64__publisher'
+Assert-True (-not (Test-FindingBelongsToCandidate -Finding $teamViewerDifferentAppxVersion -Candidate $teamViewerAppxCandidate)) 'A versioned Store finding still distinguishes a separately installed version'
+
+$sameProductOtherVersion = $teamViewerAppxCandidate.PSObject.Copy()
+$sameProductOtherVersion.Id = 'teamviewer-2'
+$sameProductOtherVersion.DetectedVersion = '16.0.0.0'
+$teamViewerAppxCandidate.Id = 'teamviewer-1'
+$storeDecisions = @{'teamviewer-1'='Remove';'teamviewer-2'='KeepApproved'}
+Assert-True (Test-CandidateHasKeptProductPeer -Candidate $teamViewerAppxCandidate -AllCandidates @($teamViewerAppxCandidate,$sameProductOtherVersion) -DecisionById $storeDecisions) 'A kept version prevents product-wide Store fallback for the selected version'
+
+$appxRemovalCandidate = [pscustomobject]@{Findings=@([pscustomobject]@{PackageFullName='TeamViewer.Remote_15.0.0.0_x64__publisher';PackageName='TeamViewer.Remote'})}
+$successfulAppxResult = & {
+    function Write-RemediationLog { param($Message,$Color) }
+    function Remove-AppxPackage { param($Package,[switch]$AllUsers) }
+    function Get-AppxProvisionedPackage { param([switch]$Online); return @() }
+    Remove-CandidateAppxPackages -Candidate $appxRemovalCandidate
+}
+Assert-True ($successfulAppxResult.Attempted -and $successfulAppxResult.Success) 'Successful Windows package removal suppresses unnecessary Store-ID fallback'
+$failedAppxResult = & {
+    function Write-RemediationLog { param($Message,$Color) }
+    function Remove-AppxPackage { param($Package,[switch]$AllUsers); throw 'synthetic removal failure' }
+    function Get-AppxProvisionedPackage { param([switch]$Online); return @() }
+    Remove-CandidateAppxPackages -Candidate $appxRemovalCandidate
+}
+Assert-True ($failedAppxResult.Attempted -and -not $failedAppxResult.Success) 'A failed Windows package removal is surfaced so exact Store-ID fallback can run'
 
 $syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.73.16374'}
 $syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.29.18406'}
