@@ -301,9 +301,33 @@ function Get-FindingDetectedVersion {
         $property = $Finding.PSObject.Properties[$propertyName]
         if (-not $property) { continue }
         $version = ([string]$property.Value).Trim()
-        if ($version) { return $version }
+        if ($version) {
+            # Vendors sometimes prefix the uninstall version (AnyDesk has emitted
+            # values such as "ad 9.7.15"). Use the numeric product version so its
+            # service, process, uninstall entry, and temporary uninstaller stay in
+            # one technician decision.
+            $numericVersion = [regex]::Match($version,'(?<!\d)(\d+(?:\.\d+){1,3})(?!\d)')
+            if ($numericVersion.Success) { return $numericVersion.Groups[1].Value }
+            return $version
+        }
     }
     return $null
+}
+
+function Test-FindingIsIndependentProductCopy {
+    param($Finding)
+    if ($Finding.ArtifactType -in @('InstalledProgram','AppxPackage')) { return $true }
+    if (-not $Finding.Path) { return $false }
+    $extension = [IO.Path]::GetExtension([string]$Finding.Path)
+    $isExecutable = ($extension -match '(?i)^\.(exe|com|msi|msix|appx|appxbundle)$')
+    if (-not $isExecutable) { return $false }
+    if ($Finding.ArtifactType -in @('Service','Process')) {
+        return (Test-CompuTekUserWritablePath ([string]$Finding.Path))
+    }
+    return (
+        $Finding.ArtifactType -eq 'File' -and
+        [string]$Finding.Path -match '(?i)\\(downloads|desktop|temp)\\'
+    )
 }
 
 function Get-CompuTekManagedIdentityStatus {
@@ -416,9 +440,10 @@ function New-RemovalCandidates {
         }
     }
 
-    # Group every known product by its exact detected version. Supporting artifacts
-    # without version metadata join only when there is one unambiguous product version
-    # or their path belongs to a versioned installation. Ambiguous items stay separate.
+    # Group every known product by its installed version. Registered programs and AppX
+    # packages are authoritative installation anchors. Component DLL/build versions do
+    # not create duplicate agents, while a separately running or downloaded executable
+    # with a different version remains independently reviewable.
     $versionDataByProduct = @{}
     foreach ($finding in @($Findings | Where-Object {$_.ProductId -ne 'unknown'})) {
         if (Test-FindingIsWindowsHostProcess $finding) {
@@ -437,7 +462,7 @@ function New-RemovalCandidates {
         if (-not $versionDataByProduct[$productId].Versions.Contains($version)) {
             $versionDataByProduct[$productId].Versions.Add($version)
         }
-        if ($finding.ArtifactType -eq 'InstalledProgram') {
+        if ($finding.ArtifactType -in @('InstalledProgram','AppxPackage')) {
             if (-not $versionDataByProduct[$productId].InstallVersions.Contains($version)) {
                 $versionDataByProduct[$productId].InstallVersions.Add($version)
             }
@@ -472,7 +497,7 @@ function New-RemovalCandidates {
         $isSuiteProduct = $suiteProducts.ContainsKey([string]$finding.ProductId)
         $installedProductVersions = @()
         if ($productVersionData) { $installedProductVersions = @($productVersionData.InstallVersions.ToArray()) }
-        if (-not $resolvedVersion -and $isSuiteProduct -and $productVersionData -and $installedProductVersions.Count -eq 1) {
+        if (-not $resolvedVersion -and $isSuiteProduct -and $productVersionData -and $installedProductVersions.Count -eq 1 -and -not (Test-FindingIsIndependentProductCopy $finding)) {
             # Syncro and Splashtop install multiple helper services/programs whose file
             # build numbers differ from the registered suite version. Treat those as
             # components of the one installed suite instead of separate agents.
@@ -1202,6 +1227,50 @@ function Invoke-FullCandidateRemoval {
     Remove-CandidateRegistration $Candidate
 }
 
+function Wait-CompuTekTransientVendorCleanup {
+    param($Candidates, [int]$TimeoutSeconds = 45)
+
+    $productTokens = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @($Candidates)) {
+        foreach ($value in @(@($candidate.ProductIds) + @([string]$candidate.ProductId) + @(([string]$candidate.Name -split '[^a-zA-Z0-9]+')))) {
+            $token = ([string]$value -replace '[^a-zA-Z0-9]','').ToLowerInvariant()
+            if ($token.Length -lt 5 -or $token -in @('remote','support','desktop','store','microsoft','agent')) { continue }
+            if (-not $productTokens.Contains($token)) { $productTokens.Add($token) }
+        }
+    }
+    if ($productTokens.Count -eq 0) { return }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $announced = $false
+    do {
+        try {
+            $transientProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+                $processPath = ([string]$_.ExecutablePath).ToLowerInvariant()
+                $processName = ([string]$_.Name).ToLowerInvariant()
+                if (-not $processPath -or $processPath -notmatch '(?i)\\temp\\' -or "$processName $processPath" -notmatch '(?i)uninst(?:all)?') { return $false }
+                foreach ($token in $productTokens) {
+                    if ($processName.Contains($token) -or $processPath.Contains($token)) { return $true }
+                }
+                return $false
+            })
+        } catch {
+            Write-RemediationLog "Could not check for a finishing vendor uninstaller; continuing to the verification scan: $($_.Exception.Message)" 'Yellow'
+            return
+        }
+        if ($transientProcesses.Count -eq 0) {
+            if ($announced) { Start-Sleep -Seconds 2 }
+            return
+        }
+        if (-not $announced) {
+            Write-RemediationLog 'Waiting for the vendor uninstaller to finish its temporary cleanup before verification...' 'Cyan'
+            $announced = $true
+        }
+        Start-Sleep -Seconds 1
+    } while ((Get-Date) -lt $deadline)
+
+    Write-RemediationLog 'A vendor uninstaller is still finishing after the cleanup wait; the verification scan will determine whether technician attention is required.' 'Yellow'
+}
+
 function Test-FindingBelongsToCandidate {
     param($Finding, $Candidate)
     if (@($Candidate.ProductIds) -notcontains [string]$Finding.ProductId) { return $false }
@@ -1338,6 +1407,9 @@ if ($scan.IsComplete) {
 } else {
     Write-Host 'Scan status: INCOMPLETE - do not treat an empty result as clean.' -ForegroundColor Red
     foreach ($errorMessage in $scan.Errors) { Write-Host "  - $errorMessage" -ForegroundColor Yellow }
+}
+if (@($scan.Warnings).Count -gt 0) {
+    Write-Host ("Scan notes: {0} non-blocking access/inventory warning(s); details are saved in the JSON report." -f @($scan.Warnings).Count) -ForegroundColor DarkYellow
 }
 
 $candidates = New-RemovalCandidates -Findings $scan.Findings
@@ -1508,6 +1580,7 @@ foreach ($candidate in $selected) {
     }
 }
 
+Wait-CompuTekTransientVendorCleanup -Candidates $selected -TimeoutSeconds 45
 Write-Host "`nRe-scanning to verify the result..." -ForegroundColor Cyan
 $manualRemovalItems = @()
 $attentionRequired = $false

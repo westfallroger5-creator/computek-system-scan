@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.28.12",
+  "catalogVersion": "2026.08.28.13",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "managedIdentities": {
     "syncro": {
@@ -54,6 +54,7 @@
       "id": "anydesk",
       "name": "AnyDesk",
       "category": "remote-support",
+      "groupProductComponents": true,
       "aliases": ["anydesk"],
       "executables": ["anydesk.exe", "anydeskmsi.exe"],
       "originalFilenames": ["anydesk.exe"],
@@ -101,11 +102,12 @@
       "id": "logmein-rescue",
       "name": "LogMeIn Rescue / Rescue Calling Card",
       "category": "remote-support",
+      "supersedesProductIds": ["logmein"],
       "aliases": ["logmein rescue", "rescue calling card", "rescuecallingcard"],
       "executables": ["rescuecallingcard.exe", "callingcard.exe", "lmi_rescue.exe"],
       "originalFilenames": ["rescuecallingcard.exe", "lmi_rescue.exe"],
       "servicePatterns": ["RescueCallingCard*", "LMIRfsClientNP*"],
-      "packagePatterns": ["*LogMeIn Rescue*", "*Rescue Calling Card*"],
+      "packagePatterns": ["C236C1D5.LogMeIn123*", "*LogMeIn Rescue*", "*Rescue Calling Card*"],
       "pathPatterns": ["*\\logmein rescue*", "*\\rescue calling card*"]
     },
     {

@@ -2,6 +2,7 @@ Set-StrictMode -Version 2.0
 
 $script:DefaultCatalogPath = Join-Path $PSScriptRoot 'RemoteAccessSignatures.json'
 $script:CollectorWarnings = New-Object System.Collections.Generic.List[string]
+$script:CollectorFailures = New-Object System.Collections.Generic.List[string]
 
 function Write-CompuTekScanStage {
     param([Parameter(Mandatory)][string]$Message)
@@ -22,6 +23,13 @@ function Add-CompuTekCollectorWarning {
     }
 }
 
+function Add-CompuTekCollectorFailure {
+    param([string]$Message)
+    if ($Message -and -not $script:CollectorFailures.Contains($Message)) {
+        $script:CollectorFailures.Add($Message)
+    }
+}
+
 function Get-CompuTekCandidateFilesSafe {
     [CmdletBinding()]
     param(
@@ -37,7 +45,7 @@ function Get-CompuTekCandidateFilesSafe {
             return
         }
     } catch {
-        Add-CompuTekCollectorWarning "File scan root could not be opened: $Root ($($_.Exception.Message))"
+        Add-CompuTekCollectorFailure "File scan root could not be opened: $Root ($($_.Exception.Message))"
         return
     }
 
@@ -167,7 +175,14 @@ function Get-CompuTekSafeFileName {
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
     try {
-        return [IO.Path]::GetFileName([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))
+        $expandedPath = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"'))
+        if ($expandedPath -match '(?i)^[a-z][a-z0-9+.-]*://') { return $null }
+        $fileName = [IO.Path]::GetFileName($expandedPath)
+        # .NET's invalid-character behavior differs between Windows PowerShell and
+        # newer PowerShell. Apply the Windows filename rule explicitly so a URL or
+        # damaged registry value is handled consistently in both runtimes.
+        if ($fileName -match '[<>:"/\\|?*]') { return $null }
+        return $fileName
     } catch {
         # Startup URLs, damaged registry values, and other malformed command data
         # are evidence to preserve; they must never terminate the entire scan.
@@ -1022,6 +1037,7 @@ function Invoke-CompuTekRemoteAccessScan {
 
     $started = (Get-Date).ToUniversalTime()
     $script:CollectorWarnings.Clear()
+    $script:CollectorFailures.Clear()
     $errors = New-Object System.Collections.Generic.List[string]
     $findings = New-Object System.Collections.Generic.List[object]
     $artifacts = New-Object System.Collections.Generic.List[object]
@@ -1050,10 +1066,9 @@ function Invoke-CompuTekRemoteAccessScan {
             $errors.Add("$($collector.Name) inventory failed: $($_.Exception.Message)")
         }
     }
-    foreach ($warning in @($script:CollectorWarnings)) {
-        if (-not $errors.Contains($warning)) { $errors.Add($warning) }
+    foreach ($failure in @($script:CollectorFailures)) {
+        if (-not $errors.Contains($failure)) { $errors.Add($failure) }
     }
-
     Write-CompuTekScanStage -Message ("Step 10 of 10 - analyzing {0} collected artifacts" -f $artifacts.Count)
     $dedupe = @{}
     foreach ($artifact in $artifacts) {
@@ -1064,6 +1079,18 @@ function Invoke-CompuTekRemoteAccessScan {
 
         $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $artifact)
         $actionableMatches = @($matches | Where-Object {$_.Product.category -ne 'native-feature'})
+        # A broad family name can match the same artifact as a more specific product
+        # (for example, LogMeIn Rescue also contains the word LogMeIn). Cataloged
+        # precedence keeps that artifact from becoming two apparent installations.
+        $supersededProductIds = @{}
+        foreach ($match in $actionableMatches) {
+            foreach ($supersededId in @(ConvertTo-CompuTekArray (Get-CompuTekPropertyValue $match.Product 'supersedesProductIds'))) {
+                if ($supersededId) { $supersededProductIds[[string]$supersededId] = $true }
+            }
+        }
+        if ($supersededProductIds.Count -gt 0) {
+            $actionableMatches = @($actionableMatches | Where-Object {-not $supersededProductIds.ContainsKey([string]$_.Product.id)})
+        }
         foreach ($match in $actionableMatches) {
             $disposition = 'KnownRemoteAccessSoftware'
             $evidenceText = (@($match.Reasons) -join '; ')
@@ -1122,6 +1149,7 @@ function Invoke-CompuTekRemoteAccessScan {
 
     $completed = (Get-Date).ToUniversalTime()
     $errorArray = $errors.ToArray()
+    $warningArray = $script:CollectorWarnings.ToArray()
     $findingArray = $findings.ToArray()
     $startupInventory = @($artifacts | Where-Object {$_.ArtifactType -eq 'StartupFile'} | Sort-Object SourcePath)
     return [pscustomobject][ordered]@{
@@ -1134,6 +1162,7 @@ function Invoke-CompuTekRemoteAccessScan {
         LookbackDays = $LookbackDays
         IsComplete = ($errors.Count -eq 0)
         Errors = $errorArray
+        Warnings = $warningArray
         Findings = $findingArray
         StartupInventory = $startupInventory
         Stats = [pscustomobject]@{
@@ -1145,6 +1174,7 @@ function Invoke-CompuTekRemoteAccessScan {
             StartupItems = $startupInventory.Count
             StartupReinstallRisks = @($startupInventory | Where-Object {$_.StartupReinstallRisk}).Count
             CollectorErrors = $errors.Count
+            CollectorWarnings = $warningArray.Count
         }
     }
 }
