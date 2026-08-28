@@ -43,6 +43,7 @@ namespace CompuTek.Scanner.App
         private string currentStage;
         private DateTime engineStartedUtc;
         private string sessionLogPath;
+        private string resultReason;
 
         public MainForm()
         {
@@ -478,6 +479,7 @@ namespace CompuTek.Scanner.App
                 lastCaseFolder = Path.GetDirectoryName(sessionLogPath);
                 openCaseButton.Enabled = false;
                 awaitingInput = false;
+                resultReason = null;
                 runningDisplayName = displayName;
                 currentStage = "Starting scanner engine";
                 engineStartedUtc = DateTime.UtcNow;
@@ -520,6 +522,13 @@ namespace CompuTek.Scanner.App
             if (IsDisposed) return;
             BeginInvoke((MethodInvoker)delegate
             {
+                const string resultReasonPrefix = "__COMPUTEK_RESULT_REASON__:";
+                if (args.Text.StartsWith(resultReasonPrefix, StringComparison.Ordinal))
+                {
+                    resultReason = args.Text.Substring(resultReasonPrefix.Length).Trim();
+                    AppendOutput("ATTENTION REASON: " + resultReason, Color.Khaki);
+                    return;
+                }
                 if (args.Text.StartsWith("SCAN STAGE:", StringComparison.OrdinalIgnoreCase))
                     currentStage = args.Text.Substring("SCAN STAGE:".Length).Trim();
                 CaptureCaseFolder(args.Text);
@@ -568,6 +577,20 @@ namespace CompuTek.Scanner.App
                 SetRunningState(false, status);
                 AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : (args.ExitCode == 3 || args.ExitCode == 4 || args.ExitCode == 5 ? Color.Khaki : Color.Salmon));
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
+                if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-Access Scanner", StringComparison.Ordinal))
+                {
+                    string reason = String.IsNullOrWhiteSpace(resultReason)
+                        ? "The scan finished, but it could not verify a clean result. Review the yellow messages and the saved case report."
+                        : resultReason;
+                    string savedReport = openCaseButton.Enabled
+                        ? "\r\n\r\nUse Open Last Case Folder for the full report."
+                        : String.Empty;
+                    MessageBox.Show(
+                        reason + savedReport,
+                        "Remote-access scan needs attention",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
             });
         }
 

@@ -62,6 +62,7 @@ Assert-True ($remediationSource -match 'RemovalVerified' -and $remediationSource
 Assert-True ($remediationSource -match 'retry after blockers were stopped' -and $remediationSource -match 'Stop-CandidateServices' -and $remediationSource -match 'Stop-CandidateProcesses') 'A failed vendor uninstall is retried once after exact related blockers are stopped'
 Assert-True ($remediationSource -match 'ManualRemovalRequired\.txt' -and $remediationSource -match 'TECHNICIAN ACTION REQUIRED' -and $remediationSource -match 'RemainingLocations') 'Incomplete removals show and save exact locations for manual technician work'
 Assert-True ($remediationSource -match '\$attentionRequired' -and $remediationSource -match 'NotVerified-ScanFailed' -and $remediationSource -match 'do not manually delete files' -and $remediationSource -match 'exit \$\(if\(\$attentionRequired\)\{3\}else\{0\}\)') 'Incomplete or failed verification returns an attention result and never implies that removal was verified'
+Assert-True ($remediationSource -match 'Get-CompuTekAttentionReason' -and $remediationSource -match '__COMPUTEK_RESULT_REASON__:' -and $remediationSource -match 'RemainingFindings' -and $remediationSource -match 'RemainingLocations') 'Attention result includes the affected product, remaining count, and an exact location when available'
 
 $moduleSource = Get-Content -LiteralPath $modulePath -Raw
 Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSource -match 'SourcePath = \$file\.FullName') 'Task and Startup-file source locations are retained for exact removal'
@@ -226,10 +227,20 @@ Assert-True ($allCatalogFindings.Count -eq @($catalog.products).Count) 'Analysis
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Get-CompuTekManagedIdentityStatus','Test-PathWithinVersionAnchor','New-RemovalCandidates','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
+foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Get-CompuTekManagedIdentityStatus','Test-PathWithinVersionAnchor','New-RemovalCandidates','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
+$sampleAttentionReason = Get-CompuTekAttentionReason -Items @([pscustomobject]@{
+    ProductName = 'AnyDesk'
+    Status = 'RemovalIncomplete'
+    RemainingFindings = 2
+    Locations = @('C:\Users\User\AppData\Local\Temp\AnyDeskUninst5850.exe')
+    StartupItems = @()
+})
+Assert-True ($sampleAttentionReason -match 'AnyDesk' -and $sampleAttentionReason -match '2 matching finding' -and $sampleAttentionReason -match [regex]::Escape('C:\Users\User\AppData\Local\Temp\AnyDeskUninst5850.exe') -and $sampleAttentionReason -match 'Reboot') 'Attention reason names the remaining product, count, location, and safe next step'
+$sampleScanFailureReason = Get-CompuTekAttentionReason -VerificationErrors @('Scheduled-task collection failed')
+Assert-True ($sampleScanFailureReason -match 'Scheduled-task collection failed' -and $sampleScanFailureReason -match 'could not verify a clean result') 'Attention reason explains the collector problem when verification could not complete'
 $caseRoot = 'Z:\CompuTekTest\Case'
 $quarantineRoot = 'Z:\CompuTekTest\Quarantine'
 $approvedManagedIdentity = [pscustomobject]@{SyncroApproved=$true;SplashtopLinked=$true;MatchMethod='Synthetic approved Syncro shop identity hash'}
