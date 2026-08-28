@@ -48,6 +48,7 @@ Assert-AppTest ($moduleSource -match 'Get-CompuTekCandidateFilesSafe' -and $modu
 Assert-AppTest ($moduleSource -match '\$maxDepth = if \(\$DeepScan\) \{ -1 \} else \{ 5 \}') 'Full-depth file traversal is reserved for explicit Deep Scan mode'
 Assert-AppTest ($postScamSource -match 'Get-CompuTekCandidateFilesSafe' -and $postScamSource -notmatch 'Get-ChildItem[^\r\n]+-Recurse') 'Post-scam file collection also uses the loop-safe traversal'
 Assert-AppTest ($moduleSource -match '\[string\[\]\]\$endpoints = @\(\)' -and $moduleSource -match '\$file\.Name -ieq ''desktop\.ini''') 'Process endpoint counting and Startup-folder noise from the field report are corrected'
+Assert-AppTest ($moduleSource -match 'Get-CompuTekSafeFileName' -and $moduleSource -match 'Path could not be inspected' -and $remoteSource -notmatch '\[IO\.Path\]::GetFileName') 'Malformed Startup URLs and registry paths remain evidence instead of terminating the scanner'
 Assert-AppTest ($mainFormSource -match 'Technician tools' -and $mainFormSource -match 'StartTechnicianToolbox' -and $mainFormSource -match 'StartFinalSystemCheck' -and $mainFormSource -match 'StartPreClone') 'The Windows application restores the legacy technician tool entry points'
 $finalTabIndex = $mainFormSource.IndexOf('toolTabs.TabPages.Add(finalCheckTab)')
 $securityTabIndex = $mainFormSource.IndexOf('toolTabs.TabPages.Add(securityTab)')
@@ -251,7 +252,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.15.0') 'Built EXE reports version 1.4.15.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.16.0') 'Built EXE reports version 1.4.16.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

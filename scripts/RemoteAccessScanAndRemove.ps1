@@ -101,8 +101,9 @@ function Show-Finding {
     param($Finding, [string]$Indent = '    ')
     $location = if ($Finding.Path) { $Finding.Path } elseif ($Finding.RegistryPath) { $Finding.RegistryPath } else { $Finding.DisplayName }
     Write-Host ("{0}[{1}/{2}] {3}: {4}" -f $Indent,$Finding.Confidence,$Finding.ArtifactType,$Finding.Evidence,$location) -ForegroundColor $(if($Finding.Confidence -eq 'High'){'Red'}elseif($Finding.Confidence -eq 'Medium'){'Yellow'}else{'DarkYellow'})
-    if ($Finding.OriginalFilename -and $Finding.Path -and ([IO.Path]::GetFileName($Finding.Path) -ine $Finding.OriginalFilename)) {
-        Write-Host ("{0}Renamed file evidence: on disk '{1}', original name '{2}'" -f $Indent,[IO.Path]::GetFileName($Finding.Path),$Finding.OriginalFilename) -ForegroundColor Red
+    $safeFileName = Get-CompuTekSafeFileName $Finding.Path
+    if ($Finding.OriginalFilename -and $safeFileName -and ($safeFileName -ine $Finding.OriginalFilename)) {
+        Write-Host ("{0}Renamed file evidence: on disk '{1}', original name '{2}'" -f $Indent,$safeFileName,$Finding.OriginalFilename) -ForegroundColor Red
     }
     if ($Finding.ConnectionCount -gt 0) {
         Write-Host ("{0}Active endpoints: {1}" -f $Indent,(@($Finding.RemoteEndpoints) -join ', ')) -ForegroundColor Yellow
@@ -130,8 +131,9 @@ function Show-CandidateSummary {
     $runningProcesses = @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Process'}).Count
     $endpoints = @($Candidate.Findings | ForEach-Object {@($_.RemoteEndpoints)} | Where-Object {$_} | Sort-Object -Unique)
     $renamed = @($Candidate.Findings | Where-Object {
+        $safeFileName = Get-CompuTekSafeFileName $_.Path
         $_.OriginalFilename -and $_.Path -and
-        ([IO.Path]::GetFileName($_.Path) -ine $_.OriginalFilename) -and
+        $safeFileName -and ($safeFileName -ine $_.OriginalFilename) -and
         (Test-CompuTekUserWritablePath $_.Path)
     })
 

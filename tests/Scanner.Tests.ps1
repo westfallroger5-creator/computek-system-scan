@@ -91,6 +91,13 @@ $singleEndpointArtifacts = @(& $scannerModule {
 })
 Assert-True ($singleEndpointArtifacts.Count -eq 1 -and $singleEndpointArtifacts[0].ConnectionCount -eq 1) 'Process inventory handles a single active remote endpoint without failing the scan'
 
+$malformedStartupPath = 'https://portal.example.invalid/start?source=Windows|Startup'
+Assert-True ($null -eq (Get-CompuTekSafeFileName $malformedStartupPath)) 'A Startup URL with filename-invalid characters is handled without throwing'
+$malformedPathEvidence = New-TestEvidence @{ArtifactType='StartupFile';Name='Vendor Portal';DisplayName='Vendor Portal';Path=$malformedStartupPath;CommandLine=$malformedStartupPath}
+$malformedPathMatches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $malformedPathEvidence)
+Assert-True ($malformedPathMatches.Count -eq 0) 'Malformed or URL-style artifact paths do not abort remote-product analysis'
+Assert-True ($remediationSource -notmatch '\[IO\.Path\]::GetFileName') 'Finding display uses the guarded filename parser and cannot repeat the analysis crash'
+
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'artifacts'))
 $traversalRoot = Join-Path $artifactRoot ('TraversalTest-' + [Guid]::NewGuid().ToString('N'))
 try {
