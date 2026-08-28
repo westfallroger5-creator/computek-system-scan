@@ -78,7 +78,7 @@ $remoteTerms = @($catalog.products | ForEach-Object { @($_.aliases) + @($_.execu
 $remoteRegex = if ($remoteTerms.Count -gt 0) { '(?i)(' + ($remoteTerms -join '|') + ')' } else { '(?!)' }
 $suspiciousCommandRegex = '(?i)(downloadstring|invoke-expression|\biex\b|frombase64string|encodedcommand|invoke-webrequest|\bcurl(?:\.exe)?\b|\bwget\b|bitsadmin|certutil|mshta|regsvr32|rundll32|comsvcs|installutil|wmic|psexec|procdump|mimikatz|nanodump|secretsdump|browserpassview|webbrowserpassview|rclone|megacmd|megasync|winscp|pscp|compress-archive|7z(?:\.exe)?|rar(?:\.exe)?|tar(?:\.exe)?)'
 $script:PostScamUserWritableTextRegex = '(?i)\\users\\[^\\]+\\(?:appdata|downloads|desktop)\\|\\windows\\temp\\'
-$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
+$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
 
 function Test-CompuTekPostScamUserWritableRisk {
     param([AllowNull()][string]$Text)
@@ -237,7 +237,7 @@ try {
     $remoteReports = Export-CompuTekScanReport -Scan $remoteScan -Directory $caseRoot -BaseName 'RemoteAccessInventory'
     foreach ($finding in @($remoteScan.Findings)) {
         $isUserWritable = $finding.Path -and (Test-CompuTekUserWritablePath $finding.Path)
-        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $finding.Path -CompanyName $finding.CompanyName -Signer $finding.Signer -SignatureStatus $finding.SignatureStatus
+        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $finding.Path -CompanyName $finding.CompanyName -Signer $finding.Signer -SignatureStatus $finding.SignatureStatus -ArtifactType $finding.ArtifactType -Name $finding.Name -CommandLine $finding.CommandLine
         $isPersistence = $finding.ArtifactType -in @('Service','RunKey','ScheduledTask','StartupFile','NativeFeature')
         $isActionableRemote = (
             ($finding.ProductId -eq 'unknown' -and -not $isTrustedMicrosoftApp -and $finding.Confidence -in @('High','Medium')) -or
@@ -449,7 +449,7 @@ Write-Audit "`n[5/12] Autoruns, scheduled tasks, WMI subscriptions, and registry
 try {
     foreach ($artifact in Get-CompuTekPersistenceArtifacts) {
         $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $artifact)
-        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus
+        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine
         $isSuspicious = ($matches.Count -gt 0 -or $artifact.CommandLine -match $suspiciousCommandRegex -or ((Test-CompuTekUserWritablePath $artifact.Path) -and -not $isTrustedMicrosoftApp))
         if ($isSuspicious) {
             $matchedNames = @($matches | ForEach-Object {$_.Product.name}) -join ', '

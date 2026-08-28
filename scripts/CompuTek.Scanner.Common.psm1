@@ -129,6 +129,21 @@ function Get-CompuTekCatalog {
         $ids[$id] = $true
     }
 
+    $managedProperty = $catalog.PSObject.Properties['managedIdentities']
+    if ($managedProperty -and $managedProperty.Value) {
+        $syncroProperty = $managedProperty.Value.PSObject.Properties['syncro']
+        if ($syncroProperty -and $syncroProperty.Value) {
+            $hashProperty = $syncroProperty.Value.PSObject.Properties['shopSubdomainSha256']
+            $approvedIdentityHashes = @()
+            if ($hashProperty) { $approvedIdentityHashes = @($hashProperty.Value) }
+            foreach ($hash in $approvedIdentityHashes) {
+                if ([string]$hash -notmatch '^[A-Fa-f0-9]{64}$') {
+                    throw 'Every approved Syncro shop identity must be a 64-character SHA-256 value.'
+                }
+            }
+        }
+    }
+
     return $catalog
 }
 
@@ -266,15 +281,30 @@ function Test-CompuTekTrustedMicrosoftApplication {
         [AllowNull()][string]$Path,
         [AllowNull()][string]$CompanyName,
         [AllowNull()][string]$Signer,
-        [AllowNull()][string]$SignatureStatus
+        [AllowNull()][string]$SignatureStatus,
+        [AllowNull()][string]$ArtifactType,
+        [AllowNull()][string]$Name,
+        [AllowNull()][string]$CommandLine
     )
 
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
     $expanded = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"'))
     $normalized = $expanded.ToLowerInvariant()
+    $isExpectedTeamsStoreAutorun = (
+        $ArtifactType -eq 'RunKey' -and
+        $Name -ieq 'Teams' -and
+        $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\windowsapps\\msteams_8wekyb3d8bbwe\\ms-teams\.exe$' -and
+        [string]$CommandLine -match '(?i)\bmsteams:system-initiated\b'
+    )
+    if ($isExpectedTeamsStoreAutorun) {
+        # The Store execution alias is not an ordinary signed file and can report
+        # InspectionFailed while the Microsoft-owned package-family path is valid.
+        # Trust only the exact Teams Run value, package family, executable, and URI.
+        return $true
+    }
     $isExpectedMicrosoftPath = (
         $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\teams\\(?:current\\teams|update)\.exe$' -or
-        $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivestandaloneupdater|filecoauth))\.exe$' -or
+        $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth))\.exe$' -or
         $normalized -match '\\users\\[^\\]+\\appdata\\local\\microsoft\\windowsapps\\ms-teams\.exe$'
     )
     if (-not $isExpectedMicrosoftPath) { return $false }
@@ -1066,7 +1096,7 @@ function Invoke-CompuTekRemoteAccessScan {
         } elseif (
             $artifact.ArtifactType -in @('RunKey','ScheduledTask','StartupFile') -and
             (Test-CompuTekUserWritablePath $artifact.Path) -and
-            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus)
+            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine)
         ) {
             $reason = 'Persistence launches an executable from a user-writable location'
             $confidence = if ($artifact.SignatureStatus -eq 'Valid') {'Low'} else {'Medium'}
@@ -1074,7 +1104,7 @@ function Invoke-CompuTekRemoteAccessScan {
             $artifact.ArtifactType -eq 'Process' -and
             (Test-CompuTekUserWritablePath $artifact.Path) -and
             $artifact.ConnectionCount -gt 0 -and
-            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus)
+            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine)
         ) {
             $reason = 'Running executable in a user-writable location has active network connections'
             $confidence = 'Medium'
@@ -1166,7 +1196,10 @@ function Split-CompuTekUninstallCommand {
 
 function Invoke-CompuTekUninstallCommand {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Command)
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [ValidateRange(10,900)][int]$TimeoutSeconds = 90
+    )
     $parsed = Split-CompuTekUninstallCommand -Command $Command
     $filePath = $parsed.FilePath
     if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
@@ -1174,13 +1207,43 @@ function Invoke-CompuTekUninstallCommand {
         if ($resolved) { $filePath = $resolved.Source } else { throw "Uninstaller executable was not found: $($parsed.FilePath)" }
     }
     $arguments = @($parsed.Arguments | Where-Object { $_ -ne $null -and $_ -ne '' })
-    $process = Start-Process -FilePath $filePath -ArgumentList $arguments -Wait -PassThru -ErrorAction Stop
+    if ([IO.Path]::GetFileName($filePath) -match '(?i)^unins\d*\.exe$') {
+        $argumentText = $arguments -join ' '
+        if ($argumentText -notmatch '(?i)(?:^|\s)/SUPPRESSMSGBOXES(?:\s|$)') { $arguments += '/SUPPRESSMSGBOXES' }
+        if ($argumentText -notmatch '(?i)(?:^|\s)/NORESTART(?:\s|$)') { $arguments += '/NORESTART' }
+    }
+
+    $startParameters = @{
+        FilePath = $filePath
+        PassThru = $true
+        ErrorAction = 'Stop'
+    }
+    # Start-Process rejects an empty ArgumentList. Several valid registered
+    # uninstallers (including Syncro) intentionally require no arguments.
+    if ($arguments.Count -gt 0) { $startParameters.ArgumentList = $arguments }
+    $process = Start-Process @startParameters
+    $finished = $process.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $finished) {
+        try { $process.Kill() } catch {}
+        try { [void]$process.WaitForExit(5000) } catch {}
+        return [pscustomobject]@{
+            FilePath = $filePath
+            Arguments = $arguments
+            ExitCode = $null
+            Success = $false
+            RebootRequired = $false
+            TimedOut = $true
+            TimeoutSeconds = $TimeoutSeconds
+        }
+    }
     return [pscustomobject]@{
         FilePath = $filePath
         Arguments = $arguments
         ExitCode = $process.ExitCode
         Success = ($process.ExitCode -in @(0,1605,1614,1641,3010))
         RebootRequired = ($process.ExitCode -in @(1641,3010))
+        TimedOut = $false
+        TimeoutSeconds = $TimeoutSeconds
     }
 }
 

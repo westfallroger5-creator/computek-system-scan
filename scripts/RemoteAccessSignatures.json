@@ -1,7 +1,15 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.27.11",
+  "catalogVersion": "2026.08.28.12",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
+  "managedIdentities": {
+    "syncro": {
+      "shopSubdomainSha256": [
+        "78812FA0C195C0F87A1C5AC98B17331DBCEF7BB8C921ADB972E16AC571147D04"
+      ],
+      "description": "Approved CompuTek Syncro shop identities. Values are SHA-256 hashes of the lowercase shop_subdomain registry value; no account secret is stored."
+    }
+  },
   "heuristicTerms": [
     "remote access", "remote desktop", "remote support", "remote control", "screen sharing",
     "unattended access", "rmm agent", "remote management", "support client", "support agent"

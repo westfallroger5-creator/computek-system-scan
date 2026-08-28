@@ -59,6 +59,30 @@ namespace CompuTek.Scanner.App
                     throw new InvalidDataException("The signature catalog contains a duplicate id: " + id);
             }
 
+            if (root.ContainsKey("managedIdentities"))
+            {
+                Dictionary<string, object> managedIdentities = root["managedIdentities"] as Dictionary<string, object>;
+                if (managedIdentities == null)
+                    throw new InvalidDataException("Managed identities must be a JSON object.");
+                Dictionary<string, object> syncro = managedIdentities != null && managedIdentities.ContainsKey("syncro")
+                    ? managedIdentities["syncro"] as Dictionary<string, object>
+                    : null;
+                object[] hashes = syncro != null && syncro.ContainsKey("shopSubdomainSha256")
+                    ? syncro["shopSubdomainSha256"] as object[]
+                    : null;
+                if (syncro != null && hashes == null)
+                    throw new InvalidDataException("The approved Syncro identity list must be an array.");
+                if (hashes != null)
+                {
+                    foreach (object hashValue in hashes)
+                    {
+                        string hash = Convert.ToString(hashValue);
+                        if (hash.Length != 64 || !System.Text.RegularExpressions.Regex.IsMatch(hash, "^[A-Fa-f0-9]{64}$"))
+                            throw new InvalidDataException("Every approved Syncro identity must be a 64-character SHA-256 value.");
+                    }
+                }
+            }
+
             return new CatalogInfo
             {
                 Version = Convert.ToString(root["catalogVersion"]),
