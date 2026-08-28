@@ -230,6 +230,53 @@ $caseRoot = 'Z:\CompuTekTest\Case'
 $quarantineRoot = 'Z:\CompuTekTest\Quarantine'
 $approvedManagedIdentity = [pscustomobject]@{SyncroApproved=$true;SplashtopLinked=$true;MatchMethod='Synthetic approved Syncro shop identity hash'}
 $unapprovedManagedIdentity = [pscustomobject]@{SyncroApproved=$false;SplashtopLinked=$false;MatchMethod='No approved Syncro shop identity match'}
+
+$syntheticShopSubdomain = 'computek-test-shop'
+$identitySha = [Security.Cryptography.SHA256]::Create()
+try { $syntheticShopHash = ([BitConverter]::ToString($identitySha.ComputeHash([Text.Encoding]::UTF8.GetBytes($syntheticShopSubdomain)))).Replace('-','') } finally { $identitySha.Dispose() }
+$syntheticIdentityCatalog = [pscustomobject]@{
+    managedIdentities = [pscustomobject]@{
+        syncro = [pscustomobject]@{shopSubdomainSha256=@($syntheticShopHash)}
+    }
+}
+$matchingManagedIdentity = & {
+    function Get-ItemProperty {
+        param($LiteralPath,$ErrorAction)
+        if ($LiteralPath -match 'RepairTech\\Syncro$') {
+            return [pscustomobject]@{shop_subdomain=$syntheticShopSubdomain;SplashtopState='{"Enabled":true,"RmmCode":"SYNTHETIC-CODE-A"}'}
+        }
+        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-A'} }
+        throw 'Synthetic registry path not found'
+    }
+    try { Get-CompuTekManagedIdentityStatus -Catalog $syntheticIdentityCatalog } finally { Remove-Item Function:\Get-ItemProperty -Force -ErrorAction SilentlyContinue }
+}
+Assert-True ($matchingManagedIdentity.SyncroApproved -and $matchingManagedIdentity.SplashtopLinked -and $matchingManagedIdentity.MatchMethod -notmatch 'SYNTHETIC-CODE') 'Splashtop is managed only when its live RMM code exactly matches enabled Syncro state, without returning the code'
+
+$mismatchedManagedIdentity = & {
+    function Get-ItemProperty {
+        param($LiteralPath,$ErrorAction)
+        if ($LiteralPath -match 'RepairTech\\Syncro$') {
+            return [pscustomobject]@{shop_subdomain=$syntheticShopSubdomain;SplashtopState='{"Enabled":true,"RmmCode":"SYNTHETIC-CODE-A"}'}
+        }
+        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-B'} }
+        throw 'Synthetic registry path not found'
+    }
+    try { Get-CompuTekManagedIdentityStatus -Catalog $syntheticIdentityCatalog } finally { Remove-Item Function:\Get-ItemProperty -Force -ErrorAction SilentlyContinue }
+}
+Assert-True ($mismatchedManagedIdentity.SyncroApproved -and -not $mismatchedManagedIdentity.SplashtopLinked) 'A different Splashtop RMM code remains a separate technician finding even on a CompuTek-managed PC'
+
+$disabledManagedIdentity = & {
+    function Get-ItemProperty {
+        param($LiteralPath,$ErrorAction)
+        if ($LiteralPath -match 'RepairTech\\Syncro$') {
+            return [pscustomobject]@{shop_subdomain=$syntheticShopSubdomain;SplashtopState='{"Enabled":false,"RmmCode":"SYNTHETIC-CODE-A"}'}
+        }
+        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-A'} }
+        throw 'Synthetic registry path not found'
+    }
+    try { Get-CompuTekManagedIdentityStatus -Catalog $syntheticIdentityCatalog } finally { Remove-Item Function:\Get-ItemProperty -Force -ErrorAction SilentlyContinue }
+}
+Assert-True ($disabledManagedIdentity.SyncroApproved -and -not $disabledManagedIdentity.SplashtopLinked) 'A matching code is not enough when Syncro reports Splashtop disabled'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\Program Files\Common Files\Microsoft Shared' -Directory) 'Shared Common Files trees cannot be quarantined as a product folder'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\ProgramData\Microsoft\Windows' -Directory) 'Microsoft ProgramData trees cannot be quarantined as a product folder'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\Users\Victim\Downloads' -Directory) 'A whole user Downloads folder cannot be quarantined'

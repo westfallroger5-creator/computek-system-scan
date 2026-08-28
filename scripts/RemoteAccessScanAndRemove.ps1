@@ -156,7 +156,8 @@ function Show-CandidateSummary {
     if ($Candidate.IsManagedSuite) {
         Write-Host '    CompuTek ownership verified: the Syncro shop identity matches the approved hash in the USB signature catalog.' -ForegroundColor Green
         if (@($Candidate.ProductIds) -contains 'splashtop') {
-            Write-Host '    Only the Splashtop RMM installation linked by Syncro registry state is included; Store Splashtop packages remain separate.' -ForegroundColor Green
+            Write-Host '    Splashtop ownership verified: Syncro is enabled for it and both products contain the same RMM deployment code. The code is never displayed or saved.' -ForegroundColor Green
+            Write-Host '    Store Splashtop packages and nonmatching installations remain separate numbered findings.' -ForegroundColor Green
         }
     }
     $installerFiles = @(Get-CandidateInstallerFiles $Candidate)
@@ -319,7 +320,8 @@ function Get-CompuTekManagedIdentityStatus {
     }
 
     $syncroApproved = $false
-    $splashtopLinked = $false
+    $syncroSplashtopEnabled = $false
+    $syncroSplashtopRmmCode = $null
     foreach ($syncroRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\RepairTech\Syncro','HKLM:\SOFTWARE\RepairTech\Syncro')) {
         try {
             $syncroValues = Get-ItemProperty -LiteralPath $syncroRegistryPath -ErrorAction Stop
@@ -329,28 +331,48 @@ function Get-CompuTekManagedIdentityStatus {
                 try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($subdomain)))).Replace('-','') } finally { $sha.Dispose() }
                 if ($approvedHashes -contains $actualHash) { $syncroApproved = $true }
             }
-            $splashtopState = ([string]$syncroValues.SplashtopState).Trim()
-            $splashtopFlags = ([string]$syncroValues.OurSplashtopInstallFlags).Trim()
-            $splashtopLinked = (
-                ($splashtopState -and $splashtopState -notmatch '(?i)^(?:0|false|none|not.?installed|uninstalled|disabled)$') -or
-                ($splashtopFlags -and $splashtopFlags -notmatch '(?i)^(?:0|false|none|disabled)$')
-            )
+            $splashtopStateText = ([string]$syncroValues.SplashtopState).Trim()
+            if ($splashtopStateText) {
+                try {
+                    $splashtopState = $splashtopStateText | ConvertFrom-Json -ErrorAction Stop
+                    $enabledProperty = $splashtopState.PSObject.Properties['Enabled']
+                    $rmmCodeProperty = $splashtopState.PSObject.Properties['RmmCode']
+                    $syncroSplashtopEnabled = ($enabledProperty -and [bool]$enabledProperty.Value)
+                    if ($rmmCodeProperty) { $syncroSplashtopRmmCode = ([string]$rmmCodeProperty.Value).Trim() }
+                } catch {
+                    # A damaged or legacy state value cannot prove ownership. Never
+                    # display or save the raw value because it may contain credentials.
+                    $syncroSplashtopEnabled = $false
+                    $syncroSplashtopRmmCode = $null
+                }
+            }
             break
         } catch {}
     }
 
-    $hasRmmCode = $false
+    $deploymentCodeMatches = $false
     foreach ($splashtopRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\Splashtop Inc.\Splashtop Remote Server','HKLM:\SOFTWARE\Splashtop Inc.\Splashtop Remote Server')) {
         try {
             $splashtopValues = Get-ItemProperty -LiteralPath $splashtopRegistryPath -ErrorAction Stop
-            if (-not [string]::IsNullOrWhiteSpace([string]$splashtopValues.RmmCode)) { $hasRmmCode = $true; break }
+            $registeredRmmCode = ([string]$splashtopValues.RmmCode).Trim()
+            if ($syncroSplashtopRmmCode -and $registeredRmmCode -and $syncroSplashtopRmmCode -ceq $registeredRmmCode) {
+                $deploymentCodeMatches = $true
+                break
+            }
         } catch {}
     }
 
+    $splashtopLinked = ($syncroApproved -and $syncroSplashtopEnabled -and $deploymentCodeMatches)
     return [pscustomobject]@{
         SyncroApproved = $syncroApproved
-        SplashtopLinked = ($syncroApproved -and $splashtopLinked -and $hasRmmCode)
-        MatchMethod = if ($syncroApproved) {'Approved Syncro shop identity hash'} else {'No approved Syncro shop identity match'}
+        SplashtopLinked = $splashtopLinked
+        MatchMethod = if ($splashtopLinked) {
+            'Approved Syncro shop identity + exact Splashtop RMM deployment-code match'
+        } elseif ($syncroApproved) {
+            'Approved Syncro shop identity; no exact Splashtop deployment-code match'
+        } else {
+            'No approved Syncro shop identity match'
+        }
     }
 }
 
