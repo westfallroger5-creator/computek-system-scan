@@ -76,19 +76,20 @@ $script:ActionableCategories = @(
 
 $remoteTerms = @($catalog.products | ForEach-Object { @($_.aliases) + @($_.executables) } | Where-Object {$_} | ForEach-Object {[regex]::Escape([string]$_)} | Sort-Object -Unique)
 $remoteRegex = if ($remoteTerms.Count -gt 0) { '(?i)(' + ($remoteTerms -join '|') + ')' } else { '(?!)' }
-$suspiciousCommandRegex = '(?i)(downloadstring|invoke-expression|\biex\b|frombase64string|encodedcommand|invoke-webrequest|\bcurl(?:\.exe)?\b|\bwget\b|bitsadmin|certutil|mshta|regsvr32|rundll32|comsvcs|installutil|wmic|psexec|procdump|mimikatz|nanodump|secretsdump|browserpassview|webbrowserpassview|rclone|megacmd|megasync|winscp|pscp|compress-archive|7z(?:\.exe)?|rar(?:\.exe)?|tar(?:\.exe)?)'
+$suspiciousCommandRegex = '(?i)(downloadstring|invoke-expression|\biex\b|frombase64string|\bencodedcommand\b|invoke-webrequest|\bcurl(?:\.exe)?\b[^\r\n]{0,160}https?://|\bwget(?:\.exe)?\b[^\r\n]{0,160}https?://|\bbitsadmin(?:\.exe)?\b[^\r\n]{0,160}(?:/transfer|/addfile)|\bcertutil(?:\.exe)?\b[^\r\n]{0,160}(?:-urlcache|-decode)|\bmshta(?:\.exe)?\b[^\r\n]{0,160}(?:https?://|javascript:|vbscript:)|\bregsvr32(?:\.exe)?\b[^\r\n]{0,160}(?:/i:https?://|scrobj\.dll)|\brundll32(?:\.exe)?\b[^\r\n]{0,200}(?:javascript:|https?://|comsvcs[^\r\n]*minidump)|\bwmic(?:\.exe)?\b[^\r\n]{0,160}process\s+call\s+create|\bpsexec(?:\.exe)?\b|\bprocdump(?:\.exe)?\b|mimikatz|nanodump|secretsdump|browserpassview|webbrowserpassview|\brclone(?:\.exe)?\b|\bmegacmd(?:\.exe)?\b|\bmegasync(?:\.exe)?\b|\bwinscp(?:\.exe)?\b|\bpscp(?:\.exe)?\b|\bcompress-archive\b|(?<![a-z0-9])7z(?:\.exe)?\b|\brar(?:\.exe)?\b|\btar(?:\.exe)?\b)'
 $script:PostScamUserWritableTextRegex = '(?i)\\users\\[^\\]+\\(?:appdata|downloads|desktop)\\|\\windows\\temp\\'
-$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
+$script:PostScamTrustedApplicationPathRegex = '(?i)(?:[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe|[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\openai\\codex\\[^"\r\n]*?\\codex\.exe|[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\(?:microsoft\\)?powertoys\\[^"\r\n]*?\.exe|[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\mozilla firefox\\firefox\.exe)'
+$script:TrustedChromiumExtensionIds = @('hehggadaopoacecdllhhajmbjkdcmajg')
 
 function Test-CompuTekPostScamUserWritableRisk {
     param([AllowNull()][string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text) -or $Text -notmatch $script:PostScamUserWritableTextRegex) { return $false }
 
     $untrustedText = [string]$Text
-    foreach ($match in [regex]::Matches($Text,$script:PostScamTrustedMicrosoftPathRegex)) {
+    foreach ($match in [regex]::Matches($Text,$script:PostScamTrustedApplicationPathRegex)) {
         $candidatePath = [string]$match.Value
-        if (Test-CompuTekTrustedMicrosoftApplication -Path $candidatePath) {
-            $untrustedText = $untrustedText.Replace($candidatePath,'<trusted-microsoft-application>')
+        if (Test-CompuTekTrustedApplication -Path $candidatePath) {
+            $untrustedText = $untrustedText.Replace($candidatePath,'<trusted-application>')
         }
     }
     return ($untrustedText -match $script:PostScamUserWritableTextRegex)
@@ -98,10 +99,126 @@ function Test-CompuTekPostScamPersistenceText {
     param([AllowNull()][string]$Text)
     if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
     return (
-        $Text -match $remoteRegex -or
         $Text -match $suspiciousCommandRegex -or
         (Test-CompuTekPostScamUserWritableRisk $Text)
     )
+}
+
+function Get-CompuTekPowerShellCommandText {
+    param($Event)
+    $data = Get-EventDataMap $Event
+    $parts = New-Object System.Collections.Generic.List[string]
+    foreach ($key in 'ScriptBlockText','Payload') {
+        if ($data.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$data[$key])) {
+            $parts.Add([string]$data[$key])
+        }
+    }
+    if ($parts.Count -gt 0) { return ($parts.ToArray() -join "`n") }
+
+    $message = Get-EventMessage $Event
+    if ($Event.Id -eq 800 -and $message -match '(?is)Pipeline execution details for command line:\s*(?<Command>.*?)\s*Context Information:') {
+        return [string]$Matches.Command
+    }
+    return $message
+}
+
+function Test-CompuTekGeneratedPowerShellText {
+    param([AllowNull()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $false }
+    return ($Text -match '(?i)(__cmdletization_|Cmdletization\.GeneratedTypes|\.EXTERNALHELP\s+[^\r\n]+\.cdxml|CompuTek\.Scanner\.Common|PostScam_SystemIntegrityScanner|COMPUTEK_SCANNER_APP)')
+}
+
+function Get-CompuTekDefenderFindingName {
+    param([int]$EventId, [AllowNull()][string]$Message)
+    if ($EventId -in @(1116,1117) -and $Message -match '(?im)^\s*Name:\s*(?<Threat>[^\r\n]+)') {
+        return ('Microsoft Defender detection: {0}' -f $Matches.Threat.Trim())
+    }
+    return "Microsoft Defender event $EventId"
+}
+
+function ConvertTo-CompuTekHtmlText {
+    param([AllowNull()]$Text)
+    if ($null -eq $Text) { return '' }
+    return [Net.WebUtility]::HtmlEncode([string]$Text)
+}
+
+function Get-CompuTekPostScamCategoryLabel {
+    param([AllowNull()][string]$Category)
+    switch ($Category) {
+        'SecurityControl' { 'Security protection or malware detection' }
+        'SecurityEvent' { 'Account or security event' }
+        'RemoteSession' { 'Remote session activity' }
+        'RemoteAccess' { 'Remote-access software requiring review' }
+        'RemoteAccessKey' { 'Remote login key' }
+        'PersistenceEvent' { 'Recent persistence change' }
+        'Persistence' { 'Startup or scheduled persistence' }
+        'WmiPersistence' { 'WMI persistence' }
+        'RegistryBackdoor' { 'Registry backdoor' }
+        'SuspiciousExecution' { 'Suspicious command execution' }
+        'SysmonEvidence' { 'Endpoint activity evidence' }
+        'NetworkConnection' { 'Suspicious active connection' }
+        'FirewallBackdoor' { 'Suspicious firewall access' }
+        'NetworkConfiguration' { 'Network configuration change' }
+        'BrowserExtension' { 'Browser extension requiring review' }
+        'ExecutionArtifact' { 'Program execution evidence' }
+        default { if ($Category) {$Category}else{'Other evidence'} }
+    }
+}
+
+function New-CompuTekPostScamHtmlReport {
+    param(
+        [Parameter(Mandatory)][string]$OutputPath,
+        [AllowNull()][object[]]$ActionableGroups,
+        [AllowNull()][object[]]$SupplementalRecords,
+        [AllowNull()][string[]]$CollectionGaps,
+        [Parameter(Mandatory)][datetime]$Cutoff,
+        [Parameter(Mandatory)][string]$ComputerName
+    )
+
+    $groups = @($ActionableGroups)
+    $supplemental = @($SupplementalRecords)
+    $gaps = @($CollectionGaps)
+    $highCount = @($groups | Where-Object {$_.Severity -eq 'High'}).Count
+    $mediumCount = @($groups | Where-Object {$_.Severity -eq 'Medium'}).Count
+    $statusTitle = if ($groups.Count -gt 0) {'Technician review needed'} else {'No focused warning indicators found'}
+    $statusText = if ($groups.Count -gt 0) {
+        'Review the grouped items below. A finding is evidence to verify, not automatic proof that a scammer caused it.'
+    } else {
+        'The focused checks found no warning indicators. This does not prove that no access or data theft occurred.'
+    }
+
+    $html = New-Object Text.StringBuilder
+    [void]$html.AppendLine('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
+    [void]$html.AppendLine('<title>CompuTek Post-Scam Review</title><style>body{margin:0;background:#f3f6fa;color:#172033;font:16px/1.5 "Segoe UI",Arial,sans-serif}.wrap{max-width:1050px;margin:0 auto;padding:28px}.top{background:#0c3f70;color:#fff;border-radius:14px;padding:24px 28px}.top h1{margin:0 0 6px;font-size:28px}.top p{margin:3px 0;color:#dbeafe}.status{margin:18px 0;padding:18px 20px;border-left:6px solid #d97706;background:#fff7ed;border-radius:10px}.status.clear{border-color:#15803d;background:#f0fdf4}.status h2{margin:0 0 4px;font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}.card{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:15px}.number{font-size:28px;font-weight:700}.muted{color:#5b6678}.section{background:#fff;border:1px solid #dbe3ee;border-radius:12px;padding:18px 20px;margin:16px 0}.section h2{margin:0 0 12px}.finding{border:1px solid #dbe3ee;border-radius:9px;margin:10px 0;background:#fbfdff}.finding summary{cursor:pointer;padding:13px 15px;font-weight:600}.finding .body{border-top:1px solid #e5eaf1;padding:12px 15px}.badge{display:inline-block;border-radius:999px;padding:2px 9px;margin-right:8px;font-size:13px}.high{background:#fee2e2;color:#991b1b}.medium{background:#fef3c7;color:#92400e}.label{font-weight:600}.detail{white-space:pre-wrap;word-break:break-word;background:#f5f7fa;padding:10px;border-radius:7px}.links a{display:inline-block;margin:4px 12px 4px 0}.gaps li{margin:5px 0}@media print{body{background:#fff}.wrap{max-width:none;padding:0}.finding{break-inside:avoid}}</style></head><body><main class="wrap">')
+    [void]$html.AppendLine(('<header class="top"><h1>CompuTek Post-Scam Review</h1><p>Computer: {0}</p><p>Collected: {1} &nbsp; | &nbsp; Lookback starts: {2}</p></header>' -f (ConvertTo-CompuTekHtmlText $ComputerName),(ConvertTo-CompuTekHtmlText ((Get-Date).ToString('yyyy-MM-dd HH:mm'))),(ConvertTo-CompuTekHtmlText $Cutoff.ToString('yyyy-MM-dd HH:mm'))))
+    [void]$html.AppendLine(('<section class="status{0}"><h2>{1}</h2><div>{2}</div></section>' -f $(if($groups.Count -eq 0){' clear'}else{''}),(ConvertTo-CompuTekHtmlText $statusTitle),(ConvertTo-CompuTekHtmlText $statusText)))
+    [void]$html.AppendLine(('<section class="cards"><div class="card"><div class="number">{0}</div><div>High-priority groups</div></div><div class="card"><div class="number">{1}</div><div>Review groups</div></div><div class="card"><div class="number">{2}</div><div>Supplemental leads saved</div></div><div class="card"><div class="number">{3}</div><div>Collection gaps</div></div></section>' -f $highCount,$mediumCount,$supplemental.Count,$gaps.Count))
+    [void]$html.AppendLine('<section class="section"><h2>What to do first</h2><ol><li>Review malware detections, disabled security controls, new accounts, remote login keys, and registry/WMI backdoors first.</li><li>Ask the customer or technician whether each remote session and remote-support tool was expected.</li><li>Use the separate Remote-access scan for technician-approved removal; this evidence scan never removes anything.</li><li>If compromise is confirmed, reset important passwords from a known-clean device and review email, banking, router, and account-provider logs.</li></ol></section>')
+
+    [void]$html.AppendLine('<section class="section"><h2>Findings grouped for review</h2>')
+    if ($groups.Count -eq 0) {
+        [void]$html.AppendLine('<p>No focused warning groups were produced. Normal inventory and lower-confidence leads remain in the saved supporting files.</p>')
+    } else {
+        foreach ($categoryGroup in @($groups | Group-Object Category | Sort-Object Name)) {
+            [void]$html.AppendLine(('<h3>{0} <span class="muted">({1})</span></h3>' -f (ConvertTo-CompuTekHtmlText (Get-CompuTekPostScamCategoryLabel $categoryGroup.Name)),$categoryGroup.Count))
+            foreach ($finding in @($categoryGroup.Group | Sort-Object @{Expression={if($_.Severity -eq 'High'){0}else{1}}},Name,Path)) {
+                $badgeClass = if ($finding.Severity -eq 'High') {'high'} else {'medium'}
+                $latest = if ($finding.LatestTimeUtc) {[string]$finding.LatestTimeUtc}else{'Time unavailable'}
+                [void]$html.AppendLine(('<details class="finding"{0}><summary><span class="badge {1}">{2}</span>{3} <span class="muted">({4} occurrence(s))</span></summary><div class="body"><div><span class="label">Latest:</span> {5}</div><div><span class="label">Source:</span> {6}</div>{7}<p class="label">Why it was included</p><div class="detail">{8}</div></div></details>' -f $(if($finding.Severity -eq 'High'){' open'}else{''}),$badgeClass,(ConvertTo-CompuTekHtmlText $finding.Severity),(ConvertTo-CompuTekHtmlText $finding.Name),$finding.Occurrences,(ConvertTo-CompuTekHtmlText $latest),(ConvertTo-CompuTekHtmlText $finding.Sources),$(if($finding.Path){'<div><span class="label">Location:</span> ' + (ConvertTo-CompuTekHtmlText $finding.Path) + '</div>'}else{''}),(ConvertTo-CompuTekHtmlText $finding.Details)))
+            }
+        }
+    }
+    [void]$html.AppendLine('</section>')
+
+    [void]$html.AppendLine('<section class="section links"><h2>Supporting files</h2><p>Normal inventory and low-confidence leads are intentionally kept out of the warning list.</p><a href="ActionableFindings.txt">Plain-text findings</a><a href="SupplementalLeads.csv">Supplemental leads</a><a href="CollectionGaps.txt">Collection gaps</a><a href="Summary.txt">Technical summary</a></section>')
+    if ($gaps.Count -gt 0) {
+        [void]$html.AppendLine('<section class="section gaps"><h2>Collection gaps</h2><p>These checks were unavailable or incomplete, so the report must not be treated as proof that the computer is clean.</p><ul>')
+        foreach ($gap in $gaps) { [void]$html.AppendLine(('<li>{0}</li>' -f (ConvertTo-CompuTekHtmlText $gap))) }
+        [void]$html.AppendLine('</ul></section>')
+    }
+    [void]$html.AppendLine('<section class="section"><h2>Important limits</h2><p>This local scan cannot prove that no backdoor exists, identify every file that may have been viewed or copied, or replace a full incident response. Preserve this case folder until the technician finishes review.</p></section></main></body></html>')
+    $html.ToString() | Set-Content -LiteralPath $OutputPath -Encoding UTF8
+    return $OutputPath
 }
 
 function Write-Audit {
@@ -237,11 +354,10 @@ try {
     $remoteReports = Export-CompuTekScanReport -Scan $remoteScan -Directory $caseRoot -BaseName 'RemoteAccessInventory'
     foreach ($finding in @($remoteScan.Findings)) {
         $isUserWritable = $finding.Path -and (Test-CompuTekUserWritablePath $finding.Path)
-        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $finding.Path -CompanyName $finding.CompanyName -Signer $finding.Signer -SignatureStatus $finding.SignatureStatus -ArtifactType $finding.ArtifactType -Name $finding.Name -CommandLine $finding.CommandLine
+        $isTrustedApplication = Test-CompuTekTrustedApplication -Path $finding.Path -CompanyName $finding.CompanyName -Signer $finding.Signer -SignatureStatus $finding.SignatureStatus -ArtifactType $finding.ArtifactType -Name $finding.Name -CommandLine $finding.CommandLine
         $isPersistence = $finding.ArtifactType -in @('Service','RunKey','ScheduledTask','StartupFile','NativeFeature')
         $isActionableRemote = (
-            ($finding.ProductId -eq 'unknown' -and -not $isTrustedMicrosoftApp -and $finding.Confidence -in @('High','Medium')) -or
-            $finding.Category -eq 'native-feature' -or
+            ($finding.ProductId -eq 'unknown' -and -not $isTrustedApplication -and $finding.Confidence -in @('High','Medium')) -or
             ($finding.ProductId -ne 'unknown' -and $isUserWritable -and ($isPersistence -or $finding.ConnectionCount -gt 0))
         )
         $severity = if ($isActionableRemote -and $finding.Confidence -eq 'High') {'High'} elseif ($isActionableRemote) {'Medium'} else {'Informational'}
@@ -314,13 +430,13 @@ foreach ($event in Get-RecentEvents -LogName 'Security' -Ids $securityIds -Maxim
         }
         4648 {
             $processName = [string]$data['ProcessName']
-            $include = ($processName -match $remoteRegex -or $processName -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $processName))
+            $include = ($processName -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $processName))
             $name='Explicit credentials used by a suspicious process'; $severity='Medium'
         }
         4672 { $include=$false }
         4688 {
             $command = ([string]$data['CommandLine']) + ' ' + ([string]$data['NewProcessName'])
-            $include = ($command -match $remoteRegex -or $command -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $command))
+            $include = ($command -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $command))
             $severity = 'High'; $name='Suspicious process creation'
         }
         4697 {
@@ -367,7 +483,9 @@ foreach ($spec in @(
     @{Log='Microsoft-Windows-WinRM/Operational';Ids=@(6,91,142,169);Name='WinRM activity';Severity='Medium'}
 )) {
     foreach ($event in Get-RecentEvents -LogName $spec.Log -Ids $spec.Ids -Maximum 1500) {
-        Add-WindowsEventEvidence $event 'RemoteSession' $spec.Severity $spec.Name (Get-EventDataMap $event)
+        $message = Get-EventMessage $event
+        $severity = if ($spec.Name -eq 'WinRM activity' -and $message -match '(?i)(\bfailed\b|\bfailure\b|\bdenied\b|\bcannot\b|\bcould not\b|error code:\s*(?!0\b)\d+)') {'Review'} else {$spec.Severity}
+        Add-WindowsEventEvidence $event 'RemoteSession' $severity $spec.Name (Get-EventDataMap $event)
     }
 }
 
@@ -394,23 +512,25 @@ try {
 # ------------------ POWERSHELL, DEFENDER, AND SYSMON ------------------
 Write-Audit "`n[4/12] Suspicious command execution and security-control changes" 'Cyan'
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-PowerShell/Operational' -Ids @(4103,4104) -Maximum 3000) {
-    $message = Get-EventMessage $event
-    if ($message -match $remoteRegex -or $message -match $suspiciousCommandRegex) {
-        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name "PowerShell event $($event.Id)" -Details (Protect-CommandText $message) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
+    if ($event.ProcessId -eq $PID) { continue }
+    $commandText = Get-CompuTekPowerShellCommandText $event
+    if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and ($commandText -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $commandText))) {
+        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name "PowerShell event $($event.Id)" -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
     }
 }
-foreach ($event in Get-RecentEvents -LogName 'Windows PowerShell' -Ids @(400,403,600,800) -Maximum 2000) {
-    $message = Get-EventMessage $event
-    if ($message -match $remoteRegex -or $message -match $suspiciousCommandRegex) {
-        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name "Classic PowerShell event $($event.Id)" -Details (Protect-CommandText $message) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
+foreach ($event in Get-RecentEvents -LogName 'Windows PowerShell' -Ids @(800) -Maximum 2000) {
+    if ($event.ProcessId -eq $PID) { continue }
+    $commandText = Get-CompuTekPowerShellCommandText $event
+    if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and ($commandText -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $commandText))) {
+        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name 'Classic PowerShell command' -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
     }
 }
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-Windows Defender/Operational' -Ids @(1116,1117,5001,5007,5013) -Maximum 2000) {
     $message = Get-EventMessage $event
     $include = ($event.Id -in @(1116,1117,5001,5013) -or ($event.Id -eq 5007 -and $message -match '(?i)(exclusion|disable|realtime|behavior|script.?scanning|cloud|tamper)'))
     if ($include) {
-        $severity = if ($event.Id -in @(5001,5013)) {'High'} else {'Medium'}
-        Add-WindowsEventEvidence $event 'SecurityControl' $severity "Microsoft Defender event $($event.Id)" (Get-EventDataMap $event)
+        $severity = if ($event.Id -in @(1116,1117,5001,5013)) {'High'} else {'Medium'}
+        Add-WindowsEventEvidence $event 'SecurityControl' $severity (Get-CompuTekDefenderFindingName -EventId $event.Id -Message $message) (Get-EventDataMap $event)
     }
 }
 
@@ -450,11 +570,14 @@ Write-Audit "`n[5/12] Autoruns, scheduled tasks, WMI subscriptions, and registry
 try {
     foreach ($artifact in Get-CompuTekPersistenceArtifacts) {
         $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $artifact)
-        $isTrustedMicrosoftApp = Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine
-        $isSuspicious = ($matches.Count -gt 0 -or $artifact.CommandLine -match $suspiciousCommandRegex -or ((Test-CompuTekUserWritablePath $artifact.Path) -and -not $isTrustedMicrosoftApp))
+        $isTrustedApplication = Test-CompuTekTrustedApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine
+        $isUserWritable = (Test-CompuTekUserWritablePath $artifact.Path)
+        $hasSuspiciousBehavior = ($artifact.CommandLine -match $suspiciousCommandRegex)
+        $isRemoteToolInUserProfile = ($matches.Count -gt 0 -and $isUserWritable)
+        $isSuspicious = ($hasSuspiciousBehavior -or $isRemoteToolInUserProfile -or ($isUserWritable -and -not $isTrustedApplication))
         if ($isSuspicious) {
             $matchedNames = @($matches | ForEach-Object {$_.Product.name}) -join ', '
-            Add-Evidence -Category 'Persistence' -Severity $(if($matches.Count -gt 0){'High'}else{'Medium'}) -Name "$($artifact.ArtifactType): $($artifact.DisplayName)" -Details ("command={0}; matched={1}; original={2}; signer={3}" -f (Protect-CommandText $artifact.CommandLine),$matchedNames,$artifact.OriginalFilename,$artifact.Signer) -Path $artifact.Path -Source $artifact.Source -Data $artifact
+            Add-Evidence -Category 'Persistence' -Severity $(if($hasSuspiciousBehavior -or $isRemoteToolInUserProfile){'High'}else{'Medium'}) -Name "$($artifact.ArtifactType): $($artifact.DisplayName)" -Details ("command={0}; matched={1}; original={2}; signer={3}" -f (Protect-CommandText $artifact.CommandLine),$matchedNames,$artifact.OriginalFilename,$artifact.Signer) -Path $artifact.Path -Source $artifact.Source -Data $artifact
         }
     }
 } catch { Add-Gap "Persistence inventory failed: $($_.Exception.Message)" }
@@ -463,7 +586,10 @@ foreach ($className in '__EventFilter','CommandLineEventConsumer','ActiveScriptE
     try {
         foreach ($item in Get-CimInstance -Namespace 'root/subscription' -ClassName $className -ErrorAction Stop) {
             $serialized = Get-TruncatedText ($item | Select-Object * | Out-String) 5000
-            Add-Evidence -Category 'WmiPersistence' -Severity 'High' -Name "Permanent WMI subscription: $className" -Details (Protect-CommandText $serialized) -Source 'root/subscription' -Data $null
+            $isDefaultScmSubscription = ($serialized -match '(?i)SCM Event Log Filter')
+            $isExecutableConsumer = ($className -in @('CommandLineEventConsumer','ActiveScriptEventConsumer'))
+            $isSuspiciousSubscription = (-not $isDefaultScmSubscription -and ($isExecutableConsumer -or (Test-CompuTekPostScamPersistenceText $serialized) -or $serialized -match $remoteRegex))
+            Add-Evidence -Category 'WmiPersistence' -Severity $(if($isSuspiciousSubscription){'High'}else{'Review'}) -Name "Permanent WMI subscription: $className" -Details (Protect-CommandText $serialized) -Source 'root/subscription' -Data $null
         }
     } catch { Add-Gap "WMI persistence class '$className' could not be queried: $($_.Exception.Message)" }
 }
@@ -541,7 +667,7 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
             $lineNumber = 0
             foreach ($line in Get-Content -LiteralPath $history -ErrorAction Stop) {
                 $lineNumber++
-                if ($line -match $remoteRegex -or $line -match $suspiciousCommandRegex) {
+                if ($line -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $line)) {
                     Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name 'Suspicious PowerShell history command' -Details ("line {0}: {1}" -f $lineNumber,(Protect-CommandText $line)) -Path $history -User $profile.Name -Source 'PSReadLine'
                 }
             }
@@ -580,8 +706,8 @@ try {
             SignatureStatus=if($fileEvidence){$fileEvidence.SignatureStatus}else{$null}
         }
         $connections += $row
-        $isTrustedMicrosoftApp = if ($fileEvidence) { Test-CompuTekTrustedMicrosoftApplication -Path $path -CompanyName $fileEvidence.CompanyName -Signer $fileEvidence.Signer -SignatureStatus $fileEvidence.SignatureStatus } else { $false }
-        if (($path -and (Test-CompuTekUserWritablePath $path) -and -not $isTrustedMicrosoftApp) -or $row.CommandLine -match $remoteRegex -or $row.CommandLine -match $suspiciousCommandRegex) {
+        $isTrustedApplication = if ($fileEvidence) { Test-CompuTekTrustedApplication -Path $path -CompanyName $fileEvidence.CompanyName -Signer $fileEvidence.Signer -SignatureStatus $fileEvidence.SignatureStatus } else { $false }
+        if (($path -and (Test-CompuTekUserWritablePath $path) -and -not $isTrustedApplication) -or $row.CommandLine -match $suspiciousCommandRegex) {
             Add-Evidence -Category 'NetworkConnection' -Severity 'High' -Name 'Suspicious process has an active connection' -Details ("{0}:{1}; PID={2}; command={3}" -f $connection.RemoteAddress,$connection.RemotePort,$connection.OwningProcess,$row.CommandLine) -Path $path -Source 'Get-NetTCPConnection' -Data $row
         }
     }
@@ -600,9 +726,12 @@ try {
     foreach ($rule in Get-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -ErrorAction Stop) {
         $program = $null
         try { $program = (Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction Stop).Program } catch {}
-        $isTrustedMicrosoftApp = if ($program) { Test-CompuTekTrustedMicrosoftApplication -Path $program } else { $false }
-        if ($rule.DisplayName -match $remoteRegex -or ($program -and (Test-CompuTekUserWritablePath $program) -and -not $isTrustedMicrosoftApp)) {
+        $isTrustedApplication = if ($program) { Test-CompuTekTrustedApplication -Path $program } else { $false }
+        $isUserWritableProgram = ($program -and (Test-CompuTekUserWritablePath $program) -and -not $isTrustedApplication)
+        if ($isUserWritableProgram) {
             Add-Evidence -Category 'FirewallBackdoor' -Severity 'High' -Name $rule.DisplayName -Details ("action={0}; profile={1}; program={2}" -f $rule.Action,$rule.Profile,$program) -Path $program -Source 'Windows Firewall' -Data $rule
+        } elseif ($rule.DisplayName -match $remoteRegex) {
+            Add-Evidence -Category 'RemoteAccessConfiguration' -Severity 'Review' -Name $rule.DisplayName -Details ("Enabled inbound remote-support rule; action={0}; profile={1}; program={2}" -f $rule.Action,$rule.Profile,$program) -Path $program -Source 'Windows Firewall' -Data $rule
         }
     }
 } catch { Add-Gap "Firewall rules could not be fully inspected: $($_.Exception.Message)" }
@@ -693,9 +822,11 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
                 $permissions = @($manifest.permissions) + @($manifest.host_permissions)
                 $risky = @($permissions | Where-Object {$highRiskPermissions -contains [string]$_})
                 $text = ([string]$manifest.name) + ' ' + ([string]$manifest.description)
+                $extensionId = if ($manifestFile.FullName -match '(?i)\\Extensions\\(?<Id>[a-p]{32})\\') {[string]$Matches.Id}else{''}
+                $isTrustedExtension = ($script:TrustedChromiumExtensionIds -contains $extensionId)
                 if ($risky.Count -gt 0 -or $text -match $remoteRegex) {
-                    $actionableExtension = ($text -match $remoteRegex -or ($risky.Count -gt 0 -and $manifestFile.LastWriteTime -ge $cutoff))
-                    Add-Evidence -Category 'BrowserExtension' -Severity $(if($actionableExtension){'Medium'}else{'Review'}) -Name ([string]$manifest.name) -Details ("version={0}; high-risk permissions={1}; recently changed={2}" -f $manifest.version,($risky -join ','),[bool]($manifestFile.LastWriteTime -ge $cutoff)) -TimeCreated $manifestFile.LastWriteTime -Path $manifestFile.FullName -User $profile.Name -Source 'Chromium extension manifest' -Data @{Permissions=$permissions;Version=$manifest.version}
+                    $actionableExtension = (-not $isTrustedExtension -and ($text -match $remoteRegex -or ($risky.Count -gt 0 -and $manifestFile.LastWriteTime -ge $cutoff)))
+                    Add-Evidence -Category 'BrowserExtension' -Severity $(if($actionableExtension){'Medium'}else{'Review'}) -Name ([string]$manifest.name) -Details ("extension ID={0}; version={1}; high-risk permissions={2}; recently changed={3}; trusted ID={4}" -f $extensionId,$manifest.version,($risky -join ','),[bool]($manifestFile.LastWriteTime -ge $cutoff),$isTrustedExtension) -TimeCreated $manifestFile.LastWriteTime -Path $manifestFile.FullName -User $profile.Name -Source 'Chromium extension manifest' -Data @{ExtensionId=$extensionId;Permissions=$permissions;Version=$manifest.version}
                 }
             } catch {}
         }
@@ -740,6 +871,7 @@ $actionableSummaryJson = Join-Path $caseRoot 'ActionableFindings.json'
 $actionableSummaryText = Join-Path $caseRoot 'ActionableFindings.txt'
 $gapsPath = Join-Path $caseRoot 'CollectionGaps.txt'
 $summaryPath = Join-Path $caseRoot 'Summary.txt'
+$htmlReportPath = Join-Path $caseRoot 'PostScamReport.html'
 
 $evidenceRecords = [object[]]$script:Evidence.ToArray()
 $supplementalRecords = [object[]]$script:Supplemental.ToArray()
@@ -806,26 +938,33 @@ $summaryLines = @(
     '- Preserve this case folder. Do not run cleanup before reviewing the evidence and resetting credentials from a known-clean device.'
 )
 $summaryLines | Set-Content -LiteralPath $summaryPath -Encoding UTF8
+[void](New-CompuTekPostScamHtmlReport -OutputPath $htmlReportPath -ActionableGroups $actionableGroups -SupplementalRecords $supplementalRecords -CollectionGaps $collectionGaps -Cutoff $cutoff -ComputerName $env:COMPUTERNAME)
 
 Write-Host "`n=============== ACTIONABLE POST-SCAM FINDINGS ===============" -ForegroundColor Cyan
 if ($actionableGroups.Count -eq 0) {
     Write-Host 'No actionable persistence, hidden-access, or customer-harm indicators were identified.' -ForegroundColor Green
 } else {
-    foreach ($finding in @($actionableGroups | Select-Object -First 12)) {
+    foreach ($finding in @($actionableGroups | Select-Object -First 8)) {
         $color = if ($finding.Severity -eq 'High') {'Red'} else {'Yellow'}
-        Write-Host ("[{0}] {1}: {2} ({3} occurrence(s))" -f $finding.Severity,$finding.Category,$finding.Name,$finding.Occurrences) -ForegroundColor $color
+        Write-Host ("[{0}] {1}: {2} ({3} occurrence(s))" -f $finding.Severity,(Get-CompuTekPostScamCategoryLabel $finding.Category),$finding.Name,$finding.Occurrences) -ForegroundColor $color
         if ($finding.Path) { Write-Host ("    {0}" -f $finding.Path) -ForegroundColor Gray }
     }
-    if ($actionableGroups.Count -gt 12) {
-        Write-Host ("...{0} additional actionable finding group(s) are saved in ActionableFindings.txt." -f ($actionableGroups.Count - 12)) -ForegroundColor Yellow
+    if ($actionableGroups.Count -gt 8) {
+        Write-Host ("...{0} additional finding group(s) are in the easy-to-read report." -f ($actionableGroups.Count - 8)) -ForegroundColor Yellow
     }
 }
 Write-Host ("Collection gaps: {0}" -f $script:Gaps.Count) -ForegroundColor $(if($script:Gaps.Count){'Yellow'}else{'Green'})
 Write-Host "Case folder: $caseRoot" -ForegroundColor Cyan
-Write-Host "Open this first: $actionableSummaryText" -ForegroundColor Cyan
+Write-Host "Easy-to-read report: $htmlReportPath" -ForegroundColor Cyan
 Write-Host "Full actionable evidence: $evidenceJson" -ForegroundColor DarkGray
 Write-Host "Supplemental leads (not flagged): $supplementalJson" -ForegroundColor DarkGray
 Write-Host 'This report cannot prove that no other backdoor exists or identify every file that may have been viewed or copied.' -ForegroundColor Yellow
 Write-Host 'If the scammer had administrator access, consider the machine untrusted until the evidence is reviewed and the remediation decision is made.' -ForegroundColor Yellow
+try {
+    Write-Host 'Opening the easy-to-read report in the default browser...' -ForegroundColor Cyan
+    Start-Process -FilePath $htmlReportPath -ErrorAction Stop
+} catch {
+    Write-Host "The report could not be opened automatically. Open this file: $htmlReportPath" -ForegroundColor Yellow
+}
 Complete-CompuTekRun 'Post-scam evidence collection complete.'
 exit 0
