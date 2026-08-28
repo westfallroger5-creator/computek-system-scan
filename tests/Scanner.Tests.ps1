@@ -43,6 +43,9 @@ Assert-True (@($catalog.products).Count -ge 60) 'Catalog contains at least 60 re
 Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.products).Count) 'Catalog product IDs are unique'
 Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\Teams\current\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed Teams executable in its expected per-user folder is trusted'
 Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\OneDrive\OneDrive.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed OneDrive executable in its expected per-user folder is trusted'
+Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\OneDrive\26.150.0804.0011\OneDriveLauncher.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid' -ArtifactType ScheduledTask -Name 'OneDrive Startup Task') 'The signed versioned OneDriveLauncher scheduled task is trusted'
+Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\WindowsApps\MSTeams_8wekyb3d8bbwe\ms-teams.exe' -SignatureStatus 'InspectionFailed' -ArtifactType RunKey -Name Teams -CommandLine '"C:\Users\Victim\AppData\Local\Microsoft\WindowsApps\MSTeams_8wekyb3d8bbwe\ms-teams.exe" msteams:system-initiated') 'The exact Microsoft Store Teams startup alias is trusted even though execution aliases cannot be signature-inspected'
+Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\WindowsApps\MSTeams_8wekyb3d8bbwe\ms-teams.exe' -SignatureStatus 'InspectionFailed' -ArtifactType RunKey -Name Teams -CommandLine 'malware.exe')) 'A Teams-looking Run value without the expected Store URI remains suspicious'
 Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\Teams\current\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer '' -SignatureStatus 'NotSigned')) 'An unsigned Teams-named executable is not trusted'
 Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Roaming\Adobe\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid')) 'A Teams-named executable outside Microsoft expected folders is still suspicious'
 
@@ -219,18 +222,22 @@ Assert-True ($allCatalogFindings.Count -eq @($catalog.products).Count) 'Analysis
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Get-FindingDetectedVersion','Test-PathWithinVersionAnchor','New-RemovalCandidates','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
+foreach ($functionName in @('Get-CandidateInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Get-CompuTekManagedIdentityStatus','Test-PathWithinVersionAnchor','New-RemovalCandidates','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
 $caseRoot = 'Z:\CompuTekTest\Case'
 $quarantineRoot = 'Z:\CompuTekTest\Quarantine'
+$approvedManagedIdentity = [pscustomobject]@{SyncroApproved=$true;SplashtopLinked=$true;MatchMethod='Synthetic approved Syncro shop identity hash'}
+$unapprovedManagedIdentity = [pscustomobject]@{SyncroApproved=$false;SplashtopLinked=$false;MatchMethod='No approved Syncro shop identity match'}
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\Program Files\Common Files\Microsoft Shared' -Directory) 'Shared Common Files trees cannot be quarantined as a product folder'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\ProgramData\Microsoft\Windows' -Directory) 'Microsoft ProgramData trees cannot be quarantined as a product folder'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\Users\Victim\Downloads' -Directory) 'A whole user Downloads folder cannot be quarantined'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\Users\Victim' -Directory) 'A whole user profile cannot be quarantined'
 Assert-True (-not (Test-ProtectedRemediationPath -Path 'C:\Program Files\RemoteVendor\Agent' -Directory)) 'A vendor-specific program directory remains eligible after technician-approved removal'
 Assert-True (-not (Test-ProtectedRemediationPath -Path 'C:\Users\Victim\AppData\Roaming\RemoteVendor' -Directory)) 'A vendor-specific AppData directory remains eligible after technician-approved removal'
+$msiHostFinding = [pscustomobject]@{ProductId='screenconnect';Category='remote-support';ArtifactType='InstalledProgram';Path='MsiExec.exe';InstallLocation=$null}
+Assert-True ($null -eq (Get-FindingScopePath $msiHostFinding)) 'A bare MSI host name cannot become a fake ProgramData engine location'
 $legitimateInstall = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='InstalledProgram';Name='Company Support';Path='C:\Program Files\ScreenConnect';InstallLocation='C:\Program Files\ScreenConnect';RegistryPath='HKLM:\Software\Uninstall\CompanySupport';PackageFullName=$null;DisplayVersion='24.1.0';FileVersion=$null}
 $legitimateService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Company';Path='C:\Program Files\ScreenConnect\Client\ScreenConnect.ClientService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='24.1.0.123'}
 $hiddenService = [pscustomobject]@{ProductId='screenconnect';ProductName='ScreenConnect / ConnectWise Control';Category='remote-support';ArtifactType='Service';Name='ScreenConnect Client Hidden';Path='C:\Users\Victim\AppData\Roaming\Adobe\AdobeReader.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='23.9.0'}
@@ -285,20 +292,37 @@ Assert-True ($failedAppxResult.Attempted -and -not $failedAppxResult.Success) 'A
 $syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.73.16374'}
 $syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.29.18406'}
 $syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null;DisplayVersion='1.0.203.18518';FileVersion=$null}
-$syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall))
+$syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall) -ManagedIdentityStatus $approvedManagedIdentity)
 Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].IsManagedSuite -and $syncroScopes[0].DetectedVersion -eq '1.0.203.18518' -and $syncroScopes[0].Locations.Count -eq 3) 'Different Syncro component build numbers are shown once as the managed suite'
 
 $splashtopInstall = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='InstalledProgram';Name='Splashtop Streamer';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote';InstallLocation='C:\Program Files (x86)\Splashtop\Splashtop Remote';RegistryPath='HKLM:\Software\Uninstall\Splashtop';PackageFullName=$null;DisplayVersion='3.8.4.1';FileVersion=$null}
 $splashtopService = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='SplashtopRemoteService';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='3.82.2.9'}
 $syncroDownloadedInstaller = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='File';Name='SyncroSetup.exe';Path='C:\Users\Tech\Downloads\SyncroSetup.exe';SourcePath=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.203.18518'}
-$managedScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$syncroDownloadedInstaller))
+$managedScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$syncroDownloadedInstaller) -ManagedIdentityStatus $approvedManagedIdentity)
 Assert-True ($managedScopes.Count -eq 1 -and $managedScopes[0].IsManagedSuite -and @($managedScopes[0].ProductIds).Count -eq 2 -and $managedScopes[0].Findings.Count -eq 6) 'Syncro, its bundled Splashtop components, and a passive downloaded installer collapse into one managed technician decision'
 Assert-True (Test-FindingBelongsToCandidate -Finding $splashtopService -Candidate $managedScopes[0]) 'Managed-suite removal verification includes remaining Splashtop components'
-$standaloneSplashtop = @(New-RemovalCandidates @($splashtopInstall,$splashtopService))
+$standaloneSplashtop = @(New-RemovalCandidates @($splashtopInstall,$splashtopService) -ManagedIdentityStatus $unapprovedManagedIdentity)
 Assert-True ($standaloneSplashtop.Count -eq 1 -and -not $standaloneSplashtop[0].IsManagedSuite) 'Standalone Splashtop remains a normal review finding when no Syncro primary agent is present'
 $hiddenSplashtop = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='HiddenSupport';Path='C:\Users\Victim\AppData\Roaming\Support\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='9.9.9'}
-$managedWithHidden = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$hiddenSplashtop))
+$managedWithHidden = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$hiddenSplashtop) -ManagedIdentityStatus $approvedManagedIdentity)
 Assert-True ($managedWithHidden.Count -eq 2 -and @($managedWithHidden | Where-Object {$_.IsManagedSuite}).Count -eq 1 -and @($managedWithHidden | Where-Object {-not $_.IsManagedSuite -and $_.Findings.Path -contains $hiddenSplashtop.Path}).Count -eq 1) 'A hidden user-profile Splashtop copy stays separately flagged beside the standard managed suite'
+
+$splashtopStoreA = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='AppxPackage';Name='Splashtop.StoreA';Path='C:\Program Files\WindowsApps\Splashtop.StoreA_3.8.400.0_x86';InstallLocation=$null;RegistryPath=$null;PackageFullName='Splashtop.StoreA_3.8.400.0_x86__publisher';DisplayVersion='3.8.400.0';FileVersion=$null}
+$splashtopStoreB = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='AppxPackage';Name='Splashtop.StoreB';Path='C:\Program Files\WindowsApps\Splashtop.StoreB_3.7.600.0_x86';InstallLocation=$null;RegistryPath=$null;PackageFullName='Splashtop.StoreB_3.7.600.0_x86__publisher';DisplayVersion='3.7.600.0';FileVersion=$null}
+$managedWithStorePackages = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopStoreA,$splashtopStoreB) -ManagedIdentityStatus $approvedManagedIdentity)
+Assert-True ($managedWithStorePackages.Count -eq 3 -and @($managedWithStorePackages | Where-Object {$_.IsManagedSuite}).Count -eq 1 -and @($managedWithStorePackages | Where-Object {$_.ProductId -eq 'splashtop' -and -not $_.IsManagedSuite}).Count -eq 2) 'Separate Splashtop Store packages are never claimed as CompuTek merely because approved Syncro is installed'
+$syncroOnlyManagedCandidate = @($managedWithStorePackages | Where-Object {$_.IsManagedSuite})[0]
+Assert-True (@($syncroOnlyManagedCandidate.ProductIds) -notcontains 'splashtop' -and -not (Test-FindingBelongsToCandidate -Finding $splashtopStoreA -Candidate $syncroOnlyManagedCandidate)) 'Verification of managed Syncro does not wait for or remove an unrelated Splashtop Store package'
+
+$anyDeskInstall = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='InstalledProgram';Name='AnyDesk';Path='C:\Program Files (x86)\AnyDesk';InstallLocation='C:\Program Files (x86)\AnyDesk';RegistryPath='HKLM:\Software\Uninstall\AnyDesk';PackageFullName=$null;DisplayVersion='9.7.15';FileVersion=$null;SignatureStatus='Unknown';CompanyName=''}
+$anyDeskWindowsHost = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='Process';Name='rundll32.exe';Path=(Join-Path $env:SystemRoot 'SysWOW64\rundll32.exe');InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='10.0.26100.1';SignatureStatus='Valid';CompanyName='Microsoft Corporation';Signer='CN=Microsoft Corporation'}
+$anyDeskScopes = @(New-RemovalCandidates @($anyDeskInstall,$anyDeskWindowsHost) -ManagedIdentityStatus $unapprovedManagedIdentity)
+Assert-True ($anyDeskScopes.Count -eq 1 -and $anyDeskScopes[0].DetectedVersion -eq '9.7.15' -and $anyDeskWindowsHost.SupportingOnly -and @($anyDeskScopes[0].Locations | Where-Object {$_ -match '(?i)\\windows\\'}).Count -eq 0) 'A Microsoft rundll32 helper is supporting evidence for AnyDesk, not a duplicate agent or removable Windows process'
+
+$teamViewerShortcutA = [pscustomobject]@{ProductId='teamviewer';ProductName='TeamViewer';Category='remote-support';ArtifactType='File';Name='TeamViewer.lnk';Path='C:\ProgramData\Microsoft\Windows\Start Menu\Programs\TeamViewer.lnk';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion=$null}
+$teamViewerShortcutB = [pscustomobject]@{ProductId='teamviewer';ProductName='TeamViewer';Category='remote-support';ArtifactType='File';Name='TeamViewer.lnk';Path='C:\Users\Public\Desktop\TeamViewer.lnk';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion=$null}
+$teamViewerShortcutScopes = @(New-RemovalCandidates @($teamViewerStartFinding,$teamViewerShortcutA,$teamViewerShortcutB) -ManagedIdentityStatus $unapprovedManagedIdentity)
+Assert-True ($teamViewerShortcutScopes.Count -eq 1 -and $teamViewerShortcutScopes[0].Findings.Count -eq 3) 'Start registration and shortcut evidence for the same product are one technician decision'
 
 $keepSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'KEEP 1,3-5' -Maximum 7 -ExpectedAction KEEP)
 $removeSelection = @(ConvertTo-CompuTekCandidateSelection -Text 'REMOVE 2,6-7' -Maximum 7 -ExpectedAction REMOVE)
@@ -440,6 +464,42 @@ Assert-True (@($unquoted.Arguments) -contains '/quiet') 'Uninstall arguments are
 $msi = Split-CompuTekUninstallCommand 'MsiExec.exe /I{12345678-1234-1234-1234-1234567890AB}'
 Assert-True ($msi.FilePath -eq 'msiexec.exe' -and @($msi.Arguments) -contains '/x') 'MSI maintenance command is converted to an uninstall command'
 
+$noArgumentUninstall = & $scannerModule {
+    param($executablePath)
+    $script:ArgumentListWasPassed = $true
+    function Start-Process {
+        param($FilePath,$ArgumentList,$PassThru,$ErrorAction)
+        $script:ArgumentListWasPassed = $PSBoundParameters.ContainsKey('ArgumentList')
+        $fake = [pscustomobject]@{ExitCode=0}
+        $fake | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($milliseconds) return $true }
+        return $fake
+    }
+    try {
+        $result = Invoke-CompuTekUninstallCommand -Command ('"{0}"' -f $executablePath) -TimeoutSeconds 10
+        return [pscustomobject]@{Result=$result;ArgumentListWasPassed=$script:ArgumentListWasPassed}
+    } finally {
+        Remove-Item Function:\Start-Process -Force -ErrorAction SilentlyContinue
+    }
+} (Join-Path $env:SystemRoot 'System32\where.exe')
+Assert-True ($noArgumentUninstall.Result.Success -and -not $noArgumentUninstall.ArgumentListWasPassed) 'An argument-free registered uninstaller starts without an invalid empty ArgumentList'
+
+$timedOutUninstall = & $scannerModule {
+    param($executablePath)
+    function Start-Process {
+        param($FilePath,$ArgumentList,$PassThru,$ErrorAction)
+        $fake = [pscustomobject]@{ExitCode=$null;Killed=$false}
+        $fake | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($milliseconds) return $false }
+        $fake | Add-Member -MemberType ScriptMethod -Name Kill -Value { $this.Killed = $true }
+        return $fake
+    }
+    try {
+        return Invoke-CompuTekUninstallCommand -Command ('"{0}" /quiet' -f $executablePath) -TimeoutSeconds 10
+    } finally {
+        Remove-Item Function:\Start-Process -Force -ErrorAction SilentlyContinue
+    }
+} (Join-Path $env:SystemRoot 'System32\where.exe')
+Assert-True ($timedOutUninstall.TimedOut -and -not $timedOutUninstall.Success -and $null -eq $timedOutUninstall.ExitCode) 'A stuck offline uninstaller returns a timeout result instead of blocking indefinitely'
+
 $postScamTokens = $null
 $postScamErrors = $null
 $postScamAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'),[ref]$postScamTokens,[ref]$postScamErrors)
@@ -450,7 +510,7 @@ foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuT
 $remoteRegex = '(?i)(screenconnect|anydesk)'
 $suspiciousCommandRegex = '(?i)(encodedcommand|invoke-webrequest)'
 $script:PostScamUserWritableTextRegex = '(?i)\\users\\[^\\]+\\(?:appdata|downloads|desktop)\\|\\windows\\temp\\'
-$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
+$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
 Assert-True (-not (Test-CompuTekPostScamPersistenceText 'Service FileSyncHelper installed under C:\Program Files\Vendor')) 'An ordinary recent service installation is supplemental evidence, not an actionable scam backdoor'
 Assert-True (Test-CompuTekPostScamPersistenceText 'ScreenConnect Client service installed') 'A remote-software service installation remains actionable'
 Assert-True (Test-CompuTekPostScamPersistenceText 'powershell.exe -EncodedCommand AAAA') 'A suspicious persistence command remains actionable'

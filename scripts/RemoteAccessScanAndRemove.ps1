@@ -154,7 +154,10 @@ function Show-CandidateSummary {
         Write-Host ("    WARNING: {0} renamed-file indicator(s) require review." -f $renamed.Count) -ForegroundColor Red
     }
     if ($Candidate.IsManagedSuite) {
-        Write-Host '    Managed suite: standard-path Syncro and Splashtop components are shown once. Confirm this agent belongs to CompuTek before KEEP.' -ForegroundColor Green
+        Write-Host '    CompuTek ownership verified: the Syncro shop identity matches the approved hash in the USB signature catalog.' -ForegroundColor Green
+        if (@($Candidate.ProductIds) -contains 'splashtop') {
+            Write-Host '    Only the Splashtop RMM installation linked by Syncro registry state is included; Store Splashtop packages remain separate.' -ForegroundColor Green
+        }
     }
     $installerFiles = @(Get-CandidateInstallerFiles $Candidate)
     if ($installerFiles.Count -gt 0) {
@@ -239,6 +242,16 @@ function Get-FindingScopePath {
     if ($Finding.Category -eq 'native-feature') { return $null }
     if ($Finding.ArtifactType -eq 'AppxPackage') { return [string]$Finding.Path }
 
+    if ($Finding.ArtifactType -eq 'InstalledProgram' -and -not $Finding.InstallLocation) {
+        $registeredPath = [Environment]::ExpandEnvironmentVariables(([string]$Finding.Path).Trim('"'))
+        if ($registeredPath -match '(?i)^(?:msiexec(?:\.exe)?|rundll32(?:\.exe)?)$') {
+            # MSI uninstall records can expose only the Windows host executable.
+            # Resolving that relative name against the staged engine created a fake
+            # location under ProgramData and must never become a removal scope.
+            return $null
+        }
+    }
+
     $path = if ($Finding.InstallLocation) { [string]$Finding.InstallLocation } else { [string]$Finding.Path }
     if ([string]::IsNullOrWhiteSpace($path)) { return $null }
     $path = [Environment]::ExpandEnvironmentVariables($path.Trim('"')).TrimEnd('\')
@@ -255,8 +268,34 @@ function Get-FindingScopePath {
     try { return [IO.Path]::GetFullPath($path).TrimEnd('\') } catch { return $path }
 }
 
+function Test-FindingIsWindowsHostProcess {
+    param($Finding)
+    if ($Finding.ArtifactType -ne 'Process' -or -not $Finding.Path) { return $false }
+    $expanded = [Environment]::ExpandEnvironmentVariables(([string]$Finding.Path).Trim('"'))
+    $windowsRoot = ([IO.Path]::GetFullPath($env:SystemRoot)).TrimEnd('\') + '\'
+    $insideWindows = $false
+    try { $insideWindows = ([IO.Path]::GetFullPath($expanded)).StartsWith($windowsRoot,[StringComparison]::OrdinalIgnoreCase) } catch {}
+    if (-not $insideWindows) { return $false }
+    $fileName = Get-CompuTekSafeFileName $expanded
+    return (
+        $fileName -match '(?i)^(rundll32|msiexec|cmd|powershell|pwsh|wscript|cscript)\.exe$' -and
+        ($Finding.SignatureStatus -eq 'Valid' -or "$($Finding.CompanyName) $($Finding.Signer)" -match '(?i)\bMicrosoft(?: Corporation)?\b')
+    )
+}
+
+function Test-FindingIsPassiveSupportEvidence {
+    param($Finding)
+    if ($Finding.ArtifactType -eq 'StartApp') { return $true }
+    if ($Finding.ArtifactType -eq 'File') {
+        $extension = if ($Finding.Path) { [IO.Path]::GetExtension([string]$Finding.Path) } else { '' }
+        if ($extension -match '(?i)^\.(lnk|url)$') { return $true }
+    }
+    return (Test-FindingIsWindowsHostProcess $Finding)
+}
+
 function Get-FindingDetectedVersion {
     param($Finding)
+    if (Test-FindingIsPassiveSupportEvidence $Finding) { return $null }
     foreach ($propertyName in @('DisplayVersion','FileVersion')) {
         $property = $Finding.PSObject.Properties[$propertyName]
         if (-not $property) { continue }
@@ -264,6 +303,55 @@ function Get-FindingDetectedVersion {
         if ($version) { return $version }
     }
     return $null
+}
+
+function Get-CompuTekManagedIdentityStatus {
+    param($Catalog)
+
+    $approvedHashes = @()
+    $managedProperty = $Catalog.PSObject.Properties['managedIdentities']
+    if ($managedProperty -and $managedProperty.Value) {
+        $syncroProperty = $managedProperty.Value.PSObject.Properties['syncro']
+        if ($syncroProperty -and $syncroProperty.Value) {
+            $hashProperty = $syncroProperty.Value.PSObject.Properties['shopSubdomainSha256']
+            if ($hashProperty) { $approvedHashes = @($hashProperty.Value | ForEach-Object {([string]$_).Trim().ToUpperInvariant()} | Where-Object {$_ -match '^[A-F0-9]{64}$'}) }
+        }
+    }
+
+    $syncroApproved = $false
+    $splashtopLinked = $false
+    foreach ($syncroRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\RepairTech\Syncro','HKLM:\SOFTWARE\RepairTech\Syncro')) {
+        try {
+            $syncroValues = Get-ItemProperty -LiteralPath $syncroRegistryPath -ErrorAction Stop
+            $subdomain = ([string]$syncroValues.shop_subdomain).Trim().ToLowerInvariant()
+            if ($subdomain -and $approvedHashes.Count -gt 0) {
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($subdomain)))).Replace('-','') } finally { $sha.Dispose() }
+                if ($approvedHashes -contains $actualHash) { $syncroApproved = $true }
+            }
+            $splashtopState = ([string]$syncroValues.SplashtopState).Trim()
+            $splashtopFlags = ([string]$syncroValues.OurSplashtopInstallFlags).Trim()
+            $splashtopLinked = (
+                ($splashtopState -and $splashtopState -notmatch '(?i)^(?:0|false|none|not.?installed|uninstalled|disabled)$') -or
+                ($splashtopFlags -and $splashtopFlags -notmatch '(?i)^(?:0|false|none|disabled)$')
+            )
+            break
+        } catch {}
+    }
+
+    $hasRmmCode = $false
+    foreach ($splashtopRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\Splashtop Inc.\Splashtop Remote Server','HKLM:\SOFTWARE\Splashtop Inc.\Splashtop Remote Server')) {
+        try {
+            $splashtopValues = Get-ItemProperty -LiteralPath $splashtopRegistryPath -ErrorAction Stop
+            if (-not [string]::IsNullOrWhiteSpace([string]$splashtopValues.RmmCode)) { $hasRmmCode = $true; break }
+        } catch {}
+    }
+
+    return [pscustomobject]@{
+        SyncroApproved = $syncroApproved
+        SplashtopLinked = ($syncroApproved -and $splashtopLinked -and $hasRmmCode)
+        MatchMethod = if ($syncroApproved) {'Approved Syncro shop identity hash'} else {'No approved Syncro shop identity match'}
+    }
 }
 
 function Test-PathWithinVersionAnchor {
@@ -275,7 +363,10 @@ function Test-PathWithinVersionAnchor {
 }
 
 function New-RemovalCandidates {
-    param($Findings)
+    param(
+        $Findings,
+        $ManagedIdentityStatus = (Get-CompuTekManagedIdentityStatus -Catalog $catalog)
+    )
 
     $suiteProducts = @{}
     $managedSuiteDefinitions = @{}
@@ -308,6 +399,9 @@ function New-RemovalCandidates {
     # or their path belongs to a versioned installation. Ambiguous items stay separate.
     $versionDataByProduct = @{}
     foreach ($finding in @($Findings | Where-Object {$_.ProductId -ne 'unknown'})) {
+        if (Test-FindingIsWindowsHostProcess $finding) {
+            $finding | Add-Member -NotePropertyName SupportingOnly -NotePropertyValue $true -Force
+        }
         $version = Get-FindingDetectedVersion $finding
         if (-not $version) { continue }
         $productId = [string]$finding.ProductId
@@ -343,28 +437,42 @@ function New-RemovalCandidates {
     $scopeGroups = @{}
     foreach ($finding in @($Findings)) {
         $scopePath = Get-FindingScopePath $finding
-        $evidenceLocation = $scopePath
+        $isSupportingOnly = [bool]$finding.PSObject.Properties['SupportingOnly'] -and [bool]$finding.SupportingOnly
+        $evidenceLocation = if ($isSupportingOnly) { $null } else { $scopePath }
         $resolvedVersion = $null
         $productVersionData = if ($versionDataByProduct.ContainsKey([string]$finding.ProductId)) { $versionDataByProduct[[string]$finding.ProductId] } else { $null }
         if ($scopePath -and $productVersionData) {
             $matchingVersionAnchor = @($productVersionData.InstallAnchors | Where-Object {
                 Test-PathWithinVersionAnchor -Path $scopePath -Anchor $_.Path
             } | Sort-Object @{Expression={$_.Path.Length};Descending=$true} | Select-Object -First 1)
-            if ($matchingVersionAnchor) { $resolvedVersion = [string]$matchingVersionAnchor[0].Version }
+            if ($matchingVersionAnchor) { $resolvedVersion = [string]($matchingVersionAnchor[0].Version) }
         }
         $isSuiteProduct = $suiteProducts.ContainsKey([string]$finding.ProductId)
-        if (-not $resolvedVersion -and $isSuiteProduct -and $productVersionData -and @($productVersionData.InstallVersions).Count -eq 1) {
+        $installedProductVersions = @()
+        if ($productVersionData) { $installedProductVersions = @($productVersionData.InstallVersions.ToArray()) }
+        if (-not $resolvedVersion -and $isSuiteProduct -and $productVersionData -and $installedProductVersions.Count -eq 1) {
             # Syncro and Splashtop install multiple helper services/programs whose file
             # build numbers differ from the registered suite version. Treat those as
             # components of the one installed suite instead of separate agents.
-            $resolvedVersion = [string]$productVersionData.InstallVersions[0]
+            $resolvedVersion = [string]($installedProductVersions[0])
         }
         if (-not $resolvedVersion) { $resolvedVersion = Get-FindingDetectedVersion $finding }
         if (-not $resolvedVersion -and $productVersionData) {
-            $fallbackVersions = if (@($productVersionData.InstallVersions).Count -gt 0) { @($productVersionData.InstallVersions) } else { @($productVersionData.Versions) }
-            if ($fallbackVersions.Count -eq 1) { $resolvedVersion = [string]$fallbackVersions[0] }
+            $fallbackVersions = @()
+            if ($installedProductVersions.Count -gt 0) {
+                $fallbackVersions = @($installedProductVersions)
+            } else {
+                $fallbackVersions = @($productVersionData.Versions.ToArray())
+            }
+            if ($fallbackVersions.Count -eq 1) { $resolvedVersion = [string]($fallbackVersions[0]) }
         }
         $groupByVersion = ($finding.ProductId -ne 'unknown' -and -not [string]::IsNullOrWhiteSpace($resolvedVersion))
+        $groupAsPassiveProduct = (
+            $finding.ProductId -ne 'unknown' -and
+            -not $groupByVersion -and
+            (Test-FindingIsPassiveSupportEvidence $finding) -and
+            -not $productVersionData
+        )
 
         if (-not $groupByVersion -and $scopePath -and $installAnchors.ContainsKey($finding.ProductId)) {
             $scopeLower = $scopePath.TrimEnd('\').ToLowerInvariant()
@@ -372,10 +480,12 @@ function New-RemovalCandidates {
                 $anchorLower = ([string]$_).TrimEnd('\').ToLowerInvariant()
                 $scopeLower -eq $anchorLower -or $scopeLower.StartsWith($anchorLower + '\')
             } | Sort-Object Length -Descending | Select-Object -First 1)
-            if ($matchingAnchor) { $scopePath = [string]$matchingAnchor[0] }
+            if ($matchingAnchor) { $scopePath = [string]($matchingAnchor[0]) }
         }
         $scopeKey = if ($groupByVersion) {
             "product-version:$($finding.ProductId):$($resolvedVersion.ToLowerInvariant())"
+        } elseif ($groupAsPassiveProduct) {
+            "product-passive:$($finding.ProductId)"
         } elseif ($finding.Category -eq 'native-feature') {
             "native:$($finding.ProductId)"
         } elseif ($finding.ArtifactType -eq 'AppxPackage' -and $finding.PackageFullName) {
@@ -392,7 +502,7 @@ function New-RemovalCandidates {
                 ProductName = [string]$finding.ProductName
                 Category = [string]$finding.Category
                 ScopeKey = $scopeKey
-                ScopePath = if ($groupByVersion) { $null } else { $scopePath }
+                ScopePath = if ($groupByVersion -or $groupAsPassiveProduct) { $null } else { $scopePath }
                 GroupByVersion = $groupByVersion
                 DetectedVersion = $resolvedVersion
                 Locations = New-Object System.Collections.Generic.List[string]
@@ -407,8 +517,13 @@ function New-RemovalCandidates {
 
     $entries = @($scopeGroups.Values)
     foreach ($definition in @($managedSuiteDefinitions.Values)) {
+        if (-not $ManagedIdentityStatus.SyncroApproved) { continue }
         $suiteEntries = @($entries | Where-Object {
             if ($definition.ProductIds -notcontains [string]$_.ProductId) { return $false }
+            if ([string]$_.ProductId -eq 'splashtop') {
+                if (-not $ManagedIdentityStatus.SplashtopLinked) { return $false }
+                if (@($_.Findings | Where-Object {$_.ArtifactType -in @('AppxPackage','StartApp')}).Count -gt 0) { return $false }
+            }
             $suspiciousUserWritableEvidence = @($_.Findings | Where-Object {
                 if (-not $_.Path -or -not (Test-CompuTekUserWritablePath $_.Path)) { return $false }
                 $isPassiveDownloadedFile = (
@@ -434,11 +549,13 @@ function New-RemovalCandidates {
         $primaryVersions = @($suiteEntries | Where-Object {
             $definition.PrimaryProductIds -contains [string]$_.ProductId -and $_.DetectedVersion
         } | ForEach-Object {[string]$_.DetectedVersion} | Sort-Object -Unique)
-        $primaryProductId = [string]$definition.PrimaryProductIds[0]
+        $primaryProductId = [string]($definition.PrimaryProductIds[0])
+        $includedProductIds = @($suiteEntries | ForEach-Object {[string]$_.ProductId} | Sort-Object -Unique)
+        $includesSplashtop = ($includedProductIds -contains 'splashtop')
         $mergedEntry = [ordered]@{
             ProductId = $primaryProductId
-            ProductIds = [string[]]$definition.ProductIds.ToArray()
-            ProductName = if ($definition.Name) {[string]$definition.Name} else {'Managed remote-support suite'}
+            ProductIds = [string[]]$includedProductIds
+            ProductName = if ($includesSplashtop -and $definition.Name) {[string]$definition.Name} else {'CompuTek SyncroMSP Agent (ownership verified)'}
             Category = 'rmm'
             ScopeKey = "managed-suite:$($definition.Id)"
             ScopePath = $null
@@ -448,6 +565,7 @@ function New-RemovalCandidates {
             Findings = $managedFindings
             IsManagedSuite = $true
             ManagedSuiteId = [string]$definition.Id
+            ManagedIdentityMatch = [string]$ManagedIdentityStatus.MatchMethod
         }
         $mergedEntryKeys = @{}
         foreach ($entry in $suiteEntries) { $mergedEntryKeys["$($entry.ProductId)|$($entry.ScopeKey)"] = $true }
@@ -485,6 +603,7 @@ function New-RemovalCandidates {
             IsUnknown = ($entry.ProductId -eq 'unknown')
             IsManagedSuite = [bool]$entry.IsManagedSuite
             ManagedSuiteId = [string]$entry.ManagedSuiteId
+            ManagedIdentityMatch = [string]$entry.ManagedIdentityMatch
         }
     }
     return @($candidates)
@@ -548,6 +667,7 @@ function Preserve-CandidateOperationalData {
 
     $sourceDirectories = New-Object System.Collections.Generic.List[string]
     foreach ($finding in @($Candidate.Findings)) {
+        if ($finding.PSObject.Properties['SupportingOnly'] -and [bool]$finding.SupportingOnly) { continue }
         foreach ($candidatePath in @($finding.InstallLocation,$finding.Path)) {
             if ([string]::IsNullOrWhiteSpace([string]$candidatePath)) { continue }
             $expanded = [Environment]::ExpandEnvironmentVariables(([string]$candidatePath).Trim('"')).TrimEnd('\')
@@ -690,7 +810,11 @@ function Invoke-OfficialUninstall {
         Write-RemediationLog "Running registered uninstaller for $($entry.DisplayName) ($AttemptLabel): $command" 'Yellow'
         try {
             $result = Invoke-CompuTekUninstallCommand -Command $command
-            Write-RemediationLog ("Uninstaller exit code: {0}" -f $result.ExitCode) $(if($result.Success){'Green'}else{'Red'})
+            if ($result.TimedOut) {
+                Write-RemediationLog ("Uninstaller did not finish within {0} seconds and was stopped so the offline cleanup could continue." -f $result.TimeoutSeconds) 'Red'
+            } else {
+                Write-RemediationLog ("Uninstaller exit code: {0}" -f $result.ExitCode) $(if($result.Success){'Green'}else{'Red'})
+            }
             if (-not $result.Success) { $allSucceeded = $false }
             if ($result.RebootRequired) { Write-RemediationLog 'The uninstaller reported that a reboot is required.' 'Yellow' }
         } catch {
@@ -744,10 +868,14 @@ function Remove-CandidateAppxPackages {
 function Stop-CandidateProcesses {
     param($Candidate)
     $candidatePaths = @($Candidate.Findings | Where-Object {
-        $_.Path -and ([string]$_.Path) -match '(?i)\.(exe|com)$'
+        $_.Path -and ([string]$_.Path) -match '(?i)\.(exe|com)$' -and
+        -not ($_.PSObject.Properties['SupportingOnly'] -and [bool]$_.SupportingOnly)
     } | ForEach-Object {[Environment]::ExpandEnvironmentVariables(([string]$_.Path).Trim('"'))} | Sort-Object -Unique)
     $stoppedProcessIds = New-Object System.Collections.Generic.List[int]
-    foreach ($finding in @($Candidate.Findings | Where-Object {$_.ArtifactType -eq 'Process' -and $_.ProcessId} | Sort-Object ProcessId -Unique)) {
+    foreach ($finding in @($Candidate.Findings | Where-Object {
+        $_.ArtifactType -eq 'Process' -and $_.ProcessId -and
+        -not ($_.PSObject.Properties['SupportingOnly'] -and [bool]$_.SupportingOnly)
+    } | Sort-Object ProcessId -Unique)) {
         try {
             $current = Get-CimInstance Win32_Process -Filter "ProcessId = $($finding.ProcessId)" -ErrorAction SilentlyContinue
             if (-not $current) { continue }
@@ -978,6 +1106,7 @@ function Remove-CandidateResidualFiles {
     $files = New-Object System.Collections.Generic.List[string]
 
     foreach ($finding in @($Candidate.Findings)) {
+        if ($finding.PSObject.Properties['SupportingOnly'] -and [bool]$finding.SupportingOnly) { continue }
         if ($finding.ArtifactType -eq 'InstalledProgram' -and $finding.InstallLocation -and (Test-Path -LiteralPath $finding.InstallLocation -PathType Container -ErrorAction SilentlyContinue)) {
             if (-not $directories.Contains([string]$finding.InstallLocation)) { $directories.Add([string]$finding.InstallLocation) }
         }
