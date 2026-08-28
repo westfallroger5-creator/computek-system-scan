@@ -146,6 +146,20 @@ function Get-CompuTekExecutablePath {
     return $null
 }
 
+function Get-CompuTekSafeFileName {
+    [CmdletBinding()]
+    param([AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try {
+        return [IO.Path]::GetFileName([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))
+    } catch {
+        # Startup URLs, damaged registry values, and other malformed command data
+        # are evidence to preserve; they must never terminate the entire scan.
+        return $null
+    }
+}
+
 function Test-CompuTekUserWritablePath {
     [CmdletBinding()]
     param([AllowNull()][string]$Path)
@@ -196,9 +210,15 @@ function Get-CompuTekFileEvidence {
     if ([string]::IsNullOrWhiteSpace($Path)) { return [pscustomobject]$result }
     $expanded = [Environment]::ExpandEnvironmentVariables($Path.Trim('"'))
     $result.Path = $expanded
-    $result.FileName = [IO.Path]::GetFileName($expanded)
+    $result.FileName = Get-CompuTekSafeFileName $expanded
 
-    if (-not (Test-Path -LiteralPath $expanded -PathType Leaf)) {
+    try {
+        $isAccessibleFile = Test-Path -LiteralPath $expanded -PathType Leaf -ErrorAction Stop
+    } catch {
+        $result.InspectionError = "Path could not be inspected: $($_.Exception.Message)"
+        return [pscustomobject]$result
+    }
+    if (-not $isAccessibleFile) {
         $result.InspectionError = 'File not found or not accessible'
         return [pscustomobject]$result
     }
@@ -287,7 +307,8 @@ function Find-CompuTekProductMatch {
     $description = ([string]$Evidence.FileDescription).ToLowerInvariant()
     $original = ([string]$Evidence.OriginalFilename).ToLowerInvariant()
     $packageName = ([string]$Evidence.PackageName).ToLowerInvariant()
-    $fileName = if ($Evidence.FileName) { ([string]$Evidence.FileName).ToLowerInvariant() } elseif ($path) { [IO.Path]::GetFileName($path).ToLowerInvariant() } else { '' }
+    $safeFileName = if ($Evidence.FileName) { [string]$Evidence.FileName } else { Get-CompuTekSafeFileName $path }
+    $fileName = if ($safeFileName) { $safeFileName.ToLowerInvariant() } else { '' }
     $artifactType = [string]$Evidence.ArtifactType
     $textFields = @($name, $displayName, $path, $commandLine, $productName, $description, $packageName)
     $productMatches = @()
@@ -1166,6 +1187,7 @@ function Invoke-CompuTekUninstallCommand {
 Export-ModuleMember -Function @(
     'Get-CompuTekCatalog',
     'Get-CompuTekExecutablePath',
+    'Get-CompuTekSafeFileName',
     'Test-CompuTekUserWritablePath',
     'Test-CompuTekTrustedMicrosoftApplication',
     'Get-CompuTekFileEvidence',
