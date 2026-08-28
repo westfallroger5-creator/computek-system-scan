@@ -69,6 +69,7 @@ Assert-AppTest ($remoteSource -match 'retry after blockers were stopped' -and $r
 Assert-AppTest ($moduleSource -match 'TimeoutSeconds = 90' -and $moduleSource -match '\$process\.WaitForExit\(\$TimeoutSeconds \* 1000\)' -and $moduleSource -match '\$arguments\.Count -gt 0' -and $remoteSource -match 'offline cleanup could continue') 'Offline or argument-free vendor uninstallers cannot freeze the scanner'
 Assert-AppTest ($remoteSource -match 'SupportingOnly' -and $remoteSource -match 'Test-FindingIsWindowsHostProcess' -and $remoteSource -match 'product-passive:') 'Windows helper processes and passive shortcut evidence do not create duplicate removable agents'
 Assert-AppTest ($remoteSource -match 'Linked or redirected path was not moved automatically' -and $remoteSource -match 'exit \$\(if\(\$attentionRequired\)\{3\}else\{0\}\)' -and $mainFormSource -match 'ExitCode == 3') 'Removal refuses redirected paths and reports incomplete verification as attention required in the GUI'
+Assert-AppTest ($remoteSource -match '__COMPUTEK_RESULT_REASON__:' -and $mainFormSource -match 'resultReasonPrefix' -and $mainFormSource -match 'Remote-access scan needs attention' -and $mainFormSource -match 'Open Last Case Folder') 'The GUI explains why a remote scan needs attention instead of showing only exit code 3'
 Assert-AppTest ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'All Startup folders are inventoried and reinstall-capable items are saved separately'
 Assert-AppTest ($moduleSource -match '\$currentUserPackages\s*=\s*@\(Get-AppxPackage' -and $moduleSource -match 'Get-StartApps' -and $remoteSource -match 'Remove-CandidateStoreProducts' -and $remoteSource -match 'Test-CandidateHasKeptProductPeer') 'Store remote apps use redundant discovery, cross-view verification, and version-safe exact removal fallback'
 Assert-AppTest ($remoteSource -match 'startup-folder reinstall item' -and $remoteSource -match 'RemainingStartupItems' -and $remoteSource -match 'After-remediation startup inventory') 'Selected Startup relaunch items are quarantined and must pass follow-up verification'
@@ -254,7 +255,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.19.0') 'Built EXE reports version 1.4.19.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.20.0') 'Built EXE reports version 1.4.20.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

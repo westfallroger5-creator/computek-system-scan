@@ -47,6 +47,57 @@ function Complete-CompuTekRun {
     if ($env:COMPUTEK_SCANNER_APP -ne '1') { [void](Read-Host 'Press Enter to close') }
 }
 
+function Write-CompuTekResultReason {
+    param([Parameter(Mandatory)][string]$Message)
+
+    $singleLine = ($Message -replace '[\r\n]+',' ').Trim()
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine("__COMPUTEK_RESULT_REASON__:$singleLine")
+        [Console]::Out.Flush()
+        return
+    }
+    Write-Host "ATTENTION REASON: $singleLine" -ForegroundColor Yellow
+}
+
+function Get-CompuTekAttentionReason {
+    param(
+        [object[]]$Items = @(),
+        [string[]]$VerificationErrors = @()
+    )
+
+    $errors = @($VerificationErrors | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 2)
+    if ($errors.Count -gt 0) {
+        return ('The scan could not verify a clean result because: {0}. Review the saved case report.' -f ($errors -join '; '))
+    }
+
+    $notVerified = @($Items | Where-Object { $_.Status -in @('NotVerified-ScanIncomplete','NotVerified-ScanFailed') })
+    if ($notVerified.Count -gt 0) {
+        $names = @($notVerified | Select-Object -ExpandProperty ProductName -Unique | Select-Object -First 3)
+        return ('The follow-up scan could not verify the removal of {0}. Reboot, then scan again; do not manually delete files until a complete scan identifies an exact remaining location.' -f ($names -join ', '))
+    }
+
+    $remaining = @($Items | Where-Object { $_.Status -eq 'RemovalIncomplete' })
+    if ($remaining.Count -gt 0) {
+        $details = @()
+        foreach ($item in @($remaining | Select-Object -First 3)) {
+            $findingText = if ($null -ne $item.RemainingFindings) {
+                '{0} matching finding(s)' -f $item.RemainingFindings
+            } else {
+                'matching evidence'
+            }
+            $detail = '{0} still has {1}' -f $item.ProductName,$findingText
+            $location = @($item.Locations | Where-Object { $_ } | Select-Object -First 1)
+            if ($location.Count -gt 0) { $detail += ' at ' + $location[0] }
+            if (@($item.StartupItems).Count -gt 0) { $detail += ' including a startup item that may reinstall it' }
+            $details += $detail
+        }
+        if ($remaining.Count -gt 3) { $details += ('and {0} more item(s) listed in the saved report' -f ($remaining.Count - 3)) }
+        return ('Removal still needs attention: {0}. Reboot, then run the remote-access scan again.' -f ($details -join '; '))
+    }
+
+    return 'The scan completed, but technician attention is required. Review the saved case report before making any additional changes.'
+}
+
 function Test-IsAdministrator {
     $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -1422,6 +1473,7 @@ if ($candidates.Count -eq 0) {
         Complete-CompuTekRun 'Scan complete.'
         exit 0
     }
+    Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
     Complete-CompuTekRun 'Scan incomplete — technician attention is required.'
     exit 3
 }
@@ -1559,6 +1611,7 @@ if ($selected.Count -eq 0) {
         Complete-CompuTekRun 'Technician review complete. No removals were selected.'
         exit 0
     }
+    Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
     Complete-CompuTekRun 'Technician review complete, but the scan was incomplete — attention is required.'
     exit 3
 }
@@ -1584,6 +1637,7 @@ Wait-CompuTekTransientVendorCleanup -Candidates $selected -TimeoutSeconds 45
 Write-Host "`nRe-scanning to verify the result..." -ForegroundColor Cyan
 $manualRemovalItems = @()
 $attentionRequired = $false
+$verificationErrors = @()
 try {
     $verification = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeHashes
     $verificationPaths = Export-CompuTekScanReport -Scan $verification -Directory $caseRoot -BaseName 'AfterRemediation'
@@ -1635,7 +1689,10 @@ try {
     }
     $verificationSummary | Export-Csv -LiteralPath (Join-Path $caseRoot 'RemovalVerification.csv') -NoTypeInformation -Encoding UTF8
     $verificationSummary | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $caseRoot 'RemovalVerification.json') -Encoding UTF8
-    if (-not $verification.IsComplete) { Write-Host 'Verification scan was incomplete. No removal is marked verified; review its collector errors.' -ForegroundColor Red }
+    if (-not $verification.IsComplete) {
+        $verificationErrors = @($verification.Errors)
+        Write-Host 'Verification scan was incomplete. No removal is marked verified; review its collector errors.' -ForegroundColor Red
+    }
     Write-Host "After-remediation JSON: $($verificationPaths.Json)" -ForegroundColor DarkGray
     Write-Host "After-remediation CSV:  $($verificationPaths.Csv)" -ForegroundColor DarkGray
     Write-Host "After-remediation startup inventory: $($verificationPaths.StartupCsv)" -ForegroundColor DarkGray
@@ -1645,6 +1702,7 @@ try {
         Write-Host 'No startup-folder download/reinstall commands remain flagged.' -ForegroundColor Green
     }
 } catch {
+    $verificationErrors = @($_.Exception.Message)
     foreach ($record in @($decisions | Where-Object {$_.Decision -eq 'Remove'})) { $record.RemovalOutcome = 'NotVerified-ScanFailed' }
     $attentionRequired = $true
     foreach ($candidate in $selected) {
@@ -1701,5 +1759,8 @@ $decisionDocument | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $decision
 
 Write-Host "Remediation log: $remediationLog" -ForegroundColor DarkGray
 Write-Host 'Reboot if requested by an uninstaller, then run this scanner again.' -ForegroundColor Yellow
+if ($attentionRequired) {
+    Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -Items $manualRemovalItems -VerificationErrors $verificationErrors)
+}
 Complete-CompuTekRun 'Remediation workflow complete.'
 exit $(if($attentionRequired){3}else{0})
