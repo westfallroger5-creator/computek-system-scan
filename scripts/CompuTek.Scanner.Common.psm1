@@ -337,6 +337,48 @@ function Test-CompuTekTrustedMicrosoftApplication {
     )
 }
 
+function Test-CompuTekTrustedApplication {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Path,
+        [AllowNull()][string]$CompanyName,
+        [AllowNull()][string]$Signer,
+        [AllowNull()][string]$SignatureStatus,
+        [AllowNull()][string]$ArtifactType,
+        [AllowNull()][string]$Name,
+        [AllowNull()][string]$CommandLine
+    )
+
+    if (Test-CompuTekTrustedMicrosoftApplication -Path $Path -CompanyName $CompanyName -Signer $Signer -SignatureStatus $SignatureStatus -ArtifactType $ArtifactType -Name $Name -CommandLine $CommandLine) {
+        return $true
+    }
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+
+    $expanded = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"'))
+    $normalized = $expanded.ToLowerInvariant()
+    $expectedPublisher = $null
+    if ($normalized -match '\\users\\[^\\]+\\appdata\\local\\openai\\codex\\[^\r\n"]*\\codex\.exe$') {
+        $expectedPublisher = '(?i)\bOpenAI\b'
+    } elseif ($normalized -match '\\users\\[^\\]+\\appdata\\local\\(?:microsoft\\)?powertoys\\[^\r\n"]*\.exe$') {
+        $expectedPublisher = '(?i)\bMicrosoft(?: Corporation)?\b'
+    } elseif ($normalized -match '\\users\\[^\\]+\\appdata\\local\\mozilla firefox\\firefox\.exe$') {
+        $expectedPublisher = '(?i)\bMozilla(?: Corporation)?\b'
+    }
+    if (-not $expectedPublisher) { return $false }
+
+    if ([string]::IsNullOrWhiteSpace($CompanyName) -and [string]::IsNullOrWhiteSpace($Signer) -and [string]::IsNullOrWhiteSpace($SignatureStatus)) {
+        $fileEvidence = Get-CompuTekFileEvidence -Path $expanded
+        $CompanyName = [string]$fileEvidence.CompanyName
+        $Signer = [string]$fileEvidence.Signer
+        $SignatureStatus = [string]$fileEvidence.SignatureStatus
+    }
+
+    return (
+        $SignatureStatus -eq 'Valid' -and
+        ("$CompanyName $Signer" -match $expectedPublisher)
+    )
+}
+
 function Find-CompuTekProductMatch {
     [CmdletBinding()]
     param(
@@ -1123,7 +1165,7 @@ function Invoke-CompuTekRemoteAccessScan {
         } elseif (
             $artifact.ArtifactType -in @('RunKey','ScheduledTask','StartupFile') -and
             (Test-CompuTekUserWritablePath $artifact.Path) -and
-            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine)
+            -not (Test-CompuTekTrustedApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine)
         ) {
             $reason = 'Persistence launches an executable from a user-writable location'
             $confidence = if ($artifact.SignatureStatus -eq 'Valid') {'Low'} else {'Medium'}
@@ -1131,7 +1173,7 @@ function Invoke-CompuTekRemoteAccessScan {
             $artifact.ArtifactType -eq 'Process' -and
             (Test-CompuTekUserWritablePath $artifact.Path) -and
             $artifact.ConnectionCount -gt 0 -and
-            -not (Test-CompuTekTrustedMicrosoftApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine)
+            -not (Test-CompuTekTrustedApplication -Path $artifact.Path -CompanyName $artifact.CompanyName -Signer $artifact.Signer -SignatureStatus $artifact.SignatureStatus -ArtifactType $artifact.ArtifactType -Name $artifact.Name -CommandLine $artifact.CommandLine)
         ) {
             $reason = 'Running executable in a user-writable location has active network connections'
             $confidence = 'Medium'
@@ -1283,6 +1325,7 @@ Export-ModuleMember -Function @(
     'Get-CompuTekSafeFileName',
     'Test-CompuTekUserWritablePath',
     'Test-CompuTekTrustedMicrosoftApplication',
+    'Test-CompuTekTrustedApplication',
     'Get-CompuTekFileEvidence',
     'Get-CompuTekCandidateFilesSafe',
     'Find-CompuTekProductMatch',
