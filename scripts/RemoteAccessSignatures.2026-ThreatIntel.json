@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026.08.25-threatintel.1",
+  "description": "Supplemental remote-access/RMM signatures based on 2025-2026 threat reporting. Entries intentionally favor stable product/service/path identifiers over speculative binary names.",
+  "products": [
+    {
+      "id": "heartbeat-rm",
+      "name": "HeartbeatRM",
+      "category": "rmm",
+      "aliases": ["heartbeat rm", "heartbeatrm", "heartbeat rmm"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["HeartbeatRM*", "Heartbeat RM*"],
+      "packagePatterns": ["*HeartbeatRM*", "*Heartbeat RM*"],
+      "pathPatterns": ["*\\heartbeatrm\\*", "*\\heartbeat rm\\*"]
+    },
+    {
+      "id": "komari-agent",
+      "name": "Komari Monitor / Komari Agent",
+      "category": "rmm",
+      "aliases": ["komari monitor", "komari agent", "komari-agent"],
+      "executables": ["komari-agent.exe"],
+      "originalFilenames": ["komari-agent.exe"],
+      "servicePatterns": ["Komari*"],
+      "packagePatterns": ["*Komari*"],
+      "pathPatterns": ["*\\komari\\*", "*\\komari-agent*"]
+    },
+    {
+      "id": "net-monitor-employees",
+      "name": "Net Monitor for Employees Professional",
+      "category": "remote-support",
+      "aliases": ["net monitor for employees", "networklookout", "net monitor employees"],
+      "executables": ["winpty-agent.exe"],
+      "originalFilenames": ["winpty-agent.exe"],
+      "servicePatterns": ["Net Monitor for Employees*", "NetworkLookout*"],
+      "packagePatterns": ["*Net Monitor for Employees*", "*NetworkLookout*"],
+      "pathPatterns": ["*\\networklookout\\*", "*\\net monitor for employees\\*"]
+    },
+    {
+      "id": "gorelo-rmm",
+      "name": "Gorelo RMM",
+      "category": "rmm",
+      "aliases": ["gorelo", "gorelo rmm"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["Gorelo*"],
+      "packagePatterns": ["*Gorelo*"],
+      "pathPatterns": ["*\\gorelo\\*"]
+    },
+    {
+      "id": "goto-term",
+      "name": "GoToTerm",
+      "category": "rmm",
+      "aliases": ["gototerm", "goto term"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["GoToTerm*", "GoTo Term*"],
+      "packagePatterns": ["*GoToTerm*", "*GoTo Term*"],
+      "pathPatterns": ["*\\gototerm\\*", "*\\goto term\\*"]
+    },
+    {
+      "id": "immybot",
+      "name": "ImmyBot",
+      "category": "rmm",
+      "aliases": ["immybot", "immy bot"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["ImmyBot*", "Immy Bot*"],
+      "packagePatterns": ["*ImmyBot*", "*Immy Bot*"],
+      "pathPatterns": ["*\\immybot\\*", "*\\immy bot\\*"]
+    },
+    {
+      "id": "itarian-rmm",
+      "name": "ITarian RMM / Comodo One",
+      "category": "rmm",
+      "aliases": ["itarian rmm", "itarian", "comodo one", "itsm service"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["ITarian*", "Comodo One*", "ITSMService*"],
+      "packagePatterns": ["*ITarian*", "*Comodo One*"],
+      "pathPatterns": ["*\\itarian\\*", "*\\comodo\\itsm\\*"]
+    },
+    {
+      "id": "miradore",
+      "name": "Miradore Management Agent",
+      "category": "rmm",
+      "aliases": ["miradore", "miradore management agent"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["Miradore*"],
+      "packagePatterns": ["*Miradore*"],
+      "pathPatterns": ["*\\miradore\\*"]
+    },
+    {
+      "id": "pdq-connect",
+      "name": "PDQ Connect Agent",
+      "category": "rmm",
+      "aliases": ["pdq connect", "pdq connect agent"],
+      "executables": [],
+      "originalFilenames": [],
+      "servicePatterns": ["PDQ Connect*"],
+      "packagePatterns": ["*PDQ Connect*"],
+      "pathPatterns": ["*\\pdq\\connect\\*", "*\\pdq connect\\*"]
+    },
+    {
+      "id": "pdq-deploy",
+      "name": "PDQ Deploy",
+      "category": "rmm",
+      "aliases": ["pdq deploy", "pdqdeploy"],
+      "executables": ["pdqdeploy.exe", "pdqdeployrunner.exe"],
+      "originalFilenames": ["pdqdeploy.exe", "pdqdeployrunner.exe"],
+      "servicePatterns": ["PDQDeploy*", "PDQ Deploy*"],
+      "packagePatterns": ["*PDQ Deploy*"],
+      "pathPatterns": ["*\\admin arsenal\\pdq deploy\\*", "*\\pdq deploy\\*"]
+    }
+  ]
+}
