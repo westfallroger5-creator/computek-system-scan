@@ -278,6 +278,7 @@ try {
     } catch { Add-Gap "ScreenConnect service registry details could not be collected: $($_.Exception.Message)" }
 
     foreach ($errorMessage in @($remoteScan.Errors)) { Add-Gap "Remote-access collector: $errorMessage" }
+    foreach ($warningMessage in @($remoteScan.Warnings)) { Add-Gap "Remote-access collector note: $warningMessage" }
     $actionableRemoteCount = @($script:Evidence | Where-Object {$_.Category -eq 'RemoteAccess'}).Count
     Write-Audit "Remote-access inventory saved. Actionable persistence/hidden-access findings: $actionableRemoteCount" $(if($actionableRemoteCount){'Yellow'}else{'Green'})
 } catch {
