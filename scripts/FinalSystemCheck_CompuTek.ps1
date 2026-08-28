@@ -123,6 +123,41 @@ function Get-CompuTekWindowsActivationStatus {
     }
 }
 
+function Get-CompuTekSlmgrActivationStatus {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][string[]]$OutputLines)
+
+    if (-not $PSBoundParameters.ContainsKey('OutputLines')) {
+        $cscriptPath = Join-Path $env:SystemRoot 'System32\cscript.exe'
+        $slmgrPath = Join-Path $env:SystemRoot 'System32\slmgr.vbs'
+        if (-not (Test-Path -LiteralPath $cscriptPath -PathType Leaf) -or -not (Test-Path -LiteralPath $slmgrPath -PathType Leaf)) {
+            throw 'The built-in Windows activation-check files were not found.'
+        }
+
+        $OutputLines = @(& $cscriptPath '//B' '//Nologo' $slmgrPath '/xpr' 2>&1 | ForEach-Object {[string]$_})
+        if ($LASTEXITCODE -ne 0) {
+            $failureDetail = @($OutputLines | Where-Object {$_} | Select-Object -First 2) -join '; '
+            throw ('The built-in activation check returned exit code {0}{1}.' -f $LASTEXITCODE,$(if($failureDetail){': ' + $failureDetail}else{''}))
+        }
+    }
+
+    $details = @($OutputLines | ForEach-Object {[string]$_} | Where-Object {-not [string]::IsNullOrWhiteSpace($_)})
+    $text = $details -join ' '
+    $state = if ($text -match '(?i)\bpermanently\s+activated\b|\b(?:volume\s+)?activation\s+will\s+expire\b') {
+        'Activated'
+    } elseif ($text -match '(?i)\bnotification\s+mode\b|\bnot\s+activated\b|\bunlicensed\b|\bproduct\s+key\s+not\s+found\b') {
+        'NotActivated'
+    } else {
+        'Unknown'
+    }
+
+    return [pscustomobject]@{
+        State = $state
+        Details = $details
+        Source = 'Windows slmgr.vbs /xpr fallback'
+    }
+}
+
 function Restore-CompuTekPreClonePolicy {
     $regPaths = @(
         'HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker',
@@ -206,6 +241,7 @@ $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion
 Write-Host "[INFO] Windows Edition: $edition" -ForegroundColor Cyan
 
 try {
+    $activationNeedsFallback = $false
     $activation = Get-CompuTekWindowsActivationStatus
     switch ($activation.State) {
         'Activated' {
@@ -219,10 +255,36 @@ try {
         }
         default {
             Write-Host '[WARN] No base Windows operating-system license record could be verified.' -ForegroundColor Yellow
+            $activationNeedsFallback = $true
         }
     }
 } catch {
     Write-Host "[WARN] Unable to determine Windows activation status: $($_.Exception.Message)" -ForegroundColor Yellow
+    $activationNeedsFallback = $true
+}
+
+if ($activationNeedsFallback) {
+    Write-Host '[INFO] Trying the built-in Windows activation fallback; no restart is required...' -ForegroundColor Cyan
+    try {
+        $activationFallback = Get-CompuTekSlmgrActivationStatus
+        switch ($activationFallback.State) {
+            'Activated' {
+                Write-Host '[OK] Windows activation is confirmed by the built-in fallback check.' -ForegroundColor Green
+                foreach ($detail in $activationFallback.Details) { Write-Host "       $detail" -ForegroundColor DarkGray }
+                $ActivationFailed = $false
+            }
+            'NotActivated' {
+                Write-Host '[WARN] The built-in fallback reports that Windows is not activated.' -ForegroundColor Yellow
+                foreach ($detail in $activationFallback.Details) { Write-Host "       $detail" -ForegroundColor Yellow }
+            }
+            default {
+                Write-Host '[WARN] The built-in fallback could not clearly confirm activation.' -ForegroundColor Yellow
+                foreach ($detail in $activationFallback.Details) { Write-Host "       $detail" -ForegroundColor DarkGray }
+            }
+        }
+    } catch {
+        Write-Host "[WARN] The built-in Windows activation fallback also failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 # --- 1b. Disable and verify Hibernation ---

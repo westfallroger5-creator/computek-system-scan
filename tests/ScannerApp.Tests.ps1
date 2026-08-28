@@ -90,6 +90,7 @@ Assert-AppTest ($preCloneSource -match 'Get-CompuTekPortableMediaInfo' -and $pre
 Assert-AppTest ($preCloneSource -match '\$bitLockerPreparationReady' -and $preCloneSource -match '\$encryptionPolicyReady' -and $preCloneSource -notmatch '\$decryptionStartedAny') 'Pre-Clone prevents automatic re-encryption even when target drives were already decrypted'
 Assert-AppTest ($finalCheckSource -match 'powercfg\.exe /hibernate off' -and $finalCheckSource -match 'Checkpoint-Computer' -and $finalCheckSource -match 'Does this PC have speakers or headphones' -and $finalCheckSource -match 'NO = replay' -and $finalCheckSource -match 'SpeakerTestSkipped' -and $finalCheckSource -match '\[Console\]::Beep' -and $finalCheckSource -notmatch 'SystemSounds') 'Final System Check keeps required actions, the Compu-Tek melody, the no-speaker skip, and replay after NO'
 Assert-AppTest ($finalCheckSource -match '55c92734-d682-4d71-983e-d6ec3f16059f' -and $finalCheckSource -match 'LicenseIsAddon' -and $finalCheckSource -match "'NotActivated'" -and $finalCheckSource -notmatch 'Where-Object \{ \$_\.PartialProductKey -and \$_\.LicenseStatus -eq 1 \}') 'Final activation checks only the base Windows OS license instead of accepting Office or an add-on'
+Assert-AppTest ($finalCheckSource -match 'Get-CompuTekSlmgrActivationStatus' -and $finalCheckSource -match "'//B'" -and $finalCheckSource -match "'//Nologo'" -and $finalCheckSource -match "'/xpr'" -and $finalCheckSource -match 'no restart is required' -and $finalCheckSource -match 'activationNeedsFallback') 'A failed or missing licensing query automatically uses the read-only Windows activation fallback without requiring a reboot'
 Assert-AppTest ($finalCheckSource -match 'SYSTEM READY: ATTENTION REQUIRED' -and $finalCheckSource -match 'exit \$finalExitCode' -and $mainFormSource -match 'ExitCode == 5') 'Final System Check returns a visible attention result when a required readiness check fails'
 Assert-AppTest ($finalCheckSource -match "Set-Service -Name 'BDESVC' -StartupType Manual") 'Final System Check repairs BitLocker service state left by older Pre-Clone versions'
 Assert-AppTest ($finalCheckSource -match 'PreClonePolicyBackup\.json' -and $finalCheckSource -match 'PreClonePolicyRestored\.json' -and $finalCheckSource -match '\$setting\.WasPresent' -and $finalCheckSource -match '\$setting\.PreviousValue') 'Final System Check restores each saved pre-clone policy state once instead of blindly deleting or repeatedly replaying it'
@@ -112,7 +113,7 @@ Assert-AppTest ($embeddedEngineSource -match 'PrepareProtectedDirectory\(compuTe
 $activationTokens = $null
 $activationErrors = $null
 $activationAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\FinalSystemCheck_CompuTek.ps1'),[ref]$activationTokens,[ref]$activationErrors)
-foreach ($functionName in @('Read-CompuTekYesNoChoice','Confirm-CompuTekSpeakerOutput','Get-CompuTekLicenseStatusName','Get-CompuTekWindowsActivationStatus')) {
+foreach ($functionName in @('Read-CompuTekYesNoChoice','Confirm-CompuTekSpeakerOutput','Get-CompuTekLicenseStatusName','Get-CompuTekWindowsActivationStatus','Get-CompuTekSlmgrActivationStatus')) {
     $functionAst = @($activationAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -129,6 +130,14 @@ $activationResult = Get-CompuTekWindowsActivationStatus -Products @($officeLicen
 Assert-AppTest ($activationResult.State -eq 'Activated' -and $activationResult.LicensedProducts.Count -eq 1) 'A licensed base Windows operating-system record passes activation readiness'
 $activationResult = Get-CompuTekWindowsActivationStatus -Products @()
 Assert-AppTest ($activationResult.State -eq 'Unknown') 'Missing Windows licensing data requires technician attention instead of passing'
+$activationFallback = Get-CompuTekSlmgrActivationStatus -OutputLines @('Windows(R), Professional edition:','The machine is permanently activated.')
+Assert-AppTest ($activationFallback.State -eq 'Activated') 'The activation fallback recognizes a permanently activated Windows edition'
+$activationFallback = Get-CompuTekSlmgrActivationStatus -OutputLines @('Windows(R), Professional edition:','Volume activation will expire 9/30/2026 1:00:00 PM')
+Assert-AppTest ($activationFallback.State -eq 'Activated') 'The activation fallback recognizes a currently activated time-limited Windows license'
+$activationFallback = Get-CompuTekSlmgrActivationStatus -OutputLines @('Windows is in Notification mode')
+Assert-AppTest ($activationFallback.State -eq 'NotActivated') 'The activation fallback recognizes an explicit Windows notification-mode result'
+$activationFallback = Get-CompuTekSlmgrActivationStatus -OutputLines @('The paging file is too small for this operation to complete')
+Assert-AppTest ($activationFallback.State -eq 'Unknown') 'An unclear fallback result never becomes a false activation pass'
 
 $audioSkipResult = & {
     function Read-CompuTekInput { param($Prompt); return 'NO' }
@@ -255,7 +264,7 @@ try {
         Assert-AppTest ($resources -contains $resource) "EXE embeds trusted engine resource $resource"
     }
     Assert-AppTest ($null -ne $assembly.GetType('CompuTek.Scanner.App.MainForm',$false)) 'EXE contains the technician GUI'
-    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.20.0') 'Built EXE reports version 1.4.20.0'
+    Assert-AppTest ($assembly.GetName().Version.ToString() -eq '1.4.21.0') 'Built EXE reports version 1.4.21.0'
     $brandingType = $assembly.GetType('CompuTek.Scanner.App.Branding',$false)
     $createLogoMethod = if ($brandingType) {$brandingType.GetMethod('CreateLogoImage',[Reflection.BindingFlags]'Static,NonPublic')} else {$null}
     $embeddedLogo = if ($createLogoMethod) {$createLogoMethod.Invoke($null,@())} else {$null}

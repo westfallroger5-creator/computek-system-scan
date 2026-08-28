@@ -23,7 +23,7 @@ Build and test it on Windows with:
 ### FinalSystemCheck_CompuTek.ps1
 End-of-job readiness checklist:
 - Appears on the first/default application page with a large keyboard-accessible button because it is the store's most-used workflow.
-- Reports Windows edition and validates the base Windows operating-system license specifically (not Office or licensed Windows add-ons), disables hibernation, and confirms BitLocker policy flags are not blocking encryption.
+- Reports Windows edition and validates the base Windows operating-system license specifically (not Office or licensed Windows add-ons). If the normal licensing inventory fails, it automatically uses Windows' read-only `slmgr.vbs /xpr` activation check without requiring a reboot. It also disables hibernation and confirms BitLocker policy flags are not blocking encryption.
 - Checks antivirus posture (Defender or third-party), Splashtop service health, pending Windows Updates, and Device Manager errors.
 - Enables System Protection when needed and creates the required end-of-job restore point when Windows policy allows it.
 - Asks whether the PC requires speaker output before running audio checks. A PC without speakers can be explicitly skipped without failing readiness. When required, it verifies audio devices, un-mutes/sets volume to 50%, and plays the Compu-Tek test melody through the default endpoint; `NO` replays the melody and only `FAIL` marks audio as needing attention. The melody uses generated tones instead of optional Windows theme sounds, which may be disabled.
