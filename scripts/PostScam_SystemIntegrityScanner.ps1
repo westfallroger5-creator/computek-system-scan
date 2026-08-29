@@ -136,6 +136,139 @@ function Get-CompuTekDefenderFindingName {
     return "Microsoft Defender event $EventId"
 }
 
+function Test-CompuTekTrustedScannerScriptPath {
+    param([AllowNull()][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $normalized = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')).ToLowerInvariant()
+    $trustedName = '(?:computek\.scanner\.common\.psm1|postscam_systemintegrityscanner\.ps1|remoteaccessscanandremove\.ps1|it_technician_toolbox\.ps1|finalsystemcheck_computek\.ps1|preclone\.ps1)'
+    return (
+        $normalized -match "\\programdata\\computek\\scannerapp\\engine\\[0-9.]+\\$trustedName$" -or
+        $normalized -match "\\computek-system-scan-windows-app\\scripts\\$trustedName$"
+    )
+}
+
+function Get-CompuTekPostScamDataValue {
+    param([AllowNull()]$Data, [Parameter(Mandatory)][string[]]$Names)
+    if ($null -eq $Data) { return $null }
+    foreach ($name in $Names) {
+        if ($Data -is [Collections.IDictionary]) {
+            foreach ($key in @($Data.Keys)) {
+                if ([string]$key -ieq $name) { return $Data[$key] }
+            }
+        } else {
+            $property = $Data.PSObject.Properties | Where-Object {$_.Name -ieq $name} | Select-Object -First 1
+            if ($property) { return $property.Value }
+        }
+    }
+    return $null
+}
+
+function Get-CompuTekPostScamFirstDataValue {
+    param([AllowNull()][object[]]$Items, [Parameter(Mandatory)][string[]]$Names)
+    foreach ($item in @($Items)) {
+        $value = Get-CompuTekPostScamDataValue -Data $item.Data -Names $Names
+        if ($null -ne $value -and -not [string]::IsNullOrWhiteSpace([string]$value)) { return $value }
+    }
+    return $null
+}
+
+function Get-CompuTekPostScamDisplayResource {
+    param([AllowNull()][string]$Resource)
+    if ([string]::IsNullOrWhiteSpace($Resource)) { return 'not recorded' }
+    $clean = $Resource.Trim()
+    if ($clean -match '(?i)^CmdLine:_(?<Executable>[a-z]:\\.*?\.exe)(?<Arguments>\s+[^\{\r\n]{0,160})?') {
+        $argumentText = if ($Matches.Arguments) {$Matches.Arguments.Trim()}else{''}
+        return ('command line: {0}{1}' -f $Matches.Executable,$(if($argumentText){' ' + $argumentText}else{''}))
+    }
+    return Get-TruncatedText $clean 500
+}
+
+function Get-CompuTekPostScamReason {
+    param([Parameter(Mandatory)][object[]]$Items)
+    $records = @($Items)
+    $sample = $records | Select-Object -First 1
+    $count = $records.Count
+    switch ($sample.Category) {
+        'SecurityControl' {
+            if ($sample.Name -match '^Microsoft Defender detection:') {
+                $threat = [string](Get-CompuTekPostScamFirstDataValue -Items $records -Names @('Threat Name','Name'))
+                if (-not $threat) { $threat = $sample.Name -replace '^Microsoft Defender detection:\s*','' }
+                $threatSeverity = [string](Get-CompuTekPostScamFirstDataValue -Items $records -Names @('Severity Name','Severity'))
+                $threatCategory = [string](Get-CompuTekPostScamFirstDataValue -Items $records -Names @('Category Name','Category'))
+                $threatId = [string](Get-CompuTekPostScamFirstDataValue -Items $records -Names @('Threat ID','ID'))
+                $resource = Get-CompuTekPostScamDisplayResource ([string](Get-CompuTekPostScamFirstDataValue -Items $records -Names @('Path','Resources')))
+                $action = [string](Get-CompuTekPostScamFirstDataValue -Items @($records | Where-Object {$_.EventId -eq 1117}) -Names @('Action Name','Action'))
+                $additional = [string](Get-CompuTekPostScamFirstDataValue -Items @($records | Where-Object {$_.EventId -eq 1117}) -Names @('Additional Actions String','Additional Actions'))
+                $errorCode = [string](Get-CompuTekPostScamFirstDataValue -Items @($records | Where-Object {$_.EventId -eq 1117}) -Names @('Error Code'))
+                $errorDescription = [string](Get-CompuTekPostScamFirstDataValue -Items @($records | Where-Object {$_.EventId -eq 1117}) -Names @('Error Description','Error description'))
+                $classification = (@($threatSeverity,$threatCategory) | Where-Object {$_}) -join ' '
+                $remediation = if ($action) {
+                    ' Defender recorded action: {0}; result: {1}{2}{3}.' -f $action,$(if($additional){$additional}else{'status not recorded'}),$(if($errorCode){'; error code ' + $errorCode}else{''}),$(if($errorDescription){' (' + $errorDescription.Trim() + ')'}else{''})
+                } else { ' No completed remediation event was found in the collected records.' }
+                return ('Defender recorded {0} related event(s) for {1}{2}. Threat ID: {3}. The affected resource was {4}.{5} It is included because antivirus detections remain high-priority evidence even when remediation succeeds.' -f $count,$(if($classification){$classification + ' '}else{''}),$threat,$threatId,$resource,$remediation)
+            }
+            return ('A Defender protection setting, exclusion, or malware-control event was recorded. It is included because weakened or changed antivirus protection can preserve attacker access. Evidence: {0}' -f (Get-TruncatedText ([string]$sample.Details) 500))
+        }
+        'FirewallBackdoor' {
+            return ('Windows has {0} enabled inbound allow rule(s) for this program. The target is {1}, which is under a user-writable profile or temporary location. A program in that location can be replaced without changing the firewall rule, so an unexpected copy could retain inbound or remote-control access.' -f $count,$sample.Path)
+        }
+        'RemoteSession' {
+            $allDetails = @($records.Details) -join "`n"
+            $user = if ($allDetails -match '(?im)^User:\s*(?<User>[^\r\n]+)') {$Matches.User.Trim()}else{'not recorded'}
+            $source = if ($allDetails -match '(?im)^Source Network Address:\s*(?<Source>[^\r\n]+)') {$Matches.Source.Trim()}else{'not recorded'}
+            $sourceMeaning = if ($source -ieq 'LOCAL') {' LOCAL indicates local session activity and is not evidence of an outside network address by itself.'}else{''}
+            return ('Windows recorded {0} Remote Desktop session event(s) during the lookback. User: {1}; source: {2}.{3} Session records are included so the technician can verify that the timing and account were expected.' -f $count,$user,$source,$sourceMeaning)
+        }
+        'SuspiciousExecution' {
+            $scriptPath = [string](Get-CompuTekPostScamFirstDataValue -Items $records -Names @('Path'))
+            return ('PowerShell logging recorded {0} script block or command event(s) matching a high-risk execution pattern such as an encoded command, downloader, credential tool, signed-binary proxy, or data-staging utility. Script path: {1}. The match requires command behavior; PowerShell starting or stopping is not enough.' -f $count,$(if($scriptPath){$scriptPath}else{'not recorded'}))
+        }
+        'ExecutionArtifact' {
+            $latestExecution = @($records.TimeCreatedUtc | Where-Object {$_} | Sort-Object -Descending | Select-Object -First 1)[0]
+            return ('Windows Prefetch indicates that {0} executed, most recently at {1}. Prefetch proves program execution, but does not identify who ran it or whether a remote connection occurred. It is included only when the executable matches a credential, transfer, or other high-risk utility.' -f $sample.Name,$latestExecution)
+        }
+        'Persistence' {
+            return ('Windows startup persistence launches this item from a user-writable location or uses a high-risk command pattern. Location: {0}. It is included because it can restart access after sign-in or reboot.' -f $(if($sample.Path){$sample.Path}else{'see technical evidence'}))
+        }
+        'PersistenceEvent' { return ('Windows logged {0} recent service or scheduled-task change(s) containing a high-risk command or user-writable executable path. Ordinary Windows task updates and normal Program Files services are not enough to trigger this warning.' -f $count) }
+        'WmiPersistence' { return ('A permanent WMI consumer or binding can run commands when a Windows event occurs, including after reboot. This item contains an executable/script consumer, a remote-tool indicator, or a user-writable/high-risk command. Default Windows SCM event-log subscriptions are excluded.') }
+        'RegistryBackdoor' { return ('This registry value changes how Windows starts a shell/process or injects a monitor/DLL. These locations are uncommon in normal repair work and can launch code before or alongside the customer application.') }
+        'RemoteAccessKey' { return ('An OpenSSH authorized-key file contains one or more login keys. Anyone holding a matching private key may be able to sign in without the customer password when SSH is enabled.') }
+        'RemoteAccess' { return ('Remote-access software was found in a user-writable location with persistence or an active connection. Standard installed support software is kept in supplemental inventory; this warning is reserved for hidden or higher-risk placement.') }
+        'NetworkConnection' { return ('A process running from a user-writable location, or using a high-risk command line, had an established external connection when the scan ran. Exact endpoint and process details are retained below.') }
+        'NetworkConfiguration' { return ('A proxy, hosts-file entry, or similar network setting can redirect browsing or traffic. This setting is included so the technician can confirm it belongs to the customer or their network.') }
+        'BrowserExtension' { return ('This recently changed browser extension requested remote-control or high-risk permissions such as native messaging, desktop/tab capture, proxy, debugger, or extension management. Exact known-safe extension IDs are kept as supplemental inventory.') }
+        'SecurityEvent' { return ('Windows recorded an account, administrator-group, audit-log, service, scheduled-task, or Remote Desktop security event that can indicate new access. The event must be compared with the customer and technician timeline.') }
+        default { return ('This item matched the focused {0} warning rules. Review the technical evidence and confirm whether its time, user, location, and behavior were expected.' -f (Get-CompuTekPostScamCategoryLabel $sample.Category)) }
+    }
+}
+
+function Get-CompuTekPostScamReviewStep {
+    param([Parameter(Mandatory)][object[]]$Items)
+    $sample = @($Items) | Select-Object -First 1
+    switch ($sample.Category) {
+        'SecurityControl' {
+            if ($sample.Name -match '^Microsoft Defender detection:') { return 'Open Windows Security > Protection history and match the threat name/ID. Confirm the action still shows remediated. If the affected resource begins CmdLine:, it is a command-line/content detection; it is not proof that the named EXE file was infected. Verify the named application is the expected signed installation; run a current Defender full scan if the activity was unexpected or remediation is not clearly successful.' }
+            return 'Review Defender exclusions and protection settings. Remove an unexpected exclusion or re-enable protection only after confirming it is not required by approved security software.'
+        }
+        'FirewallBackdoor' { return 'Confirm the named program and folder belong to an approved remote-support product. If not, use the Remote-access scan for technician-approved removal, then verify the executable and its inbound firewall rules are gone.' }
+        'RemoteSession' { return 'Compare the user, source address, and timestamps with the customer and technician schedule. A LOCAL source is local session activity; an unfamiliar external address or account needs investigation.' }
+        'SuspiciousExecution' { return 'Expand Technical evidence and review the exact command and script path. Do not remove PowerShell itself. Investigate the downloaded file, account, or persistence mechanism that launched an unexpected command.' }
+        'ExecutionArtifact' { return 'Identify the executable in the Remote-access inventory and ask whether it was intentionally used at the recorded time. Prefetch alone is not proof of malicious access.' }
+        'Persistence' { return 'Confirm the Run key, task, service, or Startup item with the customer. Use the Remote-access scan when it belongs to unwanted support software; otherwise preserve evidence before disabling it.' }
+        'PersistenceEvent' { return 'Review the service/task name, command, creator, and timestamp. Confirm it belongs to Windows or approved software before changing it.' }
+        'WmiPersistence' { return 'Inspect the consumer command/script and its filter-to-consumer binding. Preserve the WMI details before removal; an unfamiliar executable or script requires technician investigation.' }
+        'RegistryBackdoor' { return 'Compare the value with Windows defaults and preserve an export before changing it. Escalate unfamiliar IFEO, Winlogon, AppInit, or SilentProcessExit entries.' }
+        'RemoteAccessKey' { return 'Ask whether SSH key access is intentionally configured. If not, preserve the key file and account details, remove the unauthorized key, and review SSH/service logs.' }
+        'RemoteAccess' { return 'Use the separate Remote-access scan to identify the product/version and choose KEEP or REMOVE. Never delete it automatically based only on this report.' }
+        'NetworkConnection' { return 'Verify the executable signature, parent application, remote endpoint, and whether the connection is expected. Preserve the evidence before stopping an unknown process.' }
+        'NetworkConfiguration' { return 'Compare the proxy, PAC URL, DNS, or hosts entries with the customer/network configuration. Remove only settings confirmed to be unauthorized.' }
+        'BrowserExtension' { return 'Check the extension ID, publisher, install source, permissions, and customer approval in the browser. Remove only an unapproved or unverifiable extension.' }
+        'SecurityEvent' { return 'Match the event time and affected account/group/task/service to legitimate technician work. Reset credentials and investigate further when the customer cannot explain it.' }
+        default { return 'Review the timestamp, source, location, and technical evidence with the customer before taking action.' }
+    }
+}
+
 function ConvertTo-CompuTekHtmlText {
     param([AllowNull()]$Text)
     if ($null -eq $Text) { return '' }
@@ -189,7 +322,7 @@ function New-CompuTekPostScamHtmlReport {
 
     $html = New-Object Text.StringBuilder
     [void]$html.AppendLine('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
-    [void]$html.AppendLine('<title>CompuTek Post-Scam Review</title><style>body{margin:0;background:#f3f6fa;color:#172033;font:16px/1.5 "Segoe UI",Arial,sans-serif}.wrap{max-width:1050px;margin:0 auto;padding:28px}.top{background:#0c3f70;color:#fff;border-radius:14px;padding:24px 28px}.top h1{margin:0 0 6px;font-size:28px}.top p{margin:3px 0;color:#dbeafe}.status{margin:18px 0;padding:18px 20px;border-left:6px solid #d97706;background:#fff7ed;border-radius:10px}.status.clear{border-color:#15803d;background:#f0fdf4}.status h2{margin:0 0 4px;font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}.card{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:15px}.number{font-size:28px;font-weight:700}.muted{color:#5b6678}.section{background:#fff;border:1px solid #dbe3ee;border-radius:12px;padding:18px 20px;margin:16px 0}.section h2{margin:0 0 12px}.finding{border:1px solid #dbe3ee;border-radius:9px;margin:10px 0;background:#fbfdff}.finding summary{cursor:pointer;padding:13px 15px;font-weight:600}.finding .body{border-top:1px solid #e5eaf1;padding:12px 15px}.badge{display:inline-block;border-radius:999px;padding:2px 9px;margin-right:8px;font-size:13px}.high{background:#fee2e2;color:#991b1b}.medium{background:#fef3c7;color:#92400e}.label{font-weight:600}.detail{white-space:pre-wrap;word-break:break-word;background:#f5f7fa;padding:10px;border-radius:7px}.links a{display:inline-block;margin:4px 12px 4px 0}.gaps li{margin:5px 0}@media print{body{background:#fff}.wrap{max-width:none;padding:0}.finding{break-inside:avoid}}</style></head><body><main class="wrap">')
+    [void]$html.AppendLine('<title>CompuTek Post-Scam Review</title><style>body{margin:0;background:#f3f6fa;color:#172033;font:16px/1.5 "Segoe UI",Arial,sans-serif}.wrap{max-width:1050px;margin:0 auto;padding:28px}.top{background:#0c3f70;color:#fff;border-radius:14px;padding:24px 28px}.top h1{margin:0 0 6px;font-size:28px}.top p{margin:3px 0;color:#dbeafe}.status{margin:18px 0;padding:18px 20px;border-left:6px solid #d97706;background:#fff7ed;border-radius:10px}.status.clear{border-color:#15803d;background:#f0fdf4}.status h2{margin:0 0 4px;font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}.card{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:15px}.number{font-size:28px;font-weight:700}.muted{color:#5b6678}.section{background:#fff;border:1px solid #dbe3ee;border-radius:12px;padding:18px 20px;margin:16px 0}.section h2{margin:0 0 12px}.finding{border:1px solid #dbe3ee;border-radius:9px;margin:10px 0;background:#fbfdff}.finding summary{cursor:pointer;padding:13px 15px;font-weight:600}.finding .body{border-top:1px solid #e5eaf1;padding:12px 15px}.badge{display:inline-block;border-radius:999px;padding:2px 9px;margin-right:8px;font-size:13px}.high{background:#fee2e2;color:#991b1b}.medium{background:#fef3c7;color:#92400e}.label{font-weight:600}.reason,.check{white-space:pre-wrap;word-break:break-word;padding:12px;border-radius:7px}.reason{background:#eef6ff;border-left:4px solid #2563eb}.check{background:#f0fdf4;border-left:4px solid #15803d}.technical{margin-top:12px;border:1px solid #dbe3ee;border-radius:7px}.technical summary{padding:9px 11px;font-weight:600}.detail{white-space:pre-wrap;word-break:break-word;background:#f5f7fa;padding:10px;border-radius:0 0 7px 7px}.links a{display:inline-block;margin:4px 12px 4px 0}.gaps li{margin:5px 0}@media print{body{background:#fff}.wrap{max-width:none;padding:0}.finding{break-inside:avoid}}</style></head><body><main class="wrap">')
     [void]$html.AppendLine(('<header class="top"><h1>CompuTek Post-Scam Review</h1><p>Computer: {0}</p><p>Collected: {1} &nbsp; | &nbsp; Lookback starts: {2}</p></header>' -f (ConvertTo-CompuTekHtmlText $ComputerName),(ConvertTo-CompuTekHtmlText ((Get-Date).ToString('yyyy-MM-dd HH:mm'))),(ConvertTo-CompuTekHtmlText $Cutoff.ToString('yyyy-MM-dd HH:mm'))))
     [void]$html.AppendLine(('<section class="status{0}"><h2>{1}</h2><div>{2}</div></section>' -f $(if($groups.Count -eq 0){' clear'}else{''}),(ConvertTo-CompuTekHtmlText $statusTitle),(ConvertTo-CompuTekHtmlText $statusText)))
     [void]$html.AppendLine(('<section class="cards"><div class="card"><div class="number">{0}</div><div>High-priority groups</div></div><div class="card"><div class="number">{1}</div><div>Review groups</div></div><div class="card"><div class="number">{2}</div><div>Supplemental leads saved</div></div><div class="card"><div class="number">{3}</div><div>Collection gaps</div></div></section>' -f $highCount,$mediumCount,$supplemental.Count,$gaps.Count))
@@ -204,7 +337,7 @@ function New-CompuTekPostScamHtmlReport {
             foreach ($finding in @($categoryGroup.Group | Sort-Object @{Expression={if($_.Severity -eq 'High'){0}else{1}}},Name,Path)) {
                 $badgeClass = if ($finding.Severity -eq 'High') {'high'} else {'medium'}
                 $latest = if ($finding.LatestTimeUtc) {[string]$finding.LatestTimeUtc}else{'Time unavailable'}
-                [void]$html.AppendLine(('<details class="finding"{0}><summary><span class="badge {1}">{2}</span>{3} <span class="muted">({4} occurrence(s))</span></summary><div class="body"><div><span class="label">Latest:</span> {5}</div><div><span class="label">Source:</span> {6}</div>{7}<p class="label">Why it was included</p><div class="detail">{8}</div></div></details>' -f $(if($finding.Severity -eq 'High'){' open'}else{''}),$badgeClass,(ConvertTo-CompuTekHtmlText $finding.Severity),(ConvertTo-CompuTekHtmlText $finding.Name),$finding.Occurrences,(ConvertTo-CompuTekHtmlText $latest),(ConvertTo-CompuTekHtmlText $finding.Sources),$(if($finding.Path){'<div><span class="label">Location:</span> ' + (ConvertTo-CompuTekHtmlText $finding.Path) + '</div>'}else{''}),(ConvertTo-CompuTekHtmlText $finding.Details)))
+                [void]$html.AppendLine(('<details class="finding"{0}><summary><span class="badge {1}">{2}</span>{3} <span class="muted">({4} occurrence(s))</span></summary><div class="body"><div><span class="label">Latest:</span> {5}</div><div><span class="label">Source:</span> {6}</div>{7}<p class="label">Why it was included</p><div class="reason">{8}</div><p class="label">What the technician should check</p><div class="check">{9}</div><details class="technical"><summary>Technical evidence</summary><div class="detail">{10}</div></details></div></details>' -f $(if($finding.Severity -eq 'High'){' open'}else{''}),$badgeClass,(ConvertTo-CompuTekHtmlText $finding.Severity),(ConvertTo-CompuTekHtmlText $finding.Name),$finding.Occurrences,(ConvertTo-CompuTekHtmlText $latest),(ConvertTo-CompuTekHtmlText $finding.Sources),$(if($finding.Path){'<div><span class="label">Location:</span> ' + (ConvertTo-CompuTekHtmlText $finding.Path) + '</div>'}else{''}),(ConvertTo-CompuTekHtmlText $finding.WhyIncluded),(ConvertTo-CompuTekHtmlText $finding.WhatToCheck),(ConvertTo-CompuTekHtmlText $finding.TechnicalDetails)))
             }
         }
     }
@@ -484,7 +617,13 @@ foreach ($spec in @(
 )) {
     foreach ($event in Get-RecentEvents -LogName $spec.Log -Ids $spec.Ids -Maximum 1500) {
         $message = Get-EventMessage $event
-        $severity = if ($spec.Name -eq 'WinRM activity' -and $message -match '(?i)(\bfailed\b|\bfailure\b|\bdenied\b|\bcannot\b|\bcould not\b|error code:\s*(?!0\b)\d+)') {'Review'} else {$spec.Severity}
+        $severity = if ($spec.Name -eq 'WinRM activity' -and $message -match '(?i)(\bfailed\b|\bfailure\b|\bdenied\b|\bcannot\b|\bcould not\b|error code:\s*(?!0\b)\d+)') {
+            'Review'
+        } elseif ($spec.Name -match '^RDP' -and $message -match '(?im)^Source Network Address:\s*LOCAL\s*$') {
+            'Review'
+        } else {
+            $spec.Severity
+        }
         Add-WindowsEventEvidence $event 'RemoteSession' $severity $spec.Name (Get-EventDataMap $event)
     }
 }
@@ -512,17 +651,19 @@ try {
 # ------------------ POWERSHELL, DEFENDER, AND SYSMON ------------------
 Write-Audit "`n[4/12] Suspicious command execution and security-control changes" 'Cyan'
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-PowerShell/Operational' -Ids @(4103,4104) -Maximum 3000) {
-    if ($event.ProcessId -eq $PID) { continue }
+    $eventData = Get-EventDataMap $event
+    if ($event.ProcessId -eq $PID -or (Test-CompuTekTrustedScannerScriptPath ([string](Get-CompuTekPostScamDataValue -Data $eventData -Names @('Path'))))) { continue }
     $commandText = Get-CompuTekPowerShellCommandText $event
     if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and ($commandText -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $commandText))) {
-        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name "PowerShell event $($event.Id)" -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
+        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name "PowerShell event $($event.Id)" -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data $eventData
     }
 }
 foreach ($event in Get-RecentEvents -LogName 'Windows PowerShell' -Ids @(800) -Maximum 2000) {
-    if ($event.ProcessId -eq $PID) { continue }
+    $eventData = Get-EventDataMap $event
+    if ($event.ProcessId -eq $PID -or (Test-CompuTekTrustedScannerScriptPath ([string](Get-CompuTekPostScamDataValue -Data $eventData -Names @('Path'))))) { continue }
     $commandText = Get-CompuTekPowerShellCommandText $event
     if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and ($commandText -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $commandText))) {
-        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name 'Classic PowerShell command' -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
+        Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name 'Classic PowerShell command' -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data $eventData
     }
 }
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-Windows Defender/Operational' -Ids @(1116,1117,5001,5007,5013) -Maximum 2000) {
@@ -800,8 +941,10 @@ try {
     $prefetch = @(Get-ChildItem -LiteralPath $prefetchPath -Filter '*.pf' -File -Force -ErrorAction Stop | Where-Object {$_.LastWriteTime -ge $cutoff} | Select-Object Name,Length,CreationTimeUtc,LastWriteTimeUtc)
     $prefetch | Export-Csv -LiteralPath (Join-Path $caseRoot 'RecentPrefetch.csv') -NoTypeInformation -Encoding UTF8
     foreach ($item in $prefetch) {
-        if ($item.Name -match $remoteRegex -or $item.Name -match '(?i)(RCLONE|MEGA|WINSCP|PSCP|CURL|BITSADMIN|7Z|RAR|PROCDUMP|PSEXEC)') {
+        if ($item.Name -match '(?i)(RCLONE|MEGA|WINSCP|PSCP|CURL|BITSADMIN|7Z|RAR|PROCDUMP|PSEXEC|MIMIKATZ|NANODUMP)') {
             Add-Evidence -Category 'ExecutionArtifact' -Severity 'Medium' -Name "Prefetch: $($item.Name)" -Details ("last run evidence timestamp={0:u}" -f $item.LastWriteTimeUtc) -TimeCreated $item.LastWriteTimeUtc -Path (Join-Path $prefetchPath $item.Name) -Source 'Prefetch' -Data $item
+        } elseif ($item.Name -match $remoteRegex) {
+            Add-Evidence -Category 'RemoteAccessExecution' -Severity 'Review' -Name "Remote-support prefetch: $($item.Name)" -Details ("Windows recorded execution at {0:u}. Prefetch does not show who used the program or whether a remote session occurred." -f $item.LastWriteTimeUtc) -TimeCreated $item.LastWriteTimeUtc -Path (Join-Path $prefetchPath $item.Name) -Source 'Prefetch' -Data $item
         }
     }
 } catch { Add-Gap "Prefetch could not be collected (it may be disabled): $($_.Exception.Message)" }
@@ -898,6 +1041,9 @@ $actionableGroups = @($evidenceRecords | Group-Object {
         Occurrences = $items.Count
         LatestTimeUtc = @($items.TimeCreatedUtc | Where-Object {$_} | Sort-Object -Descending | Select-Object -First 1)[0]
         Path = $sample.Path
+        WhyIncluded = Get-CompuTekPostScamReason -Items $items
+        WhatToCheck = Get-CompuTekPostScamReviewStep -Items $items
+        TechnicalDetails = Get-TruncatedText ([string]$sample.Details) 1800
         Details = Get-TruncatedText ([string]$sample.Details) 700
         Sources = @($items.Source | Where-Object {$_} | Sort-Object -Unique) -join ', '
     }
@@ -910,7 +1056,9 @@ if ($actionableGroups.Count -eq 0) {
     foreach ($finding in $actionableGroups) {
         $actionableTextLines += ('[{0}] {1} - {2} (occurrences: {3})' -f $finding.Severity,$finding.Category,$finding.Name,$finding.Occurrences)
         if ($finding.Path) { $actionableTextLines += ('  Location: {0}' -f $finding.Path) }
-        $actionableTextLines += ('  Details: {0}' -f $finding.Details)
+        $actionableTextLines += ('  Why included: {0}' -f $finding.WhyIncluded)
+        $actionableTextLines += ('  What to check: {0}' -f $finding.WhatToCheck)
+        $actionableTextLines += ('  Technical evidence: {0}' -f $finding.TechnicalDetails)
         $actionableTextLines += ''
     }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.28.13",
+  "catalogVersion": "2026.08.28.14",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "managedIdentities": {
     "syncro": {
@@ -555,12 +555,12 @@
       "id": "ninjaone",
       "name": "NinjaOne / NinjaRMM",
       "category": "rmm",
-      "aliases": ["ninjaone", "ninjarmm", "ninja rmm"],
+      "aliases": ["ninjaone", "ninjarmm", "ninja rmm", "ninja remote"],
       "executables": ["ninjarmmagent.exe", "ninjaoneagent.exe", "ninja.exe"],
       "originalFilenames": ["ninjarmmagent.exe"],
-      "servicePatterns": ["NinjaRMMAgent*", "NinjaOne*"],
-      "packagePatterns": ["*NinjaRMM*", "*NinjaOne*"],
-      "pathPatterns": ["*\\ninjarmmagent\\*", "*\\ninjaone\\*"]
+      "servicePatterns": ["NinjaRMMAgent*", "NinjaOne*", "NinjaRemote*"],
+      "packagePatterns": ["*NinjaRMM*", "*NinjaOne*", "*Ninja Remote*"],
+      "pathPatterns": ["*\\ninjarmmagent\\*", "*\\ninjaone\\*", "*\\ninjaremote\\*"]
     },
     {
       "id": "syncro",
