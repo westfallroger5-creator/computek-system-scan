@@ -463,6 +463,11 @@ $legacyNable = New-TestEvidence @{
 }
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $legacyNable)
 Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'n-able-rmm') 'A legacy N-able Windows Agent is detected from its vendor-specific installation path without treating every agent.exe as RMM'
+$ninjaRemotePlayer = New-TestEvidence @{
+    ArtifactType='File';Name='ncplayer.exe';DisplayName='ncplayer.exe';Path='C:\Users\Victim\AppData\Roaming\NinjaRemote\ncplayer.exe';FileName='ncplayer.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $ninjaRemotePlayer)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'ninjaone') 'Ninja Remote ncplayer in its exact NinjaRemote folder is detected as NinjaOne remote-support software'
 
 $teamViewerStore = New-TestEvidence @{
     ArtifactType='StartApp';Name='TeamViewer Remote';DisplayName='TeamViewer Remote';PackageName='TeamViewer.Remote'
@@ -588,7 +593,7 @@ $postScamErrors = $null
 $postScamPath = Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'
 $postScamSource = Get-Content -LiteralPath $postScamPath -Raw
 $postScamAst = [System.Management.Automation.Language.Parser]::ParseFile($postScamPath,[ref]$postScamTokens,[ref]$postScamErrors)
-foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport')) {
+foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport')) {
     $postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $postScamFunction.Extent.Text
 }
@@ -608,14 +613,26 @@ Assert-True ($postScamSource -match "'Windows PowerShell' -Ids @\(800\)" -and $p
 Assert-True ($postScamSource -match 'hehggadaopoacecdllhhajmbjkdcmajg' -and $postScamSource -match '\$isTrustedExtension') 'The exact official ChatGPT extension ID is retained as supplemental inventory instead of a warning'
 $defenderMessage = "Microsoft Defender found malware.`r`nName: Trojan:Win32/TestThreat`r`nPath: file:_C:\Temp\bad.exe"
 Assert-True ((Get-CompuTekDefenderFindingName -EventId 1116 -Message $defenderMessage) -eq (Get-CompuTekDefenderFindingName -EventId 1117 -Message $defenderMessage)) 'Defender detection and remediation events for the same threat consolidate into one warning group'
+Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.23.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
+Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\Work\computek-system-scan-windows-app\scripts\PostScam_SystemIntegrityScanner.ps1') 'PowerShell logging from the scanner source tree is recognized during development tests'
+Assert-True (-not (Test-CompuTekTrustedScannerScriptPath 'C:\Users\Victim\Downloads\CompuTek.Scanner.Common.psm1')) 'A scanner-named script in an untrusted folder is not suppressed'
+
+$defenderDetected = [pscustomobject]@{Category='SecurityControl';Name='Microsoft Defender detection: Trojan:Win32/TestThreat';EventId=1116;Details='Detected';Data=@{'Threat Name'='Trojan:Win32/TestThreat';'Threat ID'='12345';'Severity Name'='Severe';'Category Name'='Trojan';Path='CmdLine:_C:\Program Files\TrustedApp\helper.exe process-text {"large":"content"}'}}
+$defenderRemediated = [pscustomobject]@{Category='SecurityControl';Name='Microsoft Defender detection: Trojan:Win32/TestThreat';EventId=1117;Details='Remediated';Data=@{'Threat Name'='Trojan:Win32/TestThreat';'Threat ID'='12345';'Severity Name'='Severe';'Category Name'='Trojan';Path='CmdLine:_C:\Program Files\TrustedApp\helper.exe process-text {"large":"content"}';'Action Name'='Remove';'Additional Actions String'='No additional actions required';'Error Code'='0x00000000';'Error Description'='The operation completed successfully.'}}
+$defenderReason = Get-CompuTekPostScamReason -Items @($defenderRemediated,$defenderDetected)
+Assert-True ($defenderReason -match 'Severe Trojan' -and $defenderReason -match 'Threat ID: 12345' -and $defenderReason -match 'command line: C:\\Program Files\\TrustedApp\\helper\.exe process-text') 'Defender explanations identify the classification, threat ID, and concise affected command line'
+Assert-True ($defenderReason -match 'recorded action: Remove' -and $defenderReason -match 'No additional actions required' -and $defenderReason -match '0x00000000' -and $defenderReason -match 'completed successfully') 'Defender explanations show whether remediation succeeded and whether more action is required'
+Assert-True ((Get-CompuTekPostScamReviewStep -Items @($defenderDetected,$defenderRemediated)) -match 'command-line/content detection' -and (Get-CompuTekPostScamReviewStep -Items @($defenderDetected,$defenderRemediated)) -match 'not proof') 'Defender review guidance distinguishes a CmdLine alert from proof that the named EXE is infected'
+$firewallReason = Get-CompuTekPostScamReason -Items @([pscustomobject]@{Category='FirewallBackdoor';Name='ncplayer.exe';Path='C:\Users\Victim\AppData\Roaming\NinjaRemote\ncplayer.exe';Details='action=Allow';Data=$null})
+Assert-True ($firewallReason -match 'enabled inbound allow rule' -and $firewallReason -match 'user-writable') 'Firewall explanations state the exact risk created by an AppData executable'
 
 $htmlTestPath = Join-Path $env:TEMP ('CompuTek-PostScam-' + [Guid]::NewGuid().ToString('N') + '.html')
 try {
-    $htmlFinding = [pscustomobject]@{Severity='High';Category='SecurityControl';Name='<script>alert(1)</script>';Occurrences=2;LatestTimeUtc='2026-08-28T18:00:00Z';Path='C:\Evidence\item.exe';Details='Detected & blocked';Sources='Defender'}
+    $htmlFinding = [pscustomobject]@{Severity='High';Category='SecurityControl';Name='<script>alert(1)</script>';Occurrences=2;LatestTimeUtc='2026-08-28T18:00:00Z';Path='C:\Evidence\item.exe';WhyIncluded='Detected & blocked';WhatToCheck='Open protection history';TechnicalDetails='Event <1117>';Details='Detected & blocked';Sources='Defender'}
     [void](New-CompuTekPostScamHtmlReport -OutputPath $htmlTestPath -ActionableGroups @($htmlFinding) -SupplementalRecords @() -CollectionGaps @('Security log unavailable') -Cutoff ([datetime]'2026-08-21') -ComputerName 'TEST-PC')
     $htmlTestContent = Get-Content -LiteralPath $htmlTestPath -Raw
     Assert-True ($htmlTestContent -match '<!doctype html>' -and $htmlTestContent -match 'Technician review needed' -and $htmlTestContent -match '&lt;script&gt;alert\(1\)&lt;/script&gt;') 'The easy-to-read report is created and safely encodes collected evidence'
-    Assert-True ($htmlTestContent -notmatch '<script>alert\(1\)</script>' -and $htmlTestContent -match 'Supplemental leads saved' -and $htmlTestContent -match 'Collection gaps') 'The HTML report separates warnings, supplemental leads, and collection gaps'
+    Assert-True ($htmlTestContent -notmatch '<script>alert\(1\)</script>' -and $htmlTestContent -match 'What the technician should check' -and $htmlTestContent -match 'Technical evidence' -and $htmlTestContent -match 'Event &lt;1117&gt;') 'The HTML report separates plain-language reasons, technician checks, and safely encoded technical evidence'
 } finally {
     Remove-Item -LiteralPath $htmlTestPath -Force -ErrorAction SilentlyContinue
 }
