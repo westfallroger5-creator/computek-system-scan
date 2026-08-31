@@ -205,14 +205,18 @@ function Show-CandidateSummary {
         Write-Host ("    WARNING: {0} renamed-file indicator(s) require review." -f $renamed.Count) -ForegroundColor Red
     }
     if ($Candidate.IsManagedSuite) {
+        Write-Host '    PROTECTED: This verified CompuTek access is kept automatically and cannot be removed by this scanner.' -ForegroundColor Green
         Write-Host '    CompuTek ownership verified: the Syncro shop identity matches the approved hash in the USB signature catalog.' -ForegroundColor Green
         if (@($Candidate.ProductIds) -contains 'splashtop') {
             Write-Host '    Splashtop ownership verified: Syncro is enabled for it and both products contain the same RMM deployment code. The code is never displayed or saved.' -ForegroundColor Green
             Write-Host '    Store Splashtop packages and nonmatching installations remain separate numbered findings.' -ForegroundColor Green
         }
+    } elseif (@($Candidate.ProductIds) -contains 'splashtop') {
+        Write-Host '    COMPUTEK OWNERSHIP NOT VERIFIED for this separate Splashtop installation.' -ForegroundColor Yellow
+        Write-Host '    If you are not certain it is unwanted, KEEP it and ask a senior technician to verify it in Syncro before removal.' -ForegroundColor Yellow
     }
     $installerFiles = @(Get-CandidateInstallerFiles $Candidate)
-    if ($installerFiles.Count -gt 0) {
+    if ($installerFiles.Count -gt 0 -and -not $Candidate.IsManagedSuite) {
         Write-Host ("    Installer/portable file(s): {0}. Type OPEN {1} to show the downloaded file in File Explorer." -f $installerFiles.Count,$Candidate.Index) -ForegroundColor Cyan
     }
 
@@ -705,6 +709,23 @@ function New-RemovalCandidates {
         }
     }
     return @($candidates)
+}
+
+function Split-CompuTekRemovalCandidates {
+    param($Candidates)
+
+    $protected = @($Candidates | Where-Object {$_.IsManagedSuite})
+    $review = @($Candidates | Where-Object {-not $_.IsManagedSuite})
+    for ($index = 0; $index -lt $review.Count; $index++) {
+        # Only technician-reviewable items receive selection numbers. A verified
+        # CompuTek managed suite can therefore never be addressed by KEEP/REMOVE,
+        # REMOVE ALL, or a copied number from an older scan.
+        $review[$index].Index = $index + 1
+    }
+    return [pscustomobject]@{
+        Protected = @($protected)
+        Review = @($review)
+    }
 }
 
 function Backup-CandidateEvidence {
@@ -1241,6 +1262,10 @@ function Remove-CandidateRegistration {
 function Invoke-FullCandidateRemoval {
     param($Candidate, [switch]$AllowProductWideStoreFallback)
 
+    if ($Candidate.IsManagedSuite) {
+        throw 'Protected CompuTek managed access cannot be passed to the removal engine.'
+    }
+
     $backup = Backup-CandidateEvidence $Candidate
     Write-RemediationLog "Evidence backup created: $backup" 'Cyan'
     $preserved = Preserve-CandidateOperationalData $Candidate
@@ -1374,7 +1399,7 @@ function Test-FindingBelongsToCandidate {
 function Test-CandidateHasKeptProductPeer {
     param($Candidate, $AllCandidates, $DecisionById)
     foreach ($otherCandidate in @($AllCandidates)) {
-        if ($DecisionById[$otherCandidate.Id] -ne 'KeepApproved') { continue }
+        if ($DecisionById[$otherCandidate.Id] -notin @('KeepApproved','ProtectedManagedAccess')) { continue }
         $sharedProduct = @($otherCandidate.ProductIds | Where-Object {
             @($Candidate.ProductIds) -contains [string]$_
         }).Count -gt 0
@@ -1463,8 +1488,8 @@ if (@($scan.Warnings).Count -gt 0) {
     Write-Host ("Scan notes: {0} non-blocking access/inventory warning(s); details are saved in the JSON report." -f @($scan.Warnings).Count) -ForegroundColor DarkYellow
 }
 
-$candidates = New-RemovalCandidates -Findings $scan.Findings
-if ($candidates.Count -eq 0) {
+$allCandidates = @(New-RemovalCandidates -Findings $scan.Findings)
+if ($allCandidates.Count -eq 0) {
     Write-Host "`nNo cataloged remote-access software or suspicious remote-capable artifacts were found." -ForegroundColor $(if($scan.IsComplete){'Green'}else{'Yellow'})
     Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
     Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
@@ -1478,11 +1503,52 @@ if ($candidates.Count -eq 0) {
     exit 3
 }
 
-Write-Host "`n===================== FINDINGS ======================" -ForegroundColor Cyan
+$candidateSets = Split-CompuTekRemovalCandidates -Candidates $allCandidates
+$protectedCandidates = @($candidateSets.Protected)
+$candidates = @($candidateSets.Review)
+
+if ($protectedCandidates.Count -gt 0) {
+    Write-Host "`n============== PROTECTED COMPUTEK ACCESS ==============" -ForegroundColor Green
+    Write-Host 'Ownership was verified automatically. These items are kept and are not assigned removal numbers.' -ForegroundColor Green
+    foreach ($candidate in $protectedCandidates) {
+        Write-Host ("[PROTECTED - DO NOT REMOVE] {0}" -f $candidate.Name) -ForegroundColor Green
+        Show-CandidateSummary $candidate
+    }
+    $protectedReportPath = Join-Path $caseRoot 'ProtectedCompuTekAccess.json'
+    @($protectedCandidates | ForEach-Object {
+        [pscustomobject][ordered]@{
+            ProductName = $_.Name
+            ProductIds = @($_.ProductIds)
+            DetectedVersion = $_.DetectedVersion
+            InstallationScope = Get-CandidateLocationLabel $_
+            Protection = 'ProtectedCompuTekManagedAccess'
+            Verification = $_.ManagedIdentityMatch
+        }
+    }) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $protectedReportPath -Encoding UTF8
+    Write-Host "Protected-access record: $protectedReportPath" -ForegroundColor DarkGray
+}
+
+if ($candidates.Count -eq 0) {
+    Write-Host "`nNo separate remote-access installations require a technician decision." -ForegroundColor Green
+    Write-Host 'The verified CompuTek access shown above was protected and no changes were made.' -ForegroundColor Green
+    Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
+    Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
+    Write-Host "Startup inventory: $($reportPaths.StartupCsv)" -ForegroundColor DarkGray
+    if ($scan.IsComplete) {
+        Complete-CompuTekRun 'Scan complete. Verified CompuTek access was protected.'
+        exit 0
+    }
+    Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
+    Complete-CompuTekRun 'Scan incomplete — technician attention is required.'
+    exit 3
+}
+
+Write-Host "`n========== SOFTWARE REQUIRING TECHNICIAN REVIEW ==========" -ForegroundColor Cyan
+Write-Host 'Only the numbered items below can be selected. Protected CompuTek access is not in this list.' -ForegroundColor Cyan
 foreach ($candidate in $candidates) {
     $highest = if ($candidate.Findings.Confidence -contains 'High') {'High'} elseif ($candidate.Findings.Confidence -contains 'Medium') {'Medium'} else {'Low'}
-    $displayClass = if ($candidate.IsManagedSuite) {'Managed'} elseif ($candidate.IsUnknown) {$highest} else {'Known'}
-    Write-Host ("{0,2}. [{1}] {2}" -f $candidate.Index,$displayClass,$candidate.Name) -ForegroundColor $(if($candidate.IsManagedSuite){'Green'}elseif($candidate.IsUnknown -and $highest -eq 'High'){'Red'}elseif($candidate.IsUnknown){'Yellow'}else{'Cyan'})
+    $displayClass = if ($candidate.IsUnknown) {$highest} else {'Review'}
+    Write-Host ("{0,2}. [{1}] {2}" -f $candidate.Index,$displayClass,$candidate.Name) -ForegroundColor $(if($candidate.IsUnknown -and $highest -eq 'High'){'Red'}elseif($candidate.IsUnknown){'Yellow'}else{'Cyan'})
     Show-CandidateSummary $candidate
 }
 
@@ -1501,9 +1567,13 @@ $caseReference = Read-CompuTekInput 'Ticket/case reference (optional)'
 $decisionPath = Join-Path $caseRoot 'TechnicianDecisions.json'
 $decisions = @()
 $decisionById = @{}
+foreach ($protectedCandidate in $protectedCandidates) {
+    $decisionById[$protectedCandidate.Id] = 'ProtectedManagedAccess'
+}
 
-Write-Host "`nClassify the numbered agents in two batches. Every number must be placed in KEEP or REMOVE before continuing." -ForegroundColor Cyan
-Write-Host 'Examples: KEEP 1,3-5    KEEP NONE    REMOVE 2,6-8    REMOVE ALL    OPEN 1' -ForegroundColor Gray
+Write-Host "`nClassify only the numbered review items. Protected CompuTek access cannot be selected or removed." -ForegroundColor Cyan
+Write-Host 'Safe choice when unsure: KEEP ALL, then REMOVE NONE, and ask a senior technician.' -ForegroundColor Green
+Write-Host 'Other examples: KEEP 1,3-5    KEEP NONE    REMOVE 2,6-8    REMOVE ALL    OPEN 1' -ForegroundColor Gray
 Write-Host 'At either decision prompt, type OPEN followed by agent numbers to show detected installer/portable files in Downloads, Desktop, Temp, or another non-installed location. The prompt will then repeat.' -ForegroundColor Green
 $keepNumbers = @()
 $removeNumbers = @()
@@ -1548,6 +1618,9 @@ while ($true) {
     }
 
     Write-Host "`n================ PROPOSED DECISIONS ================" -ForegroundColor Cyan
+    if ($protectedCandidates.Count -gt 0) {
+        Write-Host ("Protected CompuTek access: {0} item(s) kept automatically and excluded from removal." -f $protectedCandidates.Count) -ForegroundColor Green
+    }
     foreach ($candidate in $candidates) {
         $choice = if ($keepNumbers -contains $candidate.Index) {'KEEP'} else {'REMOVE'}
         $versionLabel = if ($candidate.DetectedVersion) { "version $($candidate.DetectedVersion)" } else { 'version unavailable' }
@@ -1625,7 +1698,7 @@ foreach ($candidate in $selected) {
     $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
     $decisionRecord.RemovalOutcome = 'RemovalAttempted'
     try {
-        $sameProductKept = Test-CandidateHasKeptProductPeer -Candidate $candidate -AllCandidates $candidates -DecisionById $decisionById
+        $sameProductKept = Test-CandidateHasKeptProductPeer -Candidate $candidate -AllCandidates $allCandidates -DecisionById $decisionById
         Invoke-FullCandidateRemoval -Candidate $candidate -AllowProductWideStoreFallback:(-not $sameProductKept)
     } catch {
         $decisionRecord.RemovalOutcome = 'RemovalError'
