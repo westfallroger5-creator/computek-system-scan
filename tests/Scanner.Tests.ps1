@@ -55,8 +55,10 @@ Assert-True (-not (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppDat
 Assert-True (-not (Test-CompuTekTrustedApplication -Path 'C:\Users\Victim\AppData\Local\OpenAI\Codex\bin\x64\codex.exe' -CompanyName 'OpenAI OpCo, LLC' -Signer '' -SignatureStatus 'NotSigned')) 'An unsigned Codex lookalike remains reviewable'
 
 $remediationSource = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1') -Raw
-Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match '===================== FINDINGS' -and $remediationSource -match 'Show-CandidateSummary') 'Every remote-access scan displays concise product findings and enters technician review'
+Assert-True ($remediationSource -notmatch '\bScanOnly\b' -and $remediationSource -match 'SOFTWARE REQUIRING TECHNICIAN REVIEW' -and $remediationSource -match 'Show-CandidateSummary') 'Every reviewable remote-access finding is displayed before technician decisions'
 Assert-True ($remediationSource -match 'Which agent numbers should be kept' -and $remediationSource -match 'KEEP NONE' -and $remediationSource -match 'Which agent numbers should be removed' -and $remediationSource -match 'Every agent must be classified') 'Technician must explicitly classify every numbered agent and is shown the KEEP NONE option'
+Assert-True ($remediationSource -match 'PROTECTED COMPUTEK ACCESS' -and $remediationSource -match 'ProtectedCompuTekAccess\.json' -and $remediationSource -match 'Protected CompuTek access cannot be selected or removed') 'Verified CompuTek access is visibly protected and excluded from technician removal choices'
+Assert-True ($remediationSource -match 'Safe choice when unsure: KEEP ALL, then REMOVE NONE' -and $remediationSource -match 'COMPUTEK OWNERSHIP NOT VERIFIED') 'Uncertain Splashtop findings tell lower-level technicians to keep and escalate instead of guessing'
 Assert-True ($remediationSource -match 'OPEN 1' -and $remediationSource -match 'Open-CandidateInstallerFiles' -and $remediationSource -match '/select,' -and $remediationSource -match "Start-Process -FilePath 'explorer\.exe'") 'Technicians can show a numbered agent downloaded installer file in File Explorer before deciding'
 Assert-True ($remediationSource -match "decisionConfirmation -ieq 'YES'" -and $remediationSource -notmatch 'CONFIRM DECISIONS|APPLY REMOVALS' -and $remediationSource -notmatch 'A for all') 'One simple typed YES authorizes only the technician-selected removals'
 Assert-True ($remediationSource -match 'PreservedRemoteToolData' -and $remediationSource -match 'TechnicianDecisions\.json') 'Operational evidence and technician decisions are preserved'
@@ -232,7 +234,7 @@ Assert-True ($allCatalogFindings.Count -eq @($catalog.products).Count) 'Analysis
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Get-CompuTekManagedIdentityStatus','Test-PathWithinVersionAnchor','New-RemovalCandidates','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
+foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Get-CompuTekManagedIdentityStatus','Test-PathWithinVersionAnchor','New-RemovalCandidates','Split-CompuTekRemovalCandidates','Invoke-FullCandidateRemoval','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -366,13 +368,20 @@ $splashtopInstall = [pscustomobject]@{ProductId='splashtop';ProductName='Splasht
 $splashtopService = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='SplashtopRemoteService';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='3.82.2.9'}
 $syncroDownloadedInstaller = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='File';Name='SyncroSetup.exe';Path='C:\Users\Tech\Downloads\SyncroSetup.exe';SourcePath=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.203.18518'}
 $managedScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$syncroDownloadedInstaller) -ManagedIdentityStatus $approvedManagedIdentity)
-Assert-True ($managedScopes.Count -eq 1 -and $managedScopes[0].IsManagedSuite -and @($managedScopes[0].ProductIds).Count -eq 2 -and $managedScopes[0].Findings.Count -eq 6) 'Syncro, its bundled Splashtop components, and a passive downloaded installer collapse into one managed technician decision'
-Assert-True (Test-FindingBelongsToCandidate -Finding $splashtopService -Candidate $managedScopes[0]) 'Managed-suite removal verification includes remaining Splashtop components'
+Assert-True ($managedScopes.Count -eq 1 -and $managedScopes[0].IsManagedSuite -and @($managedScopes[0].ProductIds).Count -eq 2 -and $managedScopes[0].Findings.Count -eq 6) 'Syncro, its bundled Splashtop components, and a passive downloaded installer collapse into one protected managed item'
+Assert-True (Test-FindingBelongsToCandidate -Finding $splashtopService -Candidate $managedScopes[0]) 'Protected managed-suite evidence includes its Splashtop components'
+$managedOnlySets = Split-CompuTekRemovalCandidates -Candidates $managedScopes
+Assert-True (@($managedOnlySets.Protected).Count -eq 1 -and @($managedOnlySets.Review).Count -eq 0) 'A verified managed suite receives no technician removal number'
+$managedRemovalRejected = $false
+try { Invoke-FullCandidateRemoval -Candidate $managedScopes[0] } catch { $managedRemovalRejected = ($_.Exception.Message -match 'Protected CompuTek managed access') }
+Assert-True $managedRemovalRejected 'The removal engine rejects a protected managed candidate even if another code path passes it one'
 $standaloneSplashtop = @(New-RemovalCandidates @($splashtopInstall,$splashtopService) -ManagedIdentityStatus $unapprovedManagedIdentity)
 Assert-True ($standaloneSplashtop.Count -eq 1 -and -not $standaloneSplashtop[0].IsManagedSuite) 'Standalone Splashtop remains a normal review finding when no Syncro primary agent is present'
 $hiddenSplashtop = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='HiddenSupport';Path='C:\Users\Victim\AppData\Roaming\Support\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='9.9.9'}
 $managedWithHidden = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$hiddenSplashtop) -ManagedIdentityStatus $approvedManagedIdentity)
 Assert-True ($managedWithHidden.Count -eq 2 -and @($managedWithHidden | Where-Object {$_.IsManagedSuite}).Count -eq 1 -and @($managedWithHidden | Where-Object {-not $_.IsManagedSuite -and $_.Findings.Path -contains $hiddenSplashtop.Path}).Count -eq 1) 'A hidden user-profile Splashtop copy stays separately flagged beside the standard managed suite'
+$managedWithHiddenSets = Split-CompuTekRemovalCandidates -Candidates $managedWithHidden
+Assert-True (@($managedWithHiddenSets.Protected).Count -eq 1 -and @($managedWithHiddenSets.Review).Count -eq 1 -and $managedWithHiddenSets.Review[0].Index -eq 1 -and -not $managedWithHiddenSets.Review[0].IsManagedSuite) 'Only the separate unverified Splashtop copy receives technician review number 1'
 
 $splashtopStoreA = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='AppxPackage';Name='Splashtop.StoreA';Path='C:\Program Files\WindowsApps\Splashtop.StoreA_3.8.400.0_x86';InstallLocation=$null;RegistryPath=$null;PackageFullName='Splashtop.StoreA_3.8.400.0_x86__publisher';DisplayVersion='3.8.400.0';FileVersion=$null}
 $splashtopStoreB = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='AppxPackage';Name='Splashtop.StoreB';Path='C:\Program Files\WindowsApps\Splashtop.StoreB_3.7.600.0_x86';InstallLocation=$null;RegistryPath=$null;PackageFullName='Splashtop.StoreB_3.7.600.0_x86__publisher';DisplayVersion='3.7.600.0';FileVersion=$null}
@@ -380,6 +389,12 @@ $managedWithStorePackages = @(New-RemovalCandidates @($syncroService,$syncroLive
 Assert-True ($managedWithStorePackages.Count -eq 3 -and @($managedWithStorePackages | Where-Object {$_.IsManagedSuite}).Count -eq 1 -and @($managedWithStorePackages | Where-Object {$_.ProductId -eq 'splashtop' -and -not $_.IsManagedSuite}).Count -eq 2) 'Separate Splashtop Store packages are never claimed as CompuTek merely because approved Syncro is installed'
 $syncroOnlyManagedCandidate = @($managedWithStorePackages | Where-Object {$_.IsManagedSuite})[0]
 Assert-True (@($syncroOnlyManagedCandidate.ProductIds) -notcontains 'splashtop' -and -not (Test-FindingBelongsToCandidate -Finding $splashtopStoreA -Candidate $syncroOnlyManagedCandidate)) 'Verification of managed Syncro does not wait for or remove an unrelated Splashtop Store package'
+$protectedSplashtopCandidate = @($managedWithHidden | Where-Object {$_.IsManagedSuite})[0]
+$separateSplashtopCandidate = @($managedWithHidden | Where-Object {-not $_.IsManagedSuite})[0]
+$protectedStoreDecisions = @{}
+$protectedStoreDecisions[$protectedSplashtopCandidate.Id] = 'ProtectedManagedAccess'
+$protectedStoreDecisions[$separateSplashtopCandidate.Id] = 'Remove'
+Assert-True (Test-CandidateHasKeptProductPeer -Candidate $separateSplashtopCandidate -AllCandidates $managedWithHidden -DecisionById $protectedStoreDecisions) 'Protected managed access blocks product-wide fallback while a separate same-product item is removed'
 
 $anyDeskInstall = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='InstalledProgram';Name='AnyDesk';Path='C:\Program Files (x86)\AnyDesk';InstallLocation='C:\Program Files (x86)\AnyDesk';RegistryPath='HKLM:\Software\Uninstall\AnyDesk';PackageFullName=$null;DisplayVersion='9.7.15';FileVersion=$null;SignatureStatus='Unknown';CompanyName=''}
 $anyDeskWindowsHost = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='Process';Name='rundll32.exe';Path=(Join-Path $env:SystemRoot 'SysWOW64\rundll32.exe');InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='10.0.26100.1';SignatureStatus='Valid';CompanyName='Microsoft Corporation';Signer='CN=Microsoft Corporation'}
@@ -613,7 +628,7 @@ Assert-True ($postScamSource -match "'Windows PowerShell' -Ids @\(800\)" -and $p
 Assert-True ($postScamSource -match 'hehggadaopoacecdllhhajmbjkdcmajg' -and $postScamSource -match '\$isTrustedExtension') 'The exact official ChatGPT extension ID is retained as supplemental inventory instead of a warning'
 $defenderMessage = "Microsoft Defender found malware.`r`nName: Trojan:Win32/TestThreat`r`nPath: file:_C:\Temp\bad.exe"
 Assert-True ((Get-CompuTekDefenderFindingName -EventId 1116 -Message $defenderMessage) -eq (Get-CompuTekDefenderFindingName -EventId 1117 -Message $defenderMessage)) 'Defender detection and remediation events for the same threat consolidate into one warning group'
-Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.23.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
+Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.24.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
 Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\Work\computek-system-scan-windows-app\scripts\PostScam_SystemIntegrityScanner.ps1') 'PowerShell logging from the scanner source tree is recognized during development tests'
 Assert-True (-not (Test-CompuTekTrustedScannerScriptPath 'C:\Users\Victim\Downloads\CompuTek.Scanner.Common.psm1')) 'A scanner-named script in an untrusted folder is not suppressed'
 
