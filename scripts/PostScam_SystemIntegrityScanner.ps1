@@ -1108,11 +1108,18 @@ Write-Host "Full actionable evidence: $evidenceJson" -ForegroundColor DarkGray
 Write-Host "Supplemental leads (not flagged): $supplementalJson" -ForegroundColor DarkGray
 Write-Host 'This report cannot prove that no other backdoor exists or identify every file that may have been viewed or copied.' -ForegroundColor Yellow
 Write-Host 'If the scammer had administrator access, consider the machine untrusted until the evidence is reviewed and the remediation decision is made.' -ForegroundColor Yellow
-try {
-    Write-Host 'Opening the easy-to-read report in the default browser...' -ForegroundColor Cyan
-    Start-Process -FilePath $htmlReportPath -ErrorAction Stop
-} catch {
-    Write-Host "The report could not be opened automatically. Open this file: $htmlReportPath" -ForegroundColor Yellow
+if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+    # Ask the GUI to open the completed report. Starting a shell-associated HTML
+    # file from the redirected, hidden PowerShell child is unreliable on some PCs.
+    [Console]::Out.WriteLine("__COMPUTEK_OPEN_REPORT__:$htmlReportPath")
+    [Console]::Out.Flush()
+} else {
+    try {
+        Write-Host 'Opening the easy-to-read report in the default browser...' -ForegroundColor Cyan
+        Start-Process -FilePath $htmlReportPath -ErrorAction Stop
+    } catch {
+        Write-Host "The report could not be opened automatically. Open this file: $htmlReportPath" -ForegroundColor Yellow
+    }
 }
 Complete-CompuTekRun 'Post-scam evidence collection complete.'
 exit 0
