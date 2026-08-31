@@ -25,6 +25,7 @@ namespace CompuTek.Scanner.App
         private readonly Button preCloneButton = new Button();
         private readonly Button reloadButton = new Button();
         private readonly Button openCaseButton = new Button();
+        private readonly Button openReportButton = new Button();
         private readonly PictureBox brandLogo = new PictureBox();
         private readonly RichTextBox output = new RichTextBox();
         private readonly Label catalogLabel = new Label();
@@ -39,6 +40,7 @@ namespace CompuTek.Scanner.App
         private ScannerEngineHost engineHost;
         private bool awaitingInput;
         private string lastCaseFolder;
+        private string lastReportPath;
         private string runningDisplayName;
         private string currentStage;
         private DateTime engineStartedUtc;
@@ -250,8 +252,16 @@ namespace CompuTek.Scanner.App
             openCaseButton.Click += OpenLastCaseFolder;
             commandPanel.Controls.Add(openCaseButton);
 
+            openReportButton.Text = "Open last report";
+            openReportButton.Size = new Size(160, 34);
+            openReportButton.Location = new Point(988, 58);
+            openReportButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            openReportButton.Enabled = false;
+            openReportButton.Click += OpenLastReport;
+            commandPanel.Controls.Add(openReportButton);
+
             Label safety = new Label();
-            safety.Text = "Removal requires numbered KEEP/REMOVE choices and the final words APPLY REMOVALS. Nothing is removed automatically.";
+            safety.Text = "Verified CompuTek access is protected. Reviewable removals require numbered KEEP/REMOVE choices and one final YES.";
             safety.ForeColor = Color.FromArgb(128, 74, 0);
             safety.Location = new Point(828, 96);
             safety.Size = new Size(320, 54);
@@ -394,7 +404,7 @@ namespace CompuTek.Scanner.App
         private void StartRemoteScanner(object sender, EventArgs args)
         {
             DialogResult result = MessageBox.Show(
-                "The scanner will display every finding and save its reports beside this EXE on the service USB. It will then ask which numbered agents to KEEP and which to REMOVE.\r\n\r\nNothing is removed automatically. Every agent must be classified, and removals require the final words APPLY REMOVALS.\r\n\r\nContinue?",
+                "The scanner will display every finding and save its reports beside this EXE on the service USB. Verified CompuTek access is protected and receives no removal number. It will then ask which numbered review items to KEEP and which to REMOVE.\r\n\r\nNothing is removed automatically. Every numbered review item must be classified, and removals require one final YES.\r\n\r\nContinue?",
                 "Start remote-access review",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning,
@@ -478,6 +488,8 @@ namespace CompuTek.Scanner.App
                 AppendOutput("USB session log: " + sessionLogPath, Color.DimGray);
                 lastCaseFolder = Path.GetDirectoryName(sessionLogPath);
                 openCaseButton.Enabled = false;
+                lastReportPath = null;
+                openReportButton.Enabled = false;
                 awaitingInput = false;
                 resultReason = null;
                 runningDisplayName = displayName;
@@ -523,10 +535,16 @@ namespace CompuTek.Scanner.App
             BeginInvoke((MethodInvoker)delegate
             {
                 const string resultReasonPrefix = "__COMPUTEK_RESULT_REASON__:";
+                const string openReportPrefix = "__COMPUTEK_OPEN_REPORT__:";
                 if (args.Text.StartsWith(resultReasonPrefix, StringComparison.Ordinal))
                 {
                     resultReason = args.Text.Substring(resultReasonPrefix.Length).Trim();
                     AppendOutput("ATTENTION REASON: " + resultReason, Color.Khaki);
+                    return;
+                }
+                if (args.Text.StartsWith(openReportPrefix, StringComparison.Ordinal))
+                {
+                    CaptureAndOpenReport(args.Text.Substring(openReportPrefix.Length));
                     return;
                 }
                 if (args.Text.StartsWith("SCAN STAGE:", StringComparison.OrdinalIgnoreCase))
@@ -566,7 +584,7 @@ namespace CompuTek.Scanner.App
                 string status;
                 if (args.ExitCode == 0)
                     status = runningDisplayName + " completed";
-                else if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-Access Scanner", StringComparison.Ordinal))
+                else if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-access scanner", StringComparison.OrdinalIgnoreCase))
                     status = runningDisplayName + " completed — ATTENTION REQUIRED";
                 else if (args.ExitCode == 4 && String.Equals(runningDisplayName, "Pre-Clone Preparation", StringComparison.Ordinal))
                     status = runningDisplayName + " completed — NOT READY for Acronis";
@@ -577,7 +595,8 @@ namespace CompuTek.Scanner.App
                 SetRunningState(false, status);
                 AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : (args.ExitCode == 3 || args.ExitCode == 4 || args.ExitCode == 5 ? Color.Khaki : Color.Salmon));
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
-                if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-Access Scanner", StringComparison.Ordinal))
+                openReportButton.Enabled = !String.IsNullOrWhiteSpace(lastReportPath) && File.Exists(lastReportPath);
+                if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-access scanner", StringComparison.OrdinalIgnoreCase))
                 {
                     string reason = String.IsNullOrWhiteSpace(resultReason)
                         ? "The scan finished, but it could not verify a clean result. Review the yellow messages and the saved case report."
@@ -650,6 +669,66 @@ namespace CompuTek.Scanner.App
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = "explorer.exe";
             startInfo.Arguments = "\"" + lastCaseFolder.Replace("\"", String.Empty) + "\"";
+            startInfo.UseShellExecute = true;
+            Process.Start(startInfo);
+        }
+
+        private void CaptureAndOpenReport(string reportedPath)
+        {
+            try
+            {
+                string reportPath = Path.GetFullPath((reportedPath ?? String.Empty).Trim().Trim('"'));
+                if (!reportPath.EndsWith(".html", StringComparison.OrdinalIgnoreCase) || !File.Exists(reportPath))
+                    throw new InvalidOperationException("The completed HTML report was not found.");
+
+                if (!String.IsNullOrWhiteSpace(lastCaseFolder))
+                {
+                    string caseFolder = Path.GetFullPath(lastCaseFolder).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    string requiredPrefix = caseFolder + Path.DirectorySeparatorChar;
+                    if (!reportPath.StartsWith(requiredPrefix, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("The report path is outside the saved case folder.");
+                }
+
+                lastReportPath = reportPath;
+                openReportButton.Enabled = true;
+                AppendOutput("Opening post-scam report: " + reportPath, Color.LightSkyBlue);
+                OpenReport(reportPath);
+            }
+            catch (Exception exception)
+            {
+                AppendOutput("The report could not be opened automatically: " + exception.Message, Color.Khaki);
+                if (!String.IsNullOrWhiteSpace(lastCaseFolder))
+                    AppendOutput("Use Open last case folder to review the saved HTML report.", Color.Khaki);
+                MessageBox.Show(
+                    "The HTML report was saved, but Windows could not open it automatically.\r\n\r\n" +
+                    exception.Message + "\r\n\r\nUse Open last case folder to open PostScamReport.html.",
+                    "Post-scam report is ready",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        private void OpenLastReport(object sender, EventArgs args)
+        {
+            if (String.IsNullOrWhiteSpace(lastReportPath) || !File.Exists(lastReportPath)) return;
+            try
+            {
+                OpenReport(lastReportPath);
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(
+                    exception.Message + "\r\n\r\nReport: " + lastReportPath,
+                    "Could not open post-scam report",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+        }
+
+        private static void OpenReport(string reportPath)
+        {
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = reportPath;
             startInfo.UseShellExecute = true;
             Process.Start(startInfo);
         }
