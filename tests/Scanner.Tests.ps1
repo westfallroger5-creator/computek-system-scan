@@ -608,7 +608,7 @@ $postScamErrors = $null
 $postScamPath = Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'
 $postScamSource = Get-Content -LiteralPath $postScamPath -Raw
 $postScamAst = [System.Management.Automation.Language.Parser]::ParseFile($postScamPath,[ref]$postScamTokens,[ref]$postScamErrors)
-foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport')) {
+foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport','Add-Gap','Get-RecentEvents')) {
     $postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $postScamFunction.Extent.Text
 }
@@ -628,7 +628,7 @@ Assert-True ($postScamSource -match "'Windows PowerShell' -Ids @\(800\)" -and $p
 Assert-True ($postScamSource -match 'hehggadaopoacecdllhhajmbjkdcmajg' -and $postScamSource -match '\$isTrustedExtension') 'The exact official ChatGPT extension ID is retained as supplemental inventory instead of a warning'
 $defenderMessage = "Microsoft Defender found malware.`r`nName: Trojan:Win32/TestThreat`r`nPath: file:_C:\Temp\bad.exe"
 Assert-True ((Get-CompuTekDefenderFindingName -EventId 1116 -Message $defenderMessage) -eq (Get-CompuTekDefenderFindingName -EventId 1117 -Message $defenderMessage)) 'Defender detection and remediation events for the same threat consolidate into one warning group'
-Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.25.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
+Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.26.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
 Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\Work\computek-system-scan-windows-app\scripts\PostScam_SystemIntegrityScanner.ps1') 'PowerShell logging from the scanner source tree is recognized during development tests'
 Assert-True (-not (Test-CompuTekTrustedScannerScriptPath 'C:\Users\Victim\Downloads\CompuTek.Scanner.Common.psm1')) 'A scanner-named script in an untrusted folder is not suppressed'
 
@@ -644,12 +644,48 @@ Assert-True ($firewallReason -match 'enabled inbound allow rule' -and $firewallR
 $htmlTestPath = Join-Path $env:TEMP ('CompuTek-PostScam-' + [Guid]::NewGuid().ToString('N') + '.html')
 try {
     $htmlFinding = [pscustomobject]@{Severity='High';Category='SecurityControl';Name='<script>alert(1)</script>';Occurrences=2;LatestTimeUtc='2026-08-28T18:00:00Z';Path='C:\Evidence\item.exe';WhyIncluded='Detected & blocked';WhatToCheck='Open protection history';TechnicalDetails='Event <1117>';Details='Detected & blocked';Sources='Defender'}
-    [void](New-CompuTekPostScamHtmlReport -OutputPath $htmlTestPath -ActionableGroups @($htmlFinding) -SupplementalRecords @() -CollectionGaps @('Security log unavailable') -Cutoff ([datetime]'2026-08-21') -ComputerName 'TEST-PC')
+    [void](New-CompuTekPostScamHtmlReport -OutputPath $htmlTestPath -ActionableGroups @($htmlFinding) -SupplementalRecords @() -CollectionGaps @('Security log unavailable') -CoverageNotes @('Sysmon is optional and is not installed') -Cutoff ([datetime]'2026-08-21') -ComputerName 'TEST-PC')
     $htmlTestContent = Get-Content -LiteralPath $htmlTestPath -Raw
     Assert-True ($htmlTestContent -match '<!doctype html>' -and $htmlTestContent -match 'Technician review needed' -and $htmlTestContent -match '&lt;script&gt;alert\(1\)&lt;/script&gt;') 'The easy-to-read report is created and safely encodes collected evidence'
     Assert-True ($htmlTestContent -notmatch '<script>alert\(1\)</script>' -and $htmlTestContent -match 'What the technician should check' -and $htmlTestContent -match 'Technical evidence' -and $htmlTestContent -match 'Event &lt;1117&gt;') 'The HTML report separates plain-language reasons, technician checks, and safely encoded technical evidence'
+    Assert-True ($htmlTestContent -match 'Collection failures' -and $htmlTestContent -match 'Security log unavailable' -and $htmlTestContent -match 'Coverage notes' -and $htmlTestContent -match 'Sysmon is optional') 'Actual collector failures and non-blocking telemetry coverage notes are reported separately'
 } finally {
     Remove-Item -LiteralPath $htmlTestPath -Force -ErrorAction SilentlyContinue
+}
+
+$coverageOnlyHtmlPath = Join-Path $env:TEMP ('CompuTek-PostScam-Coverage-' + [Guid]::NewGuid().ToString('N') + '.html')
+try {
+    [void](New-CompuTekPostScamHtmlReport -OutputPath $coverageOnlyHtmlPath -ActionableGroups @() -SupplementalRecords @() -CollectionGaps @() -CoverageNotes @('Quick Assist event logging was not available') -Cutoff ([datetime]'2026-08-21') -ComputerName 'TEST-PC')
+    $coverageOnlyHtml = Get-Content -LiteralPath $coverageOnlyHtmlPath -Raw
+    Assert-True ($coverageOnlyHtml -match 'No focused warning indicators found' -and $coverageOnlyHtml -match 'They do not mean the scan failed' -and $coverageOnlyHtml -notmatch 'required checks failed') 'Optional telemetry limitations do not falsely label an otherwise complete scan as failed'
+} finally {
+    Remove-Item -LiteralPath $coverageOnlyHtmlPath -Force -ErrorAction SilentlyContinue
+}
+
+Assert-True ($postScamSource -match 'NoMatchingEventsFound' -and $postScamSource -match '\$remoteScan\.Warnings\)\) \{ Add-CoverageNote') 'No matching event records and partial folder-access notes are not treated as collector failures'
+Assert-True ($postScamSource -match 'Quick Assist event logging was not available' -and $postScamSource -match "Add-CoverageNote 'Sysmon is not installed") 'Missing optional Quick Assist and Sysmon telemetry is recorded as a coverage note'
+
+$eventTestLog = Join-Path $env:TEMP ('CompuTek-PostScam-EventTest-' + [Guid]::NewGuid().ToString('N') + '.log')
+$script:TextLog = $eventTestLog
+$script:Gaps = New-Object System.Collections.Generic.List[string]
+$cutoff = [datetime]'2026-08-21'
+try {
+    function Get-WinEvent {
+        param($FilterHashtable,$MaxEvents,$ErrorAction)
+        Write-Error -Message 'No events were found that match the specified selection criteria.' -ErrorId 'NoMatchingEventsFound' -Category ObjectNotFound -ErrorAction Stop
+    }
+    $noEvents = @(Get-RecentEvents -LogName 'Test/Operational' -Ids @(1149))
+    Assert-True ($noEvents.Count -eq 0 -and $script:Gaps.Count -eq 0) 'An enabled event log with zero matching records is a successful empty result, not a collection failure'
+
+    function Get-WinEvent {
+        param($FilterHashtable,$MaxEvents,$ErrorAction)
+        throw [UnauthorizedAccessException]::new('Access is denied.')
+    }
+    $failedEvents = @(Get-RecentEvents -LogName 'Test/Operational' -Ids @(1149))
+    Assert-True ($failedEvents.Count -eq 0 -and $script:Gaps.Count -eq 1 -and $script:Gaps[0] -match 'Access is denied') 'A real event-log read error remains a collection failure'
+} finally {
+    Remove-Item Function:\Get-WinEvent -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $eventTestLog -Force -ErrorAction SilentlyContinue
 }
 
 if ($script:Failures -gt 0) {
