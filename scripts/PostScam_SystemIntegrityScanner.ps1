@@ -66,6 +66,7 @@ New-Item -Path $caseRoot -ItemType Directory -Force | Out-Null
 $script:Evidence = New-Object System.Collections.Generic.List[object]
 $script:Supplemental = New-Object System.Collections.Generic.List[object]
 $script:Gaps = New-Object System.Collections.Generic.List[string]
+$script:CoverageNotes = New-Object System.Collections.Generic.List[string]
 $script:TextLog = Join-Path $caseRoot 'PostScam_Audit.log'
 $script:ActionableCategories = @(
     'RemoteAccess','PersistenceEvent','SecurityEvent','RemoteSession','SuspiciousExecution',
@@ -304,6 +305,7 @@ function New-CompuTekPostScamHtmlReport {
         [AllowNull()][object[]]$ActionableGroups,
         [AllowNull()][object[]]$SupplementalRecords,
         [AllowNull()][string[]]$CollectionGaps,
+        [AllowNull()][string[]]$CoverageNotes,
         [Parameter(Mandatory)][datetime]$Cutoff,
         [Parameter(Mandatory)][string]$ComputerName
     )
@@ -311,11 +313,14 @@ function New-CompuTekPostScamHtmlReport {
     $groups = @($ActionableGroups)
     $supplemental = @($SupplementalRecords)
     $gaps = @($CollectionGaps)
+    $coverage = @($CoverageNotes)
     $highCount = @($groups | Where-Object {$_.Severity -eq 'High'}).Count
     $mediumCount = @($groups | Where-Object {$_.Severity -eq 'Medium'}).Count
-    $statusTitle = if ($groups.Count -gt 0) {'Technician review needed'} else {'No focused warning indicators found'}
+    $statusTitle = if ($groups.Count -gt 0) {'Technician review needed'} elseif ($gaps.Count -gt 0) {'Scan completed with collection failures'} else {'No focused warning indicators found'}
     $statusText = if ($groups.Count -gt 0) {
         'Review the grouped items below. A finding is evidence to verify, not automatic proof that a scammer caused it.'
+    } elseif ($gaps.Count -gt 0) {
+        'No focused warning indicators were found, but one or more required checks failed. Review the collection failures below before deciding the computer is ready.'
     } else {
         'The focused checks found no warning indicators. This does not prove that no access or data theft occurred.'
     }
@@ -324,8 +329,8 @@ function New-CompuTekPostScamHtmlReport {
     [void]$html.AppendLine('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
     [void]$html.AppendLine('<title>CompuTek Post-Scam Review</title><style>body{margin:0;background:#f3f6fa;color:#172033;font:16px/1.5 "Segoe UI",Arial,sans-serif}.wrap{max-width:1050px;margin:0 auto;padding:28px}.top{background:#0c3f70;color:#fff;border-radius:14px;padding:24px 28px}.top h1{margin:0 0 6px;font-size:28px}.top p{margin:3px 0;color:#dbeafe}.status{margin:18px 0;padding:18px 20px;border-left:6px solid #d97706;background:#fff7ed;border-radius:10px}.status.clear{border-color:#15803d;background:#f0fdf4}.status h2{margin:0 0 4px;font-size:22px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0}.card{background:#fff;border:1px solid #dbe3ee;border-radius:10px;padding:15px}.number{font-size:28px;font-weight:700}.muted{color:#5b6678}.section{background:#fff;border:1px solid #dbe3ee;border-radius:12px;padding:18px 20px;margin:16px 0}.section h2{margin:0 0 12px}.finding{border:1px solid #dbe3ee;border-radius:9px;margin:10px 0;background:#fbfdff}.finding summary{cursor:pointer;padding:13px 15px;font-weight:600}.finding .body{border-top:1px solid #e5eaf1;padding:12px 15px}.badge{display:inline-block;border-radius:999px;padding:2px 9px;margin-right:8px;font-size:13px}.high{background:#fee2e2;color:#991b1b}.medium{background:#fef3c7;color:#92400e}.label{font-weight:600}.reason,.check{white-space:pre-wrap;word-break:break-word;padding:12px;border-radius:7px}.reason{background:#eef6ff;border-left:4px solid #2563eb}.check{background:#f0fdf4;border-left:4px solid #15803d}.technical{margin-top:12px;border:1px solid #dbe3ee;border-radius:7px}.technical summary{padding:9px 11px;font-weight:600}.detail{white-space:pre-wrap;word-break:break-word;background:#f5f7fa;padding:10px;border-radius:0 0 7px 7px}.links a{display:inline-block;margin:4px 12px 4px 0}.gaps li{margin:5px 0}@media print{body{background:#fff}.wrap{max-width:none;padding:0}.finding{break-inside:avoid}}</style></head><body><main class="wrap">')
     [void]$html.AppendLine(('<header class="top"><h1>CompuTek Post-Scam Review</h1><p>Computer: {0}</p><p>Collected: {1} &nbsp; | &nbsp; Lookback starts: {2}</p></header>' -f (ConvertTo-CompuTekHtmlText $ComputerName),(ConvertTo-CompuTekHtmlText ((Get-Date).ToString('yyyy-MM-dd HH:mm'))),(ConvertTo-CompuTekHtmlText $Cutoff.ToString('yyyy-MM-dd HH:mm'))))
-    [void]$html.AppendLine(('<section class="status{0}"><h2>{1}</h2><div>{2}</div></section>' -f $(if($groups.Count -eq 0){' clear'}else{''}),(ConvertTo-CompuTekHtmlText $statusTitle),(ConvertTo-CompuTekHtmlText $statusText)))
-    [void]$html.AppendLine(('<section class="cards"><div class="card"><div class="number">{0}</div><div>High-priority groups</div></div><div class="card"><div class="number">{1}</div><div>Review groups</div></div><div class="card"><div class="number">{2}</div><div>Supplemental leads saved</div></div><div class="card"><div class="number">{3}</div><div>Collection gaps</div></div></section>' -f $highCount,$mediumCount,$supplemental.Count,$gaps.Count))
+    [void]$html.AppendLine(('<section class="status{0}"><h2>{1}</h2><div>{2}</div></section>' -f $(if($groups.Count -eq 0 -and $gaps.Count -eq 0){' clear'}else{''}),(ConvertTo-CompuTekHtmlText $statusTitle),(ConvertTo-CompuTekHtmlText $statusText)))
+    [void]$html.AppendLine(('<section class="cards"><div class="card"><div class="number">{0}</div><div>High-priority groups</div></div><div class="card"><div class="number">{1}</div><div>Review groups</div></div><div class="card"><div class="number">{2}</div><div>Supplemental leads saved</div></div><div class="card"><div class="number">{3}</div><div>Collection failures</div></div><div class="card"><div class="number">{4}</div><div>Coverage notes</div></div></section>' -f $highCount,$mediumCount,$supplemental.Count,$gaps.Count,$coverage.Count))
     [void]$html.AppendLine('<section class="section"><h2>What to do first</h2><ol><li>Review malware detections, disabled security controls, new accounts, remote login keys, and registry/WMI backdoors first.</li><li>Ask the customer or technician whether each remote session and remote-support tool was expected.</li><li>Use the separate Remote-access scan for technician-approved removal; this evidence scan never removes anything.</li><li>If compromise is confirmed, reset important passwords from a known-clean device and review email, banking, router, and account-provider logs.</li></ol></section>')
 
     [void]$html.AppendLine('<section class="section"><h2>Findings grouped for review</h2>')
@@ -343,10 +348,15 @@ function New-CompuTekPostScamHtmlReport {
     }
     [void]$html.AppendLine('</section>')
 
-    [void]$html.AppendLine('<section class="section links"><h2>Supporting files</h2><p>Normal inventory and low-confidence leads are intentionally kept out of the warning list.</p><a href="ActionableFindings.txt">Plain-text findings</a><a href="SupplementalLeads.csv">Supplemental leads</a><a href="CollectionGaps.txt">Collection gaps</a><a href="Summary.txt">Technical summary</a></section>')
+    [void]$html.AppendLine('<section class="section links"><h2>Supporting files</h2><p>Normal inventory and low-confidence leads are intentionally kept out of the warning list.</p><a href="ActionableFindings.txt">Plain-text findings</a><a href="SupplementalLeads.csv">Supplemental leads</a><a href="CollectionGaps.txt">Collection failures</a><a href="CoverageNotes.txt">Coverage notes</a><a href="Summary.txt">Technical summary</a></section>')
     if ($gaps.Count -gt 0) {
-        [void]$html.AppendLine('<section class="section gaps"><h2>Collection gaps</h2><p>These checks were unavailable or incomplete, so the report must not be treated as proof that the computer is clean.</p><ul>')
+        [void]$html.AppendLine('<section class="section gaps"><h2>Collection failures</h2><p>These required checks failed or returned incomplete results. Resolve them or account for the missing evidence before deciding the computer is ready.</p><ul>')
         foreach ($gap in $gaps) { [void]$html.AppendLine(('<li>{0}</li>' -f (ConvertTo-CompuTekHtmlText $gap))) }
+        [void]$html.AppendLine('</ul></section>')
+    }
+    if ($coverage.Count -gt 0) {
+        [void]$html.AppendLine('<section class="section gaps"><h2>Coverage notes</h2><p>These are optional telemetry limitations or non-blocking access notes. They do not mean the scan failed, but they describe evidence Windows did not have available for review.</p><ul>')
+        foreach ($note in $coverage) { [void]$html.AppendLine(('<li>{0}</li>' -f (ConvertTo-CompuTekHtmlText $note))) }
         [void]$html.AppendLine('</ul></section>')
     }
     [void]$html.AppendLine('<section class="section"><h2>Important limits</h2><p>This local scan cannot prove that no backdoor exists, identify every file that may have been viewed or copied, or replace a full incident response. Preserve this case folder until the technician finishes review.</p></section></main></body></html>')
@@ -365,6 +375,13 @@ function Add-Gap {
     param([string]$Message)
     if (-not $script:Gaps.Contains($Message)) { $script:Gaps.Add($Message) }
     $line = '[{0}] COLLECTION GAP: {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$Message
+    $line | Out-File -LiteralPath $script:TextLog -Append -Encoding UTF8
+}
+
+function Add-CoverageNote {
+    param([string]$Message)
+    if (-not $script:CoverageNotes.Contains($Message)) { $script:CoverageNotes.Add($Message) }
+    $line = '[{0}] COVERAGE NOTE: {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$Message
     $line | Out-File -LiteralPath $script:TextLog -Append -Encoding UTF8
 }
 
@@ -432,10 +449,15 @@ function Get-EventMessage {
 }
 
 function Get-RecentEvents {
-    param([string]$LogName, [int[]]$Ids, [int]$Maximum = 2000)
+    param([string]$LogName, [AllowNull()][int[]]$Ids, [int]$Maximum = 2000)
     try {
-        return @(Get-WinEvent -FilterHashtable @{LogName=$LogName;StartTime=$cutoff;Id=$Ids} -MaxEvents $Maximum -ErrorAction Stop)
+        $filter = @{LogName=$LogName;StartTime=$cutoff}
+        if (@($Ids).Count -gt 0) { $filter.Id = $Ids }
+        return @(Get-WinEvent -FilterHashtable $filter -MaxEvents $Maximum -ErrorAction Stop)
     } catch {
+        if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*' -or [string]$_.Exception.Message -match '(?i)No events were found that match the specified selection criteria') {
+            return @()
+        }
         Add-Gap "Event log '$LogName' could not be queried for IDs $($Ids -join ','): $($_.Exception.Message)"
         return @()
     }
@@ -527,7 +549,7 @@ try {
     } catch { Add-Gap "ScreenConnect service registry details could not be collected: $($_.Exception.Message)" }
 
     foreach ($errorMessage in @($remoteScan.Errors)) { Add-Gap "Remote-access collector: $errorMessage" }
-    foreach ($warningMessage in @($remoteScan.Warnings)) { Add-Gap "Remote-access collector note: $warningMessage" }
+    foreach ($warningMessage in @($remoteScan.Warnings)) { Add-CoverageNote "Remote-access collector note: $warningMessage" }
     $actionableRemoteCount = @($script:Evidence | Where-Object {$_.Category -eq 'RemoteAccess'}).Count
     Write-Audit "Remote-access inventory saved. Actionable persistence/hidden-access findings: $actionableRemoteCount" $(if($actionableRemoteCount){'Yellow'}else{'Green'})
 } catch {
@@ -630,13 +652,11 @@ foreach ($spec in @(
 
 try {
     $quickAssistLogs = @(Get-WinEvent -ListLog '*QuickAssist*' -ErrorAction SilentlyContinue | Where-Object {$_.IsEnabled})
-    if ($quickAssistLogs.Count -eq 0) { Add-Gap 'No enabled Quick Assist event log was available.' }
+    if ($quickAssistLogs.Count -eq 0) { Add-CoverageNote 'Quick Assist event logging was not available. This optional log might not exist until Quick Assist is installed or used, so no Quick Assist history could be reviewed.' }
     foreach ($logInfo in $quickAssistLogs) {
-        try {
-            foreach ($event in Get-WinEvent -FilterHashtable @{LogName=$logInfo.LogName;StartTime=$cutoff} -MaxEvents 1000 -ErrorAction Stop) {
-                Add-WindowsEventEvidence $event 'RemoteSession' 'High' 'Quick Assist event' (Get-EventDataMap $event)
-            }
-        } catch { Add-Gap "Quick Assist log '$($logInfo.LogName)' could not be read: $($_.Exception.Message)" }
+        foreach ($event in Get-RecentEvents -LogName $logInfo.LogName -Maximum 1000) {
+            Add-WindowsEventEvidence $event 'RemoteSession' 'High' 'Quick Assist event' (Get-EventDataMap $event)
+        }
     }
 } catch { Add-Gap "Quick Assist log discovery failed: $($_.Exception.Message)" }
 
@@ -694,8 +714,17 @@ try {
     }
 } catch { Add-Gap "Microsoft Defender preferences could not be collected: $($_.Exception.Message)" }
 
+$sysmonLog = $null
 try {
     $sysmonLog = Get-WinEvent -ListLog 'Microsoft-Windows-Sysmon/Operational' -ErrorAction Stop
+} catch {
+    if ([string]$_.FullyQualifiedErrorId -like 'NoMatchingLogsFound*' -or [string]$_.Exception.Message -match '(?i)(not an event log|no event logs.*match|could not find.*log)') {
+        Add-CoverageNote 'Sysmon is not installed. Sysmon is optional; the scan completed using Windows-native sources, but detailed historical process, network, and file telemetry was not available.'
+    } else {
+        Add-Gap "Sysmon log state could not be checked: $($_.Exception.Message)"
+    }
+}
+if ($sysmonLog) {
     if ($sysmonLog.IsEnabled) {
         foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-Sysmon/Operational' -Ids @(1,3,11,12,13,22,23,26) -Maximum 4000) {
             $message = Get-EventMessage $event
@@ -703,8 +732,10 @@ try {
                 Add-Evidence -Category 'SysmonEvidence' -Severity 'Medium' -Name "Sysmon event $($event.Id)" -Details (Protect-CommandText $message) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
             }
         }
+    } else {
+        Add-CoverageNote 'Sysmon is installed but its event log is disabled. Sysmon is optional; the scan completed using Windows-native sources, but detailed historical process, network, and file telemetry was not available.'
     }
-} catch { Add-Gap 'Sysmon was not installed, enabled, or readable. Historical process/network/file telemetry is therefore limited.' }
+}
 
 # ------------------ PERSISTENCE AND BACKDOOR CONFIGURATION ------------------
 Write-Audit "`n[5/12] Autoruns, scheduled tasks, WMI subscriptions, and registry backdoors" 'Cyan'
@@ -1013,12 +1044,14 @@ $supplementalCsv = Join-Path $caseRoot 'SupplementalLeads.csv'
 $actionableSummaryJson = Join-Path $caseRoot 'ActionableFindings.json'
 $actionableSummaryText = Join-Path $caseRoot 'ActionableFindings.txt'
 $gapsPath = Join-Path $caseRoot 'CollectionGaps.txt'
+$coverageNotesPath = Join-Path $caseRoot 'CoverageNotes.txt'
 $summaryPath = Join-Path $caseRoot 'Summary.txt'
 $htmlReportPath = Join-Path $caseRoot 'PostScamReport.html'
 
 $evidenceRecords = [object[]]$script:Evidence.ToArray()
 $supplementalRecords = [object[]]$script:Supplemental.ToArray()
 $collectionGaps = [string[]]$script:Gaps.ToArray()
+$coverageNotes = [string[]]$script:CoverageNotes.ToArray()
 
 # Windows PowerShell 5.1 can throw "Argument types do not match" when @(...)
 # directly materializes a generic List[T]. Convert each list to a normal array
@@ -1028,6 +1061,7 @@ $evidenceRecords | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,P
 ConvertTo-Json -InputObject $supplementalRecords -Depth 8 | Set-Content -LiteralPath $supplementalJson -Encoding UTF8
 $supplementalRecords | Select-Object Category,Severity,TimeCreatedUtc,Name,Details,Path,User,Source,EventId | Export-Csv -LiteralPath $supplementalCsv -NoTypeInformation -Encoding UTF8
 $collectionGaps | Set-Content -LiteralPath $gapsPath -Encoding UTF8
+$coverageNotes | Set-Content -LiteralPath $coverageNotesPath -Encoding UTF8
 
 $actionableGroups = @($evidenceRecords | Group-Object {
     '{0}|{1}|{2}' -f $_.Category,$_.Name,$_.Path
@@ -1074,7 +1108,8 @@ $summaryLines = @(
     "Actionable finding groups: $($actionableGroups.Count)",
     "Actionable evidence records: $($script:Evidence.Count)",
     "Supplemental leads saved (not flagged): $($script:Supplemental.Count)",
-    "Collection gaps: $($script:Gaps.Count)",
+    "Collection failures: $($script:Gaps.Count)",
+    "Coverage notes (non-blocking): $($script:CoverageNotes.Count)",
     '',
     'Severity counts:'
 ) + @($severityCounts | ForEach-Object {"  $($_.Name): $($_.Count)"}) + @('', 'Category counts:') + @($categoryCounts | ForEach-Object {"  $($_.Name): $($_.Count)"}) + @(
@@ -1086,7 +1121,7 @@ $summaryLines = @(
     '- Preserve this case folder. Do not run cleanup before reviewing the evidence and resetting credentials from a known-clean device.'
 )
 $summaryLines | Set-Content -LiteralPath $summaryPath -Encoding UTF8
-[void](New-CompuTekPostScamHtmlReport -OutputPath $htmlReportPath -ActionableGroups $actionableGroups -SupplementalRecords $supplementalRecords -CollectionGaps $collectionGaps -Cutoff $cutoff -ComputerName $env:COMPUTERNAME)
+[void](New-CompuTekPostScamHtmlReport -OutputPath $htmlReportPath -ActionableGroups $actionableGroups -SupplementalRecords $supplementalRecords -CollectionGaps $collectionGaps -CoverageNotes $coverageNotes -Cutoff $cutoff -ComputerName $env:COMPUTERNAME)
 
 Write-Host "`n=============== ACTIONABLE POST-SCAM FINDINGS ===============" -ForegroundColor Cyan
 if ($actionableGroups.Count -eq 0) {
@@ -1101,7 +1136,8 @@ if ($actionableGroups.Count -eq 0) {
         Write-Host ("...{0} additional finding group(s) are in the easy-to-read report." -f ($actionableGroups.Count - 8)) -ForegroundColor Yellow
     }
 }
-Write-Host ("Collection gaps: {0}" -f $script:Gaps.Count) -ForegroundColor $(if($script:Gaps.Count){'Yellow'}else{'Green'})
+Write-Host ("Collection failures: {0}" -f $script:Gaps.Count) -ForegroundColor $(if($script:Gaps.Count){'Yellow'}else{'Green'})
+Write-Host ("Coverage notes: {0}" -f $script:CoverageNotes.Count) -ForegroundColor DarkGray
 Write-Host "Case folder: $caseRoot" -ForegroundColor Cyan
 Write-Host "Easy-to-read report: $htmlReportPath" -ForegroundColor Cyan
 Write-Host "Full actionable evidence: $evidenceJson" -ForegroundColor DarkGray
