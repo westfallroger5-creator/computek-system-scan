@@ -1,11 +1,27 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory,
-    [string]$CodeSigningCertificateThumbprint
+    [string]$CodeSigningCertificateThumbprint,
+    [string]$CatalogSigningCertificateThumbprint,
+    [string]$TimestampServer = 'http://timestamp.digicert.com',
+    [switch]$ProductionRelease
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
+
+function Get-CompuTekSigningCertificate {
+    param([Parameter(Mandatory)][string]$Thumbprint, [Parameter(Mandatory)][string]$Purpose)
+    $normalized = $Thumbprint.Replace(' ','')
+    $certificate = @(
+        Get-ChildItem 'Cert:\CurrentUser\My','Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
+            Where-Object {$_.Thumbprint -eq $normalized} |
+            Select-Object -First 1
+    )
+    if (-not $certificate) { throw "$Purpose certificate was not found: $normalized" }
+    if (-not $certificate[0].HasPrivateKey) { throw "$Purpose certificate has no accessible private key: $normalized" }
+    return $certificate[0]
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
@@ -52,10 +68,27 @@ foreach ($resourcePath in $engineResources.Keys) {
 $logoBase64Path = Join-Path $sourceRoot 'CompuTekLogo.png.base64'
 if (-not (Test-Path -LiteralPath $logoBase64Path -PathType Leaf)) { throw "CompuTek logo source is missing: $logoBase64Path" }
 $systemTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+if ($ProductionRelease -and [string]::IsNullOrWhiteSpace($CodeSigningCertificateThumbprint)) {
+    throw 'A production release requires -CodeSigningCertificateThumbprint.'
+}
+if ($ProductionRelease -and [string]::IsNullOrWhiteSpace($CatalogSigningCertificateThumbprint)) {
+    $CatalogSigningCertificateThumbprint = $CodeSigningCertificateThumbprint
+}
+$codeSigningCertificate = if ($CodeSigningCertificateThumbprint) { Get-CompuTekSigningCertificate -Thumbprint $CodeSigningCertificateThumbprint -Purpose 'EXE code-signing' } else { $null }
+$catalogSigningCertificate = if ($CatalogSigningCertificateThumbprint) { Get-CompuTekSigningCertificate -Thumbprint $CatalogSigningCertificateThumbprint -Purpose 'Catalog-signing' } else { $null }
 $buildTempDirectory = Join-Path $systemTempRoot ('CompuTekScannerBuild-' + [Guid]::NewGuid().ToString('N'))
 New-Item -Path $buildTempDirectory -ItemType Directory -Force | Out-Null
 
 try {
+    if ($catalogSigningCertificate) {
+        $publicRsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPublicKey($catalogSigningCertificate)
+        if (-not $publicRsa) { throw 'The catalog-signing certificate must contain an RSA public key.' }
+        try { $publicKeyXml = $publicRsa.ToXmlString($false) } finally { $publicRsa.Dispose() }
+        $catalogPublicKeyPath = Join-Path $buildTempDirectory 'CatalogPublicKey.xml'
+        [IO.File]::WriteAllText($catalogPublicKeyPath,$publicKeyXml,(New-Object Text.UTF8Encoding($false)))
+        $engineResources[$catalogPublicKeyPath] = 'CompuTek.Scanner.Trust.CatalogPublicKey.xml'
+    }
+
     $logoBase64 = (Get-Content -LiteralPath $logoBase64Path -Raw -ErrorAction Stop) -replace '\s',''
     $logoBytes = [Convert]::FromBase64String($logoBase64)
     $sha256 = [Security.Cryptography.SHA256]::Create()
@@ -138,36 +171,63 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $executable -PathType L
 }
 
 $catalogDestination = Join-Path $OutputDirectory 'RemoteAccessSignatures.json'
-Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessSignatures.json') -Destination $catalogDestination -Force
+$catalogSignatureDestination = $catalogDestination + '.sig'
+foreach ($staleCatalogFile in @($catalogDestination,$catalogSignatureDestination)) {
+    if (Test-Path -LiteralPath $staleCatalogFile -PathType Leaf) { Remove-Item -LiteralPath $staleCatalogFile -Force }
+}
+if ($catalogSigningCertificate) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\RemoteAccessSignatures.json') -Destination $catalogDestination -Force
+    $catalogBytes = [IO.File]::ReadAllBytes($catalogDestination)
+    $catalogRsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($catalogSigningCertificate)
+    if (-not $catalogRsa) { throw 'The catalog-signing certificate must expose an RSA private key.' }
+    try {
+        $catalogSignature = $catalogRsa.SignData($catalogBytes,[Security.Cryptography.HashAlgorithmName]::SHA256,[Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    } finally { $catalogRsa.Dispose() }
+    $catalogHash = (Get-FileHash -LiteralPath $catalogDestination -Algorithm SHA256).Hash
+    $signatureDocument = [ordered]@{
+        schemaVersion = 1
+        algorithm = 'RSASSA-PKCS1-v1_5-SHA256'
+        catalogFile = 'RemoteAccessSignatures.json'
+        catalogSha256 = $catalogHash
+        signingCertificateThumbprint = $catalogSigningCertificate.Thumbprint
+        signature = [Convert]::ToBase64String($catalogSignature)
+    } | ConvertTo-Json
+    [IO.File]::WriteAllText($catalogSignatureDestination,$signatureDocument,(New-Object Text.UTF8Encoding($false)))
+}
 $guideSource = Join-Path $repoRoot 'docs\ScannerApp.md'
 if (Test-Path -LiteralPath $guideSource -PathType Leaf) {
     Copy-Item -LiteralPath $guideSource -Destination (Join-Path $OutputDirectory 'README.md') -Force
 }
 
-if (-not [string]::IsNullOrWhiteSpace($CodeSigningCertificateThumbprint)) {
-    $thumbprint = $CodeSigningCertificateThumbprint.Replace(' ','')
-    $certificate = @(
-        Get-ChildItem 'Cert:\CurrentUser\My','Cert:\LocalMachine\My' -ErrorAction SilentlyContinue |
-            Where-Object {$_.Thumbprint -eq $thumbprint} |
-            Select-Object -First 1
-    )
-    if (-not $certificate) { throw "Code-signing certificate was not found: $thumbprint" }
-    $signature = Set-AuthenticodeSignature -LiteralPath $executable -Certificate $certificate[0] -HashAlgorithm SHA256 -ErrorAction Stop
+if ($codeSigningCertificate) {
+    if ([string]::IsNullOrWhiteSpace($TimestampServer)) { throw 'A timestamp server is required when signing the EXE.' }
+    $signature = Set-AuthenticodeSignature -LiteralPath $executable -Certificate $codeSigningCertificate -HashAlgorithm SHA256 -TimestampServer $TimestampServer -ErrorAction Stop
     if ($signature.Status -ne 'Valid') { throw "EXE signing failed: $($signature.StatusMessage)" }
+    $verifiedSignature = Get-AuthenticodeSignature -LiteralPath $executable
+    if ($verifiedSignature.Status -ne 'Valid' -or -not $verifiedSignature.SignerCertificate -or -not $verifiedSignature.TimeStamperCertificate) {
+        throw 'The production EXE did not pass signer and timestamp verification after signing.'
+    }
 }
 
-$hashLines = @($executable,$catalogDestination) | ForEach-Object {
+$publishedFiles = @($executable,$catalogDestination,$catalogSignatureDestination) | Where-Object {Test-Path -LiteralPath $_ -PathType Leaf}
+$hashLines = $publishedFiles | ForEach-Object {
     $hash = Get-FileHash -LiteralPath $_ -Algorithm SHA256
     '{0} *{1}' -f $hash.Hash,(Split-Path -Leaf $_)
 }
 $hashLines | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS.txt') -Encoding ASCII
 
 Write-Host "Built: $executable" -ForegroundColor Green
-Write-Host "External signatures: $catalogDestination" -ForegroundColor Green
-Write-Host 'The executable is unsigned unless -CodeSigningCertificateThumbprint was provided.' -ForegroundColor Yellow
+if ($catalogSigningCertificate) {
+    Write-Host "Signed external catalog: $catalogDestination" -ForegroundColor Green
+    Write-Host "Detached catalog signature: $catalogSignatureDestination" -ForegroundColor Green
+} else {
+    Write-Host 'No external catalog was published because no catalog-signing certificate was provided; the development EXE uses its trusted embedded catalog.' -ForegroundColor Yellow
+}
+if (-not $codeSigningCertificate) { Write-Host 'Development build: the executable is unsigned.' -ForegroundColor Yellow }
 return [pscustomobject]@{
     Executable = $executable
-    Catalog = $catalogDestination
+    Catalog = if (Test-Path -LiteralPath $catalogDestination) {$catalogDestination} else {$null}
+    CatalogSignature = if (Test-Path -LiteralPath $catalogSignatureDestination) {$catalogSignatureDestination} else {$null}
     OutputDirectory = $OutputDirectory
 }
 } finally {

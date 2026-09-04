@@ -9,14 +9,26 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit
 }
 
+function Assert-CompuTekToolboxNotCancelled {
+    $cancelFile = [string]$env:COMPUTEK_SCANNER_CANCEL_FILE
+    if ($cancelFile -and (Test-Path -LiteralPath $cancelFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+        throw (New-Object OperationCanceledException 'The technician canceled the toolbox workflow.')
+    }
+}
+
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
+    Assert-CompuTekToolboxNotCancelled
     if ($env:COMPUTEK_SCANNER_APP -eq '1') {
         [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
         [Console]::Out.Flush()
-        return [Console]::In.ReadLine()
+        $response = [Console]::In.ReadLine()
+        Assert-CompuTekToolboxNotCancelled
+        return $response
     }
-    return Read-Host $Prompt
+    $response = Read-Host $Prompt
+    Assert-CompuTekToolboxNotCancelled
+    return $response
 }
 
 function Get-ToolboxRecoveryProtectors {
@@ -79,6 +91,11 @@ $toolboxSessionRoot = Join-Path $toolRoot ("CompuTekData\{0}\TechnicianToolbox\{
 New-Item -Path $toolboxSessionRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null
 $logFile = Join-Path $toolboxSessionRoot 'Toolbox.log'
 
+trap [OperationCanceledException] {
+    Write-Host '[CANCELED] Toolbox stopped at a safe boundary. Review the log for any action that had already started.' -ForegroundColor Yellow
+    exit 6
+}
+
 try { $host.UI.RawUI.WindowTitle = "IT Technician Toolbox" } catch {}
 if ($env:COMPUTEK_SCANNER_APP -ne '1') { Clear-Host }
 Write-Host "`n=== IT TECHNICIAN TOOLBOX ===" -ForegroundColor Cyan
@@ -110,6 +127,88 @@ function Invoke-ToolboxChkdsk {
             ForEach-Object { Write-Host ([string]$_) }
     }
     return $LASTEXITCODE
+}
+
+function ConvertTo-ToolboxNativeArgument {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+}
+
+function Invoke-ToolboxProgressCommand {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$DisplayName,
+        [ValidateRange(0,86400)][int]$TimeoutSeconds = 0
+    )
+
+    Assert-CompuTekToolboxNotCancelled
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-ToolboxNativeArgument ([string]$_) }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $nativeProcess = New-Object Diagnostics.Process
+    $nativeProcess.StartInfo = $startInfo
+    $runtime = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        if (-not $nativeProcess.Start()) { throw "$DisplayName could not be started." }
+        $outputRead = $nativeProcess.StandardOutput.ReadLineAsync()
+        $errorRead = $nativeProcess.StandardError.ReadLineAsync()
+
+        while (-not $nativeProcess.HasExited -or $null -ne $outputRead -or $null -ne $errorRead) {
+            if ($env:COMPUTEK_SCANNER_CANCEL_FILE -and
+                (Test-Path -LiteralPath $env:COMPUTEK_SCANNER_CANCEL_FILE -PathType Leaf -ErrorAction SilentlyContinue)) {
+                Write-Host "[CANCELING] Stopping $DisplayName. Its result is incomplete and must be run again before the computer is marked ready." -ForegroundColor Yellow
+                try { $nativeProcess.Kill() } catch {
+                    throw "Cancellation was requested, but Windows could not stop $DisplayName`: $($_.Exception.Message)"
+                }
+                [void]$nativeProcess.WaitForExit(5000)
+                throw (New-Object OperationCanceledException "The technician canceled $DisplayName.")
+            }
+            if ($TimeoutSeconds -gt 0 -and $runtime.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+                Write-Host "[TIMEOUT] $DisplayName did not finish within $TimeoutSeconds seconds. Moving to the next adapter." -ForegroundColor Yellow
+                try { $nativeProcess.Kill() } catch { }
+                [void]$nativeProcess.WaitForExit(5000)
+                return 1460
+            }
+
+            $receivedLine = $false
+            if ($null -ne $outputRead -and $outputRead.IsCompleted) {
+                $line = $outputRead.GetAwaiter().GetResult()
+                if ($null -eq $line) {
+                    $outputRead = $null
+                } else {
+                    if (-not [string]::IsNullOrWhiteSpace($line)) { Write-Host $line }
+                    $outputRead = $nativeProcess.StandardOutput.ReadLineAsync()
+                }
+                $receivedLine = $true
+            }
+            if ($null -ne $errorRead -and $errorRead.IsCompleted) {
+                $line = $errorRead.GetAwaiter().GetResult()
+                if ($null -eq $line) {
+                    $errorRead = $null
+                } else {
+                    if (-not [string]::IsNullOrWhiteSpace($line)) { Write-Host $line -ForegroundColor Yellow }
+                    $errorRead = $nativeProcess.StandardError.ReadLineAsync()
+                }
+                $receivedLine = $true
+            }
+            if (-not $receivedLine) { Start-Sleep -Milliseconds 100 }
+        }
+
+        $nativeProcess.WaitForExit()
+        return $nativeProcess.ExitCode
+    } finally {
+        $runtime.Stop()
+        $nativeProcess.Dispose()
+    }
 }
 
 # --- Menu Loop ---
@@ -147,18 +246,50 @@ do {
         "3" {
             Write-Host "`nFlushing DNS..." -ForegroundColor Yellow
             ipconfig /flushdns
-            Write-Host "Releasing IP..."
-            ipconfig /release
-            Write-Host "Renewing IP..."
-            Write-Host 'Windows may take several minutes while each network adapter waits for DHCP. The toolbox will return to the menu when Windows finishes.' -ForegroundColor Cyan
-            ipconfig /renew
-            $renewExitCode = $LASTEXITCODE
-            if ($renewExitCode -eq 0) {
-                Write-Host 'DNS flush and IP renewal completed. Returning to the toolbox menu.' -ForegroundColor Green
-            } else {
-                Write-Host "IP renewal finished with exit code $renewExitCode. Review the network information before continuing." -ForegroundColor Yellow
+            Write-Host 'Finding connected hardware adapters that use DHCP...' -ForegroundColor Cyan
+            $dhcpAdapters = New-Object System.Collections.Generic.List[object]
+            foreach ($ipInterface in @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+                [string]$_.Dhcp -eq 'Enabled' -and [string]$_.ConnectionState -eq 'Connected'
+            })) {
+                $adapter = Get-NetAdapter -InterfaceIndex $ipInterface.InterfaceIndex -ErrorAction SilentlyContinue
+                if ($adapter -and $adapter.HardwareInterface -and [string]$adapter.Status -eq 'Up' -and
+                    -not ($dhcpAdapters | Where-Object {$_.InterfaceIndex -eq $adapter.InterfaceIndex})) {
+                    $dhcpAdapters.Add($adapter)
+                }
             }
-            Log "Flushed DNS and renewed IP; ipconfig /renew exit code $renewExitCode"
+
+            if ($dhcpAdapters.Count -eq 0) {
+                Write-Host '[INFO] DNS was flushed, but no connected hardware adapter with DHCP enabled needs release/renew.' -ForegroundColor Yellow
+                Log 'Flushed DNS; no connected DHCP-enabled hardware adapter was available for release/renew'
+            } else {
+                $ipconfigPath = Join-Path $env:SystemRoot 'System32\ipconfig.exe'
+                $renewProblems = New-Object System.Collections.Generic.List[string]
+                foreach ($adapter in $dhcpAdapters) {
+                    Assert-CompuTekToolboxNotCancelled
+                    $adapterName = [string]$adapter.Name
+                    Write-Host "`nReleasing IP on $adapterName..." -ForegroundColor Yellow
+                    $releaseExitCode = Invoke-ToolboxProgressCommand -FilePath $ipconfigPath -Arguments @('/release',$adapterName) -DisplayName "IP release for $adapterName" -TimeoutSeconds 20
+                    if ($releaseExitCode -ne 0) {
+                        Write-Host "[REVIEW] Release on $adapterName returned exit code $releaseExitCode; renewal will still be attempted." -ForegroundColor Yellow
+                    }
+
+                    Write-Host "Renewing IP on $adapterName..." -ForegroundColor Yellow
+                    $renewExitCode = Invoke-ToolboxProgressCommand -FilePath $ipconfigPath -Arguments @('/renew',$adapterName) -DisplayName "IP renewal for $adapterName" -TimeoutSeconds 45
+                    if ($renewExitCode -eq 0) {
+                        Write-Host "[OK] $adapterName received its DHCP renewal." -ForegroundColor Green
+                    } else {
+                        $renewProblems.Add("$adapterName (exit code $renewExitCode)")
+                        Write-Host "[REVIEW] $adapterName did not complete DHCP renewal. Check its cable, Wi-Fi connection, and DHCP server." -ForegroundColor Yellow
+                    }
+                    Log "DHCP refresh on $adapterName returned release $releaseExitCode, renew $renewExitCode"
+                }
+
+                if ($renewProblems.Count -eq 0) {
+                    Write-Host '`nDNS flush and DHCP renewal completed. Returning to the toolbox menu.' -ForegroundColor Green
+                } else {
+                    Write-Host ("`nDHCP refresh finished with attention needed for: {0}. Returning to the toolbox menu." -f ($renewProblems -join ', ')) -ForegroundColor Yellow
+                }
+            }
         }
         "4" {
             Write-Host "`nTesting internet connection..." -ForegroundColor Yellow
@@ -179,8 +310,10 @@ do {
         }
         "6" {
             Write-Host "`nRunning System File Checker..." -ForegroundColor Yellow
-            sfc /scannow
-            Log "Ran SFC scan"
+            Write-Host 'SFC progress will appear below. Cancel safely can interrupt this command; an interrupted scan must be run again.' -ForegroundColor Cyan
+            $sfcExitCode = Invoke-ToolboxProgressCommand -FilePath (Join-Path $env:SystemRoot 'System32\sfc.exe') -Arguments @('/scannow') -DisplayName 'System File Checker'
+            Write-Host "System File Checker finished with exit code $sfcExitCode." -ForegroundColor $(if($sfcExitCode -eq 0){'Green'}else{'Yellow'})
+            Log "SFC scan returned exit code $sfcExitCode"
         }
         "7" {
             Write-Host "`n--- AVAILABLE DRIVES ---" -ForegroundColor Yellow
@@ -244,8 +377,10 @@ do {
         }
         "8" {
             Write-Host "`nRunning DISM Health Restore..." -ForegroundColor Yellow
-            DISM /Online /Cleanup-Image /RestoreHealth
-            Log "Ran DISM RestoreHealth"
+            Write-Host 'DISM progress will appear below. Cancel safely can interrupt this command; an interrupted repair must be run again.' -ForegroundColor Cyan
+            $dismExitCode = Invoke-ToolboxProgressCommand -FilePath (Join-Path $env:SystemRoot 'System32\Dism.exe') -Arguments @('/Online','/Cleanup-Image','/RestoreHealth') -DisplayName 'DISM RestoreHealth'
+            Write-Host "DISM RestoreHealth finished with exit code $dismExitCode." -ForegroundColor $(if($dismExitCode -eq 0){'Green'}else{'Yellow'})
+            Log "DISM RestoreHealth returned exit code $dismExitCode"
         }
         "9" {
             Start-Process taskmgr
@@ -418,6 +553,8 @@ do {
             Write-Host "Invalid selection. Try again." -ForegroundColor Red
         }
     }
+    } catch [OperationCanceledException] {
+        throw
     } catch {
         Write-Host "The selected toolbox action could not finish: $($_.Exception.Message)" -ForegroundColor Red
         Log "Toolbox option $normalizedChoice failed: $($_.Exception.Message)"

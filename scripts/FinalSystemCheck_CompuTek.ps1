@@ -10,14 +10,24 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit 1
 }
 
+$modulePath = Join-Path $PSScriptRoot 'CompuTek.Scanner.Common.psm1'
+$catalogPath = Join-Path $PSScriptRoot 'RemoteAccessSignatures.json'
+Import-Module $modulePath -Force -ErrorAction Stop
+$finalCheckCatalog = Get-CompuTekCatalog -Path $catalogPath
+
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
+    Assert-CompuTekNotCancelled
     if ($env:COMPUTEK_SCANNER_APP -eq '1') {
         [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
         [Console]::Out.Flush()
-        return [Console]::In.ReadLine()
+        $response = [Console]::In.ReadLine()
+        Assert-CompuTekNotCancelled
+        return $response
     }
-    return Read-Host $Prompt
+    $response = Read-Host $Prompt
+    Assert-CompuTekNotCancelled
+    return $response
 }
 
 function Read-CompuTekYesNoChoice {
@@ -27,6 +37,20 @@ function Read-CompuTekYesNoChoice {
         if ($response -match '^(?i:Y|YES)$') { return $true }
         if ($response -match '^(?i:N|NO)$') { return $false }
         Write-Host 'Please enter YES or NO.' -ForegroundColor Yellow
+    }
+}
+
+function Get-CompuTekAntivirusProductState {
+    param([Parameter(Mandatory)]$Product)
+
+    $state = [int64]$Product.productState
+    $stateHex = '{0:X6}' -f $state
+    return [pscustomobject]@{
+        Name = [string]$Product.displayName
+        ProductState = $state
+        ProductStateHex = $stateHex
+        Enabled = (($state -band 0xF000) -eq 0x1000)
+        SignaturesCurrent = (($state -band 0x00FF) -eq 0)
     }
 }
 
@@ -53,6 +77,7 @@ function Invoke-CompuTekSpeakerPlayback {
     )
 
     foreach ($note in $melody) {
+        Assert-CompuTekNotCancelled
         $duration = [Math]::Max(150,[int]$note[1])
         [Console]::Beep([int]$notes[[string]$note[0]],$duration)
         Start-Sleep -Milliseconds 150
@@ -236,6 +261,11 @@ $SplashtopFailed = $true
 $UpdatesFailed = $true
 $DeviceCheckFailed = $true
 
+trap [OperationCanceledException] {
+    Write-Host '[CANCELED] Final System Check stopped at a safe boundary. Any required checks not yet completed remain unverified.' -ForegroundColor Yellow
+    exit 6
+}
+
 # --- 1. Windows Edition & Activation ---
 $edition = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion").EditionID
 Write-Host "[INFO] Windows Edition: $edition" -ForegroundColor Cyan
@@ -382,39 +412,66 @@ else {
 # --- 3. Active Virus Protection ---
 try {
     $defender = $null
-    $otherAV  = $null
+    try { $defender = Get-MpComputerStatus -ErrorAction Stop } catch {}
+    $securityCenterError = $null
+    $avProducts = @()
+    try { $avProducts = @(Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop) } catch { $securityCenterError = $_.Exception.Message }
+    $decodedAvProducts = @($avProducts | ForEach-Object { Get-CompuTekAntivirusProductState $_ })
+    $activeCurrentProducts = @($decodedAvProducts | Where-Object {$_.Enabled -and $_.SignaturesCurrent})
 
-    try { $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue } catch {}
-
-    $avProducts = Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct -ErrorAction SilentlyContinue
-
-    if ($defender -and $defender.AntivirusEnabled -and $defender.RealTimeProtectionEnabled) {
-        Write-Host "[OK] Microsoft Defender active and protecting." -ForegroundColor Green
+    $defenderHealthy = (
+        $defender -and
+        [bool]$defender.AMServiceEnabled -and
+        [bool]$defender.AntivirusEnabled -and
+        [bool]$defender.AntispywareEnabled -and
+        [bool]$defender.RealTimeProtectionEnabled -and
+        $null -ne $defender.AntivirusSignatureAge -and
+        [int]$defender.AntivirusSignatureAge -le 7
+    )
+    if ($defenderHealthy) {
+        Write-Host ("[OK] Microsoft Defender services and real-time protection are active; signatures are {0} day(s) old." -f [int]$defender.AntivirusSignatureAge) -ForegroundColor Green
         $AntivirusFailed = $false
     }
-    elseif ($avProducts -and ($avProducts.productState -ne $null)) {
-        $names = ($avProducts.displayName | Sort-Object -Unique) -join ", "
-        Write-Host "[INFO] Third-party AV detected: $names (Defender off)" -ForegroundColor Cyan
+    elseif ($activeCurrentProducts.Count -gt 0) {
+        $names = @($activeCurrentProducts.Name | Sort-Object -Unique) -join ', '
+        Write-Host "[OK] Windows Security Center confirms active antivirus with current signatures: $names" -ForegroundColor Green
         $AntivirusFailed = $false
     }
     else {
-        Write-Host "[WARN] No active antivirus protection detected!" -ForegroundColor Yellow
+        foreach ($product in $decodedAvProducts) {
+            Write-Host ("[INFO] Antivirus state: {0}; enabled={1}; signatures current={2}; state=0x{3}" -f $product.Name,$product.Enabled,$product.SignaturesCurrent,$product.ProductStateHex) -ForegroundColor DarkGray
+        }
+        if ($securityCenterError) { Write-Host "[INFO] Windows Security Center query failed: $securityCenterError" -ForegroundColor DarkGray }
+        Write-Host '[WARN] No antivirus product was verified as active with current protection signatures.' -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "[WARN] Unable to verify antivirus protection." -ForegroundColor Yellow
+    Write-Host "[WARN] Unable to verify antivirus protection: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
-# --- 4. Splashtop Streamer ---
+# --- 4. CompuTek-owned Splashtop Streamer ---
 try {
-    $svc = Get-Service -Name "SplashtopRemoteService" -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -eq "Running") {
-        Write-Host "[OK] Splashtop Streamer running." -ForegroundColor Green
+    $managedIdentity = Get-CompuTekManagedIdentityStatus -Catalog $finalCheckCatalog
+    $svc = Get-CimInstance -ClassName Win32_Service -Filter "Name='SplashtopRemoteService'" -ErrorAction Stop
+    $servicePath = Get-CompuTekExecutablePath ([string]$svc.PathName)
+    $serviceEvidence = if ($servicePath) { Get-CompuTekFileEvidence -Path $servicePath } else { $null }
+    $serviceIsExpected = (
+        $svc -and
+        [string]$svc.State -eq 'Running' -and
+        $managedIdentity.SplashtopLinked -and
+        (Test-CompuTekPathWithinRoots -Path $servicePath -Roots @($managedIdentity.SplashtopInstallRoots)) -and
+        $serviceEvidence -and
+        [string]$serviceEvidence.SignatureStatus -eq 'Valid' -and
+        ("$($serviceEvidence.CompanyName) $($serviceEvidence.Signer)" -match '(?i)Splashtop')
+    )
+    if ($serviceIsExpected) {
+        Write-Host '[OK] CompuTek Splashtop ownership, installation path, publisher signature, and running service were verified.' -ForegroundColor Green
         $SplashtopFailed = $false
     } else {
-        Write-Host "[WARN] Splashtop Streamer not detected or not running!" -ForegroundColor Yellow
+        Write-Host '[WARN] Splashtop is not confirmed as the CompuTek-managed installation.' -ForegroundColor Yellow
+        Write-Host ("       running={0}; ownership linked={1}; path verified={2}; signature={3}" -f ([string]$svc.State -eq 'Running'),$managedIdentity.SplashtopLinked,(Test-CompuTekPathWithinRoots -Path $servicePath -Roots @($managedIdentity.SplashtopInstallRoots)),$(if($serviceEvidence){$serviceEvidence.SignatureStatus}else{'unavailable'})) -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "[WARN] Unable to check Splashtop service." -ForegroundColor Yellow
+    Write-Host "[WARN] Unable to verify the CompuTek Splashtop installation: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 # --- 5. Windows Updates ---

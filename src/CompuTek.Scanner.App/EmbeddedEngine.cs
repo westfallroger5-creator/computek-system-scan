@@ -28,6 +28,7 @@ namespace CompuTek.Scanner.App
         private const string PreCloneResource = "CompuTek.Scanner.Engine.PreClone.ps1";
         private const string ModuleResource = "CompuTek.Scanner.Engine.CompuTek.Scanner.Common.psm1";
         private const string CatalogResource = "CompuTek.Scanner.Engine.RemoteAccessSignatures.json";
+        private const string CatalogPublicKeyResource = "CompuTek.Scanner.Trust.CatalogPublicKey.xml";
 
         public static EngineLayout Prepare()
         {
@@ -88,12 +89,24 @@ namespace CompuTek.Scanner.App
         {
             string managedCatalog = Path.Combine(programDataRoot, "RemoteAccessSignatures.json");
             string portableCatalog = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RemoteAccessSignatures.json");
+            byte[] publicKey = ReadOptionalResource(assembly, CatalogPublicKeyResource);
             if (File.Exists(portableCatalog))
-                return CatalogValidator.Validate(File.ReadAllBytes(portableCatalog), "catalog beside the EXE");
+            {
+                string portableSignature = portableCatalog + ".sig";
+                RejectReparsePoint(portableCatalog);
+                RejectReparsePoint(portableSignature);
+                if (!File.Exists(portableSignature))
+                    throw new InvalidDataException("The catalog beside the EXE is unsigned. Add the matching RemoteAccessSignatures.json.sig file or remove the external catalog to use the trusted embedded default.");
+                return CatalogValidator.ValidateSigned(File.ReadAllBytes(portableCatalog), File.ReadAllBytes(portableSignature), publicKey, "signed catalog beside the EXE");
+            }
             if (File.Exists(managedCatalog))
             {
+                string managedSignature = managedCatalog + ".sig";
                 RejectReparsePoint(managedCatalog);
-                return CatalogValidator.Validate(File.ReadAllBytes(managedCatalog), "managed ProgramData catalog");
+                RejectReparsePoint(managedSignature);
+                if (!File.Exists(managedSignature))
+                    throw new InvalidDataException("The managed ProgramData catalog is unsigned. Add its matching .sig file or remove it to use the trusted embedded default.");
+                return CatalogValidator.ValidateSigned(File.ReadAllBytes(managedCatalog), File.ReadAllBytes(managedSignature), publicKey, "signed managed ProgramData catalog");
             }
             return CatalogValidator.Validate(ReadResource(assembly, CatalogResource), "embedded default catalog");
         }
@@ -109,6 +122,19 @@ namespace CompuTek.Scanner.App
             {
                 if (stream == null)
                     throw new InvalidOperationException("Required embedded scanner component is missing: " + resourceName);
+                using (MemoryStream memory = new MemoryStream())
+                {
+                    stream.CopyTo(memory);
+                    return memory.ToArray();
+                }
+            }
+        }
+
+        private static byte[] ReadOptionalResource(Assembly assembly, string resourceName)
+        {
+            using (Stream stream = assembly.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null) return null;
                 using (MemoryStream memory = new MemoryStream())
                 {
                     stream.CopyTo(memory);

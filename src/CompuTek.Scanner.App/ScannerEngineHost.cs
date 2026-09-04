@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 
 namespace CompuTek.Scanner.App
@@ -34,6 +35,8 @@ namespace CompuTek.Scanner.App
         private const string PromptPrefix = "__COMPUTEK_PROMPT__:";
         private readonly object sync = new object();
         private Process process;
+        private string cancellationFile;
+        private bool cancellationRequested;
 
         public event EventHandler<EngineOutputEventArgs> OutputReceived;
         public event EventHandler<EnginePromptEventArgs> PromptReceived;
@@ -45,6 +48,11 @@ namespace CompuTek.Scanner.App
             {
                 lock (sync) { return process != null && !process.HasExited; }
             }
+        }
+
+        public bool CancellationRequested
+        {
+            get { lock (sync) { return cancellationRequested; } }
         }
 
         public void Start(string powerShellPath, string scriptPath, IEnumerable<string> arguments, string workingDirectory)
@@ -75,6 +83,9 @@ namespace CompuTek.Scanner.App
                 startInfo.StandardErrorEncoding = Encoding.UTF8;
                 startInfo.EnvironmentVariables["COMPUTEK_SCANNER_APP"] = "1";
                 startInfo.EnvironmentVariables["COMPUTEK_SCANNER_PORTABLE_ROOT"] = AppDomain.CurrentDomain.BaseDirectory;
+                cancellationFile = Path.Combine(Path.GetTempPath(), "CompuTekScannerCancel-" + Guid.NewGuid().ToString("N") + ".flag");
+                cancellationRequested = false;
+                startInfo.EnvironmentVariables["COMPUTEK_SCANNER_CANCEL_FILE"] = cancellationFile;
 
                 process = new Process();
                 process.StartInfo = startInfo;
@@ -106,6 +117,27 @@ namespace CompuTek.Scanner.App
                     throw new InvalidOperationException("The scanner is not waiting for input.");
                 process.StandardInput.WriteLine(value ?? String.Empty);
                 process.StandardInput.Flush();
+            }
+        }
+
+        public void RequestCancellation()
+        {
+            lock (sync)
+            {
+                if (process == null || process.HasExited) return;
+                if (!cancellationRequested)
+                {
+                    File.WriteAllText(cancellationFile, "Cancellation requested at " + DateTime.UtcNow.ToString("o"), Encoding.UTF8);
+                    cancellationRequested = true;
+                }
+                // Unblock a script that is waiting for a technician response. The
+                // script checks the marker immediately after ReadLine returns.
+                try
+                {
+                    process.StandardInput.WriteLine(String.Empty);
+                    process.StandardInput.Flush();
+                }
+                catch { }
             }
         }
 
@@ -141,6 +173,7 @@ namespace CompuTek.Scanner.App
             }
             EventHandler<EngineExitedEventArgs> handler = Exited;
             if (handler != null) handler(this, new EngineExitedEventArgs(exitCode));
+            CleanupCancellationFile();
         }
 
         private static string JoinArguments(IEnumerable<string> arguments)
@@ -195,7 +228,19 @@ namespace CompuTek.Scanner.App
                     process.Dispose();
                     process = null;
                 }
+                if (process == null) CleanupCancellationFile();
             }
+        }
+
+        private void CleanupCancellationFile()
+        {
+            try
+            {
+                if (!String.IsNullOrWhiteSpace(cancellationFile) && File.Exists(cancellationFile))
+                    File.Delete(cancellationFile);
+            }
+            catch { }
+            cancellationFile = null;
         }
     }
 }

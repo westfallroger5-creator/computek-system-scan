@@ -23,12 +23,17 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
+    Assert-CompuTekNotCancelled
     if ($env:COMPUTEK_SCANNER_APP -eq '1') {
         [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
         [Console]::Out.Flush()
-        return [Console]::In.ReadLine()
+        $response = [Console]::In.ReadLine()
+        Assert-CompuTekNotCancelled
+        return $response
     }
-    return Read-Host $Prompt
+    $response = Read-Host $Prompt
+    Assert-CompuTekNotCancelled
+    return $response
 }
 
 function Complete-CompuTekRun {
@@ -55,6 +60,12 @@ $modulePath = Join-Path $PSScriptRoot 'CompuTek.Scanner.Common.psm1'
 $catalogPath = Join-Path $PSScriptRoot 'RemoteAccessSignatures.json'
 Import-Module $modulePath -Force -ErrorAction Stop
 $catalog = Get-CompuTekCatalog -Path $catalogPath
+
+trap [OperationCanceledException] {
+    Write-CompuTekResultReason -Message 'The technician canceled post-scam collection. The partial case data must not be treated as a complete or clean result.'
+    Complete-CompuTekRun 'Post-scam collection canceled safely — partial evidence may have been saved.'
+    exit 6
+}
 
 $started = Get-Date
 $cutoff = $started.AddDays(-1 * [Math]::Abs($LookbackDays))
@@ -105,6 +116,17 @@ function Test-CompuTekPostScamPersistenceText {
     )
 }
 
+function Write-CompuTekResultReason {
+    param([Parameter(Mandatory)][string]$Message)
+    $singleLine = ($Message -replace '[\r\n]+',' ').Trim()
+    if ($env:COMPUTEK_SCANNER_APP -eq '1') {
+        [Console]::Out.WriteLine("__COMPUTEK_RESULT_REASON__:$singleLine")
+        [Console]::Out.Flush()
+    } else {
+        Write-Host "ATTENTION REASON: $singleLine" -ForegroundColor Yellow
+    }
+}
+
 function Get-CompuTekPowerShellCommandText {
     param($Event)
     $data = Get-EventDataMap $Event
@@ -135,6 +157,17 @@ function Get-CompuTekDefenderFindingName {
         return ('Microsoft Defender detection: {0}' -f $Matches.Threat.Trim())
     }
     return "Microsoft Defender event $EventId"
+}
+
+function Test-CompuTekDefenderConfigurationNoOp {
+    param([AllowNull()][string]$Message)
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $false }
+    $oldMatch = [regex]::Match($Message,'(?im)^\s*Old value:\s*(?<Setting>.+?)\s*=\s*(?<Value>\S+)\s*$')
+    $newMatch = [regex]::Match($Message,'(?im)^\s*New value:\s*(?<Setting>.+?)\s*=\s*(?<Value>\S+)\s*$')
+    if (-not $oldMatch.Success -or -not $newMatch.Success) { return $false }
+    $oldSetting = @($oldMatch.Groups['Setting'].Value -split '\\')[-1].Trim()
+    $newSetting = @($newMatch.Groups['Setting'].Value -split '\\')[-1].Trim()
+    return ($oldSetting -ieq $newSetting -and $oldMatch.Groups['Value'].Value -ieq $newMatch.Groups['Value'].Value)
 }
 
 function Test-CompuTekTrustedScannerScriptPath {
@@ -366,6 +399,7 @@ function New-CompuTekPostScamHtmlReport {
 
 function Write-Audit {
     param([string]$Message, [string]$Color = 'Gray')
+    Assert-CompuTekNotCancelled
     $line = '[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'),$Message
     $line | Out-File -LiteralPath $script:TextLog -Append -Encoding UTF8
     Write-Host $Message -ForegroundColor $Color
@@ -688,6 +722,10 @@ foreach ($event in Get-RecentEvents -LogName 'Windows PowerShell' -Ids @(800) -M
 }
 foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-Windows Defender/Operational' -Ids @(1116,1117,5001,5007,5013) -Maximum 2000) {
     $message = Get-EventMessage $event
+    if ($event.Id -eq 5007 -and (Test-CompuTekDefenderConfigurationNoOp $message)) {
+        Add-Evidence -Category 'SecurityControl' -Severity 'Informational' -Name 'Defender configuration recorded with no effective value change' -Details $message -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data (Get-EventDataMap $event)
+        continue
+    }
     $include = ($event.Id -in @(1116,1117,5001,5013) -or ($event.Id -eq 5007 -and $message -match '(?i)(exclusion|disable|realtime|behavior|script.?scanning|cloud|tamper)'))
     if ($include) {
         $severity = if ($event.Id -in @(1116,1117,5001,5013)) {'High'} else {'Medium'}
@@ -865,7 +903,7 @@ try {
     $processMap = @{}
     foreach ($process in Get-CimInstance Win32_Process -ErrorAction Stop) { $processMap[[string]$process.ProcessId] = $process }
     $connections = @()
-    foreach ($connection in Get-NetTCPConnection -State Established -ErrorAction Stop) {
+    foreach ($connection in @(Get-CompuTekEstablishedTcpConnections)) {
         if ($connection.RemoteAddress -in @('127.0.0.1','::1','0.0.0.0','::')) { continue }
         $process = $processMap[[string]$connection.OwningProcess]
         $path = if ($process) {$process.ExecutablePath}else{$null}
@@ -1156,6 +1194,12 @@ if ($env:COMPUTEK_SCANNER_APP -eq '1') {
     } catch {
         Write-Host "The report could not be opened automatically. Open this file: $htmlReportPath" -ForegroundColor Yellow
     }
+}
+if ($script:Gaps.Count -gt 0) {
+    $gapSummary = @($script:Gaps | Select-Object -First 3) -join '; '
+    Write-CompuTekResultReason -Message ("Post-scam evidence collection is incomplete because {0} required collector(s) failed: {1}. Review the HTML report and saved collection-failure details; do not treat the computer as clean." -f $script:Gaps.Count,$gapSummary)
+    Complete-CompuTekRun 'Post-scam evidence collection complete — ATTENTION REQUIRED because collection was incomplete.'
+    exit 7
 }
 Complete-CompuTekRun 'Post-scam evidence collection complete.'
 exit 0

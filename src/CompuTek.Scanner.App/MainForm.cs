@@ -32,6 +32,7 @@ namespace CompuTek.Scanner.App
         private readonly Label promptLabel = new Label();
         private readonly TextBox responseText = new TextBox();
         private readonly Button sendButton = new Button();
+        private readonly Button cancelButton = new Button();
         private readonly Label statusLabel = new Label();
         private readonly ProgressBar progress = new ProgressBar();
         private readonly Timer runningTimer = new Timer();
@@ -46,12 +47,14 @@ namespace CompuTek.Scanner.App
         private DateTime engineStartedUtc;
         private string sessionLogPath;
         private string resultReason;
+        private TimeSpan? engineTimeout;
+        private bool timeoutCancellationRequested;
 
         public MainForm()
         {
             Text = "CompuTek Scanner";
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(1160, 700);
+            MinimumSize = new Size(1000, 580);
             Size = new Size(1180, 820);
             BackColor = LightBackground;
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -75,7 +78,7 @@ namespace CompuTek.Scanner.App
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 190F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 82F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 35F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             Controls.Add(layout);
 
             Panel header = new Panel();
@@ -318,7 +321,7 @@ namespace CompuTek.Scanner.App
 
             Panel statusPanel = new Panel();
             statusPanel.Dock = DockStyle.Fill;
-            statusPanel.Size = new Size(ClientSize.Width, 35);
+            statusPanel.Size = new Size(ClientSize.Width, 40);
             statusPanel.BackColor = Color.White;
             statusPanel.Padding = new Padding(12, 7, 12, 5);
             statusLabel.Text = "Ready";
@@ -343,18 +346,26 @@ namespace CompuTek.Scanner.App
             inputPanel.Controls.Add(promptLabel);
             responseText.Location = new Point(14, 35);
             responseText.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-            responseText.Width = 1018;
+            responseText.Width = 870;
             responseText.BorderStyle = BorderStyle.FixedSingle;
             responseText.Enabled = false;
             responseText.KeyDown += HandleResponseKeyDown;
             inputPanel.Controls.Add(responseText);
             sendButton.Text = "Send";
-            sendButton.Location = new Point(1043, 33);
+            sendButton.Location = new Point(895, 33);
             sendButton.Size = new Size(96, 30);
             sendButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             sendButton.Enabled = false;
             sendButton.Click += SendResponse;
             inputPanel.Controls.Add(sendButton);
+            cancelButton.Text = "Cancel safely";
+            cancelButton.AccessibleName = "Cancel the running tool safely";
+            cancelButton.Location = new Point(1001, 33);
+            cancelButton.Size = new Size(138, 30);
+            cancelButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            cancelButton.Enabled = false;
+            cancelButton.Click += CancelRunningTool;
+            inputPanel.Controls.Add(cancelButton);
             layout.Controls.Add(inputPanel, 0, 3);
 
             GroupBox outputGroup = new GroupBox();
@@ -380,10 +391,11 @@ namespace CompuTek.Scanner.App
             {
                 engineLayout = EmbeddedEngine.Prepare();
                 catalogLabel.Text = String.Format(
-                    "Signatures {0}  •  {1} product families\r\n{2}",
+                    "Signatures {0}  •  {1} product families\r\n{2}; {3}",
                     engineLayout.Catalog.Version,
                     engineLayout.Catalog.ProductCount,
-                    engineLayout.Catalog.SourceDescription);
+                    engineLayout.Catalog.SourceDescription,
+                    engineLayout.Catalog.SignatureDescription);
                 statusLabel.Text = "Ready — signature catalog validated";
                 SetActionControlsEnabled(true);
             }
@@ -492,9 +504,11 @@ namespace CompuTek.Scanner.App
                 openReportButton.Enabled = false;
                 awaitingInput = false;
                 resultReason = null;
+                timeoutCancellationRequested = false;
                 runningDisplayName = displayName;
                 currentStage = "Starting scanner engine";
                 engineStartedUtc = DateTime.UtcNow;
+                engineTimeout = GetEngineTimeout(displayName);
                 SetRunningState(true, displayName + " is running");
                 runningTimer.Start();
 
@@ -590,6 +604,10 @@ namespace CompuTek.Scanner.App
                     status = runningDisplayName + " completed — NOT READY for Acronis";
                 else if (args.ExitCode == 5 && String.Equals(runningDisplayName, "Final System Check", StringComparison.Ordinal))
                     status = runningDisplayName + " completed — ATTENTION REQUIRED";
+                else if (args.ExitCode == 7 && String.Equals(runningDisplayName, "Post-scam evidence collection", StringComparison.Ordinal))
+                    status = runningDisplayName + " completed — ATTENTION REQUIRED / INCOMPLETE";
+                else if (args.ExitCode == 6)
+                    status = runningDisplayName + " canceled safely";
                 else
                     status = runningDisplayName + " stopped with exit code " + args.ExitCode;
                 SetRunningState(false, status);
@@ -610,6 +628,17 @@ namespace CompuTek.Scanner.App
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
                 }
+                if (args.ExitCode == 7 && String.Equals(runningDisplayName, "Post-scam evidence collection", StringComparison.Ordinal))
+                {
+                    string reason = String.IsNullOrWhiteSpace(resultReason)
+                        ? "Post-scam collection was incomplete. Review Collection failures in the saved HTML report and do not treat the computer as clean."
+                        : resultReason;
+                    MessageBox.Show(
+                        reason + (openReportButton.Enabled ? "\r\n\r\nUse Open last report to review the findings." : String.Empty),
+                        "Post-scam collection needs attention",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
             });
         }
 
@@ -624,6 +653,37 @@ namespace CompuTek.Scanner.App
                 ? elapsed.ToString(@"h\:mm\:ss")
                 : elapsed.ToString(@"m\:ss");
             statusLabel.Text = currentStage + " — elapsed " + elapsedText;
+            if (engineTimeout.HasValue && elapsed >= engineTimeout.Value && !timeoutCancellationRequested)
+            {
+                timeoutCancellationRequested = true;
+                AppendOutput("TIMEOUT: The safe runtime limit was reached. Cancellation was requested; the current Windows operation will stop at its next safe boundary.", Color.Khaki);
+                engineHost.RequestCancellation();
+            }
+        }
+
+        private static TimeSpan? GetEngineTimeout(string displayName)
+        {
+            if (String.Equals(displayName, "Remote-access scanner", StringComparison.OrdinalIgnoreCase)) return TimeSpan.FromHours(6);
+            if (String.Equals(displayName, "Post-scam evidence collection", StringComparison.OrdinalIgnoreCase)) return TimeSpan.FromHours(4);
+            if (String.Equals(displayName, "Final System Check", StringComparison.OrdinalIgnoreCase)) return TimeSpan.FromMinutes(45);
+            if (String.Equals(displayName, "Pre-Clone Preparation", StringComparison.OrdinalIgnoreCase)) return TimeSpan.FromHours(49);
+            return null;
+        }
+
+        private void CancelRunningTool(object sender, EventArgs args)
+        {
+            if (engineHost == null || !engineHost.IsRunning) return;
+            DialogResult answer = MessageBox.Show(
+                "Request safe cancellation?\r\n\r\nToolbox SFC and DISM will be interrupted promptly and must be run again before the computer is marked ready. An uninstaller, CHKDSK repair, or BitLocker operation already started may continue until it reaches a protected stopping point. Partial results must not be treated as clean.",
+                "Cancel running tool",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (answer != DialogResult.Yes) return;
+            engineHost.RequestCancellation();
+            cancelButton.Enabled = false;
+            statusLabel.Text = "Safe cancellation requested — waiting for the current operation";
+            AppendOutput("Safe cancellation requested by the technician.", Color.Khaki);
         }
 
         private void SendResponse(object sender, EventArgs args)
@@ -739,6 +799,7 @@ namespace CompuTek.Scanner.App
             statusLabel.Text = status;
             SetActionControlsEnabled(!running && engineLayout != null);
             reloadButton.Enabled = !running;
+            cancelButton.Enabled = running;
         }
 
         private void SetActionControlsEnabled(bool enabled)
@@ -809,11 +870,19 @@ namespace CompuTek.Scanner.App
             if (engineHost != null && engineHost.IsRunning)
             {
                 args.Cancel = true;
-                MessageBox.Show(
-                    "A scanner or technician tool is still running. Wait for it to finish before closing the application so work is not interrupted.",
+                DialogResult answer = MessageBox.Show(
+                    "A scanner or technician tool is still running.\r\n\r\nChoose Yes to request cancellation, or No to leave it running. Toolbox SFC and DISM stop promptly; protected disk, BitLocker, or uninstall operations may need to reach a safe stopping point before the window can close.",
                     "Tool still running",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2);
+                if (answer == DialogResult.Yes)
+                {
+                    engineHost.RequestCancellation();
+                    cancelButton.Enabled = false;
+                    statusLabel.Text = "Safe cancellation requested — waiting for the current operation";
+                    AppendOutput("Safe cancellation requested by the technician.", Color.Khaki);
+                }
             }
         }
     }

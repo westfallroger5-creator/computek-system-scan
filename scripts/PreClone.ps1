@@ -12,14 +12,26 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     exit 1
 }
 
+function Assert-CompuTekWorkflowNotCancelled {
+    $cancelFile = [string]$env:COMPUTEK_SCANNER_CANCEL_FILE
+    if ($cancelFile -and (Test-Path -LiteralPath $cancelFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+        throw (New-Object OperationCanceledException 'The technician canceled Pre-Clone.')
+    }
+}
+
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
+    Assert-CompuTekWorkflowNotCancelled
     if ($env:COMPUTEK_SCANNER_APP -eq '1') {
         [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
         [Console]::Out.Flush()
-        return [Console]::In.ReadLine()
+        $response = [Console]::In.ReadLine()
+        Assert-CompuTekWorkflowNotCancelled
+        return $response
     }
-    return Read-Host $Prompt
+    $response = Read-Host $Prompt
+    Assert-CompuTekWorkflowNotCancelled
+    return $response
 }
 
 function Write-CompuTekStage {
@@ -50,7 +62,7 @@ function Save-CompuTekRecoveryPasswords {
         throw "No complete 48-digit recovery password is available for $mountPoint."
     }
 
-    $driveLabel = $mountPoint.TrimEnd(':').Replace('\\','_').Replace('/','_')
+    $driveLabel = ($mountPoint.TrimEnd(':') -replace '[^A-Za-z0-9_-]','_').Trim('_')
     $destination = Join-Path $DestinationDirectory ("BitLockerRecovery_{0}_{1}_{2}.txt" -f $ComputerName,$driveLabel,$Timestamp)
     $lines = @(
         'BITLOCKER RECOVERY INFORMATION - CONFIDENTIAL',
@@ -110,6 +122,7 @@ function Wait-CompuTekDecryption {
     $deadline = [DateTime]::UtcNow.AddHours($TimeoutHours)
     $consecutiveQueryFailures = 0
     while ([DateTime]::UtcNow -lt $deadline) {
+        Assert-CompuTekWorkflowNotCancelled
         try {
             $volume = Get-BitLockerVolume -MountPoint $MountPoint -ErrorAction Stop
             $consecutiveQueryFailures = 0
@@ -129,7 +142,10 @@ function Wait-CompuTekDecryption {
                 return [pscustomobject]@{ Success = $false; State = 'QueryFailed'; EncryptionPercentage = $null; Message = 'BitLocker status failed five times in a row' }
             }
         }
-        Start-Sleep -Seconds $PollSeconds
+        foreach ($second in 1..$PollSeconds) {
+            Start-Sleep -Seconds 1
+            Assert-CompuTekWorkflowNotCancelled
+        }
     }
 
     return [pscustomobject]@{ Success = $false; State = 'TimedOut'; EncryptionPercentage = $null; Message = "Decryption did not finish within $TimeoutHours hours" }
@@ -195,6 +211,203 @@ function Get-CompuTekPortableMediaInfo {
     }
 }
 
+function Get-CompuTekWindowsDisk {
+    param([Parameter(Mandatory)][int]$ServiceDiskNumber)
+
+    $systemDrive = ([string]$env:SystemDrive).TrimEnd(':')
+    if ($systemDrive -notmatch '^[A-Za-z]$') { throw 'The Windows system drive could not be identified.' }
+    $windowsPartition = Get-Partition -DriveLetter $systemDrive -ErrorAction Stop | Select-Object -First 1
+    if (-not $windowsPartition -or $null -eq $windowsPartition.DiskNumber) { throw "The physical disk containing $systemDrive`: could not be identified." }
+    if ([int]$windowsPartition.DiskNumber -eq $ServiceDiskNumber) { throw 'The Windows source disk unexpectedly matches the service USB disk.' }
+    $disk = Get-Disk -Number ([int]$windowsPartition.DiskNumber) -ErrorAction Stop
+    return [pscustomobject][ordered]@{
+        SystemDrive = "$($systemDrive.ToUpperInvariant()):"
+        DiskNumber = [int]$disk.Number
+        FriendlyName = [string]$disk.FriendlyName
+        Model = if ($disk.PSObject.Properties['Model']) {[string]$disk.Model} else {''}
+        BusType = [string]$disk.BusType
+        PartitionStyle = [string]$disk.PartitionStyle
+        IsBoot = [bool]$disk.IsBoot
+        IsSystem = [bool]$disk.IsSystem
+        Size = [uint64]$disk.Size
+    }
+}
+
+function Get-CompuTekCloneStorageRisks {
+    param(
+        [Parameter(Mandatory)]$WindowsDisk,
+        [Parameter(Mandatory)][int]$ServiceDiskNumber
+    )
+
+    $risks = New-Object System.Collections.Generic.List[object]
+    $diskIdentity = "{0} {1} {2}" -f [string]$WindowsDisk.FriendlyName,[string]$WindowsDisk.Model,[string]$WindowsDisk.BusType
+    if ($diskIdentity -match '(?i)\b(?:RAID|Optane|Storage Spaces|iSCSI|Virtual Disk)\b') {
+        $risks.Add([pscustomobject]@{Type='Storage layout';Message="The Windows disk reports a storage type that may need an Acronis storage driver or array-level clone procedure: $($diskIdentity.Trim())."})
+    }
+
+    try {
+        $controllerMatches = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+            $_.DeviceClass -in @('SCSIAdapter','HDC') -and
+            # The generic Microsoft Storage Spaces Controller exists on ordinary
+            # Windows installations even when no Storage Spaces pool is active.
+            # Active pools are checked separately below.
+            ("$($_.DeviceName) $($_.Manufacturer) $($_.DriverProviderName)" -match '(?i)\b(?:Optane|RAID|VMD|Rapid Storage|Intel\s+RST)\b')
+        } | ForEach-Object {[string]$_.DeviceName} | Where-Object {$_} | Sort-Object -Unique)
+        foreach ($controller in $controllerMatches) {
+            $risks.Add([pscustomobject]@{Type='Storage controller';Message="Detected '$controller'. Confirm the Acronis boot media has the required RAID/RST/VMD/Optane driver and that the destination layout is supported."})
+        }
+    } catch {
+        $risks.Add([pscustomobject]@{Type='Storage inspection incomplete';Message="Storage-controller inspection failed: $($_.Exception.Message)"})
+    }
+
+    try {
+        $activeStoragePools = @(Get-StoragePool -ErrorAction Stop | Where-Object {$_.IsPrimordial -eq $false})
+        foreach ($pool in $activeStoragePools) {
+            $risks.Add([pscustomobject]@{Type='Storage Spaces';Message="Active Storage Spaces pool '$($pool.FriendlyName)' detected. Confirm which physical disks belong to it and use an array-aware migration procedure."})
+        }
+    } catch {
+        $risks.Add([pscustomobject]@{Type='Storage inspection incomplete';Message="Storage Spaces pool inspection failed: $($_.Exception.Message)"})
+    }
+
+    try {
+        $otherSystemPartitions = @(Get-Partition -ErrorAction Stop | Where-Object {
+            [int]$_.DiskNumber -ne [int]$WindowsDisk.DiskNumber -and
+            [int]$_.DiskNumber -ne $ServiceDiskNumber -and
+            ($_.IsSystem -eq $true -or $_.IsBoot -eq $true)
+        })
+        foreach ($partition in $otherSystemPartitions) {
+            $risks.Add([pscustomobject]@{Type='Split boot layout';Message="Windows boot/system files also appear on disk $($partition.DiskNumber), partition $($partition.PartitionNumber). Cloning only disk $($WindowsDisk.DiskNumber) may not produce a bootable replacement."})
+        }
+    } catch {
+        $risks.Add([pscustomobject]@{Type='Boot-layout inspection incomplete';Message="Boot-partition inspection failed: $($_.Exception.Message)"})
+    }
+    return @($risks.ToArray())
+}
+
+function Get-CompuTekFixedPartitionInventory {
+    param([Parameter(Mandatory)][int]$TargetDiskNumber)
+
+    $inventory = New-Object System.Collections.Generic.List[object]
+    $internalBusTypes = @('ATA','SATA','SAS','RAID','NVMe','iSCSI','Virtual','File Backed Virtual','Storage Spaces')
+    $knownNoVolumeGptTypes = @(
+        '{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}', # EFI system
+        '{E3C9E316-0B5C-4DB8-817D-F92DF00215AE}', # Microsoft reserved
+        '{DE94BBA4-06D1-4D40-A16A-BFD50179D6AC}'  # Windows recovery
+    )
+
+    foreach ($disk in @(Get-Disk -Number $TargetDiskNumber -ErrorAction Stop)) {
+        $busType = [string]$disk.BusType
+        if ($busType -in @('USB','SD','MMC')) {
+            Write-Host ("[INFO] Excluding other external disk {0} ({1}); only internal fixed disks are clone targets." -f $disk.Number,$busType) -ForegroundColor DarkGray
+            continue
+        }
+        if ($busType -and $busType -notin $internalBusTypes -and $busType -ne 'Unknown') {
+            Write-Host ("[WARN] Disk {0} has unrecognized bus type {1}; its partitions will remain blocking until reviewed." -f $disk.Number,$busType) -ForegroundColor Yellow
+        }
+
+        $partitions = @(Get-Partition -DiskNumber $disk.Number -ErrorAction Stop | Sort-Object PartitionNumber)
+        foreach ($partition in $partitions) {
+            $volume = $null
+            try { $volume = @(Get-Volume -Partition $partition -ErrorAction Stop | Select-Object -First 1)[0] } catch {}
+            $accessPaths = @($partition.AccessPaths | Where-Object {$_})
+            $mountPoint = $null
+            if ($volume -and $volume.DriveLetter) {
+                $mountPoint = "$($volume.DriveLetter):"
+            } elseif ($volume -and $volume.PSObject.Properties['Path'] -and $volume.Path) {
+                $mountPoint = [string]$volume.Path
+            } else {
+                $mountPoint = @($accessPaths | Where-Object {$_ -match '^\\\\\?\\Volume\{[^}]+\}\\?$'} | Select-Object -First 1)
+                if ($mountPoint) { $mountPoint = [string]$mountPoint[0] }
+            }
+
+            $gptType = ([string]$partition.GptType).ToUpperInvariant()
+            $isKnownSystemPartition = ($knownNoVolumeGptTypes -contains $gptType -or [string]$partition.Type -match '(?i)system|reserved|recovery')
+            $fileSystem = if ($volume) { [string]$volume.FileSystem } else { '' }
+            # EFI, MSR, and Windows Recovery partitions are hidden/protected by design.
+            # Inventory them so the whole clone layout is accounted for, but do not
+            # change their GPT attributes merely to force an online CHKDSK pass.
+            $requiresDiskCheck = [bool]($mountPoint -and $fileSystem -and -not $isKnownSystemPartition)
+            $requiresBitLockerCheck = $requiresDiskCheck
+            $coverageReady = [bool]($requiresDiskCheck -or $isKnownSystemPartition)
+            $message = if ($isKnownSystemPartition) {
+                'Known EFI/system/reserved/recovery partition is included in the clone layout and is not mounted or modified for online CHKDSK'
+            } elseif ($requiresDiskCheck) {
+                'File-system volume will receive a read-only CHKDSK check'
+            } else {
+                'Partition could not be mapped to a checkable file-system volume'
+            }
+            $inventory.Add([pscustomobject][ordered]@{
+                DiskNumber = [int]$disk.Number
+                PartitionNumber = [int]$partition.PartitionNumber
+                BusType = $busType
+                PartitionType = [string]$partition.Type
+                GptType = [string]$partition.GptType
+                Size = [uint64]$partition.Size
+                DriveLetter = if ($volume) {[string]$volume.DriveLetter} else {''}
+                MountPoint = $mountPoint
+                FileSystem = $fileSystem
+                RequiresBitLockerCheck = $requiresBitLockerCheck
+                RequiresDiskCheck = $requiresDiskCheck
+                CoverageReady = $coverageReady
+                Message = $message
+            })
+        }
+    }
+    return @($inventory.ToArray())
+}
+
+function Invoke-CompuTekReadOnlyChkdsk {
+    param(
+        [Parameter(Mandatory)]$Volume,
+        [Parameter(Mandatory)][string]$CaseDirectory
+    )
+
+    $checkTarget = [string]$Volume.MountPoint
+    $temporaryMount = $null
+    $temporaryMountAdded = $false
+    $cleanupError = $null
+    try {
+        if (-not $Volume.DriveLetter) {
+            $mountRoot = Join-Path $env:ProgramData 'CompuTek\PreCloneMounts'
+            if (-not (Test-Path -LiteralPath $mountRoot)) { New-Item -Path $mountRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+            $temporaryMount = Join-Path $mountRoot ("Disk{0}_Partition{1}_{2}" -f $Volume.DiskNumber,$Volume.PartitionNumber,[Guid]::NewGuid().ToString('N'))
+            New-Item -Path $temporaryMount -ItemType Directory -ErrorAction Stop | Out-Null
+            Add-PartitionAccessPath -DiskNumber $Volume.DiskNumber -PartitionNumber $Volume.PartitionNumber -AccessPath $temporaryMount -ErrorAction Stop
+            $temporaryMountAdded = $true
+            $checkTarget = $temporaryMount
+            Write-Host "[INFO] Temporarily mounted the letterless partition at $temporaryMount for its read-only check." -ForegroundColor DarkGray
+        }
+
+        $checkArguments = if ([string]$Volume.FileSystem -eq 'NTFS') { @($checkTarget,'/scan') } else { @($checkTarget) }
+        $output = @(& chkdsk.exe @checkArguments 2>&1)
+        $code = $LASTEXITCODE
+        return [pscustomobject]@{Output=$output;ExitCode=$code;CheckTarget=$checkTarget;TemporaryMountUsed=[bool]$temporaryMount}
+    }
+    finally {
+        if ($temporaryMountAdded) {
+            try {
+                Remove-PartitionAccessPath -DiskNumber $Volume.DiskNumber -PartitionNumber $Volume.PartitionNumber -AccessPath $temporaryMount -ErrorAction Stop
+                Write-Host "[OK] Removed temporary partition mount point $temporaryMount." -ForegroundColor DarkGray
+            } catch {
+                $cleanupError = $_.Exception.Message
+                Write-Host "[BLOCKED] Could not remove temporary partition mount point ${temporaryMount}: $cleanupError" -ForegroundColor Red
+            }
+        }
+        if ($temporaryMount -and (Test-Path -LiteralPath $temporaryMount -PathType Container -ErrorAction SilentlyContinue)) {
+            try { Remove-Item -LiteralPath $temporaryMount -Force -ErrorAction Stop } catch {
+                if (-not $cleanupError) { $cleanupError = $_.Exception.Message }
+            }
+        }
+        if ($cleanupError) { throw "Temporary partition mount cleanup failed: $cleanupError" }
+    }
+}
+
+trap [OperationCanceledException] {
+    Write-Host '[CANCELED] Pre-Clone stopped at a safe boundary. Any BitLocker decryption already started continues under Windows; do not disconnect power.' -ForegroundColor Yellow
+    Write-Host 'Run Pre-Clone again before starting Acronis. Partial results are NOT READY.' -ForegroundColor Yellow
+    exit 6
+}
+
 $portableRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) {
     $env:COMPUTEK_SCANNER_PORTABLE_ROOT
 } else {
@@ -232,42 +445,55 @@ Write-Host "Case folder: $caseDirectory" -ForegroundColor Green
 Write-Host ("Service media: {0}: on physical disk {1} ({2}, {3})" -f $portableMedia.DriveLetter,$portableMedia.DiskNumber,$portableMedia.BusType,$portableMedia.FriendlyName) -ForegroundColor Cyan
 Write-Host 'Recovery-key files are confidential. Secure or remove them from the service USB after the job.' -ForegroundColor Yellow
 
-$fixedVolumes = @()
+$windowsDisk = $null
+$partitionInventory = @()
+$ignoredInternalDisks = @()
+$storageRisks = @()
 $storageMappingSucceeded = $true
 try {
-    $fixedVolumes = @(Get-Volume -ErrorAction Stop | Where-Object {
-        $_.DriveLetter -and $_.DriveType -eq 'Fixed'
-    } | Sort-Object DriveLetter)
+    $windowsDisk = Get-CompuTekWindowsDisk -ServiceDiskNumber $portableMedia.DiskNumber
+    Write-Host ("Clone target: Windows {0} on physical disk {1} ({2}, {3})" -f $windowsDisk.SystemDrive,$windowsDisk.DiskNumber,$windowsDisk.BusType,$windowsDisk.FriendlyName) -ForegroundColor Cyan
+    $partitionInventory = @(Get-CompuTekFixedPartitionInventory -TargetDiskNumber $windowsDisk.DiskNumber)
+    if ($partitionInventory.Count -eq 0) { throw 'No partitions were found on the physical disk containing Windows.' }
+    $ignoredInternalDisks = @(Get-Disk -ErrorAction Stop | Where-Object {
+        [int]$_.Number -ne [int]$windowsDisk.DiskNumber -and
+        [int]$_.Number -ne [int]$portableMedia.DiskNumber -and
+        [string]$_.BusType -notin @('USB','SD','MMC')
+    } | ForEach-Object {
+        [pscustomobject]@{DiskNumber=[int]$_.Number;FriendlyName=[string]$_.FriendlyName;BusType=[string]$_.BusType;Size=[uint64]$_.Size}
+    })
+    foreach ($disk in $ignoredInternalDisks) {
+        Write-Host ("[INFO] Internal disk {0} ({1}, {2}) is not part of this Windows-disk clone and will not block readiness. Move it physically if needed." -f $disk.DiskNumber,$disk.BusType,$disk.FriendlyName) -ForegroundColor DarkGray
+    }
+    $storageRisks = @(Get-CompuTekCloneStorageRisks -WindowsDisk $windowsDisk -ServiceDiskNumber $portableMedia.DiskNumber)
 }
 catch {
     $storageMappingSucceeded = $false
-    Write-Host "[BLOCKED] Fixed-drive inventory failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "[BLOCKED] Windows source-disk inventory failed: $($_.Exception.Message)" -ForegroundColor Red
+}
+
+$storageLayoutReady = $storageMappingSucceeded -and $storageRisks.Count -eq 0
+if ($storageRisks.Count -gt 0) {
+    Write-Host '[BLOCKED] The storage layout needs senior-technician review before cloning:' -ForegroundColor Red
+    foreach ($risk in $storageRisks) { Write-Host (" - [{0}] {1}" -f $risk.Type,$risk.Message) -ForegroundColor Yellow }
 }
 
 $portableDrive = $portableMedia.DriveLetter
-$targetVolumes = @()
-foreach ($volume in $fixedVolumes) {
-    try {
-        $partition = Get-Partition -DriveLetter $volume.DriveLetter -ErrorAction Stop | Select-Object -First 1
-        if (-not $partition -or $null -eq $partition.DiskNumber) { throw 'No physical disk number was returned.' }
-        if ([int]$partition.DiskNumber -eq [int]$portableMedia.DiskNumber) {
-            Write-Host ("[INFO] Excluding service-media volume {0}: on physical disk {1}." -f $volume.DriveLetter,$portableMedia.DiskNumber) -ForegroundColor DarkGray
-            continue
-        }
-        $targetVolumes += $volume
-    }
-    catch {
-        $storageMappingSucceeded = $false
-        Write-Host ("[BLOCKED] Could not map volume {0}: to a physical disk: {1}" -f $volume.DriveLetter,$_.Exception.Message) -ForegroundColor Red
-    }
+$partitionCoverageReady = $storageMappingSucceeded -and @($partitionInventory | Where-Object {-not $_.CoverageReady}).Count -eq 0
+foreach ($partition in $partitionInventory) {
+    $label = "disk $($partition.DiskNumber), partition $($partition.PartitionNumber)"
+    if ($partition.MountPoint) { $label += " ($($partition.MountPoint))" }
+    Write-Host ("[PARTITION] {0}: {1}" -f $label,$partition.Message) -ForegroundColor $(if($partition.CoverageReady){'DarkGray'}else{'Red'})
 }
+$bitLockerTargetVolumes = @($partitionInventory | Where-Object {$_.RequiresBitLockerCheck})
+$diskCheckTargetVolumes = @($partitionInventory | Where-Object {$_.RequiresDiskCheck})
 $bitLockerResults = @()
 $keyBackups = @()
 $diskResults = @()
-$inspectionSucceeded = $storageMappingSucceeded -and $targetVolumes.Count -gt 0
+$inspectionSucceeded = $partitionCoverageReady -and $diskCheckTargetVolumes.Count -gt 0
 $decryptionApproved = $false
 
-Write-CompuTekStage 'Inspecting BitLocker status on fixed drives'
+Write-CompuTekStage 'Inspecting BitLocker status on the Windows source disk'
 try {
     Import-Module BitLocker -ErrorAction Stop | Out-Null
     if (-not (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)) {
@@ -281,8 +507,8 @@ catch {
 
 $bitLockerVolumes = @()
 if ($inspectionSucceeded) {
-    foreach ($volume in $targetVolumes) {
-        $mountPoint = "$($volume.DriveLetter):"
+    foreach ($volume in $bitLockerTargetVolumes) {
+        $mountPoint = [string]$volume.MountPoint
         try {
             $bitLockerVolumes += Get-BitLockerVolume -MountPoint $mountPoint -ErrorAction Stop
         }
@@ -310,11 +536,12 @@ if ($encryptedVolumes.Count -gt 0) {
         Write-Host '[STOPPED] Technician did not approve decryption. The computer is NOT READY for Acronis cloning.' -ForegroundColor Yellow
     }
 } elseif ($inspectionSucceeded) {
-    Write-Host '[OK] All inspected fixed drives are already fully decrypted.' -ForegroundColor Green
+    Write-Host '[OK] All inspected volumes on the Windows source disk are already fully decrypted.' -ForegroundColor Green
 }
 
 if ($decryptionApproved) {
     foreach ($initialVolume in $encryptedVolumes) {
+        Assert-CompuTekWorkflowNotCancelled
         $mountPoint = [string]$initialVolume.MountPoint
         $initialState = [string]$initialVolume.VolumeStatus
         $mountDrive = $mountPoint.TrimEnd(':')
@@ -392,7 +619,7 @@ foreach ($volume in @($bitLockerVolumes | Where-Object {
 }
 
 $bitLockerPreparationReady = $inspectionSucceeded -and
-    $bitLockerResults.Count -eq $targetVolumes.Count -and
+    $bitLockerResults.Count -eq $bitLockerTargetVolumes.Count -and
     @($bitLockerResults | Where-Object {-not $_.Ready}).Count -eq 0
 $encryptionPolicyReady = $false
 if ($bitLockerPreparationReady) {
@@ -427,15 +654,16 @@ catch {
 }
 
 Write-CompuTekStage 'Running non-destructive CHKDSK scans'
-foreach ($volume in $targetVolumes) {
-    $mountPoint = "$($volume.DriveLetter):"
+foreach ($volume in $diskCheckTargetVolumes) {
+    Assert-CompuTekWorkflowNotCancelled
+    $mountPoint = [string]$volume.MountPoint
     $fileSystem = [string]$volume.FileSystem
-    $checkArguments = if ($fileSystem -eq 'NTFS') { @($mountPoint,'/scan') } else { @($mountPoint) }
-    $logPath = Join-Path $caseDirectory ("CHKDSK_{0}.txt" -f $volume.DriveLetter)
+    $logPath = Join-Path $caseDirectory ("CHKDSK_Disk{0}_Partition{1}.txt" -f $volume.DiskNumber,$volume.PartitionNumber)
     Write-Host "[INFO] Checking $mountPoint ($fileSystem). This can take several minutes..." -ForegroundColor Cyan
     try {
-        $checkOutput = @(& chkdsk.exe @checkArguments 2>&1)
-        $checkExitCode = $LASTEXITCODE
+        $checkResult = Invoke-CompuTekReadOnlyChkdsk -Volume $volume -CaseDirectory $caseDirectory
+        $checkOutput = @($checkResult.Output)
+        $checkExitCode = [int]$checkResult.ExitCode
         $checkOutput | Set-Content -LiteralPath $logPath -Encoding UTF8 -Force
         $diskReady = $checkExitCode -eq 0
         $meaning = switch ($checkExitCode) {
@@ -460,9 +688,9 @@ foreach ($volume in $targetVolumes) {
 }
 
 $bitLockerReady = $bitLockerPreparationReady -and $encryptionPolicyReady
-$disksReady = $diskResults.Count -eq $targetVolumes.Count -and
+$disksReady = $diskResults.Count -eq $diskCheckTargetVolumes.Count -and
     @($diskResults | Where-Object {-not $_.Ready}).Count -eq 0
-$acronisReady = $targetVolumes.Count -gt 0 -and $bitLockerReady -and $disksReady
+$acronisReady = $partitionCoverageReady -and $storageLayoutReady -and $diskCheckTargetVolumes.Count -gt 0 -and $bitLockerReady -and $disksReady
 
 $summary = [pscustomobject]@{
     SchemaVersion = 1
@@ -470,9 +698,15 @@ $summary = [pscustomobject]@{
     CompletedUtc = [DateTime]::UtcNow.ToString('o')
     PortableRoot = $portableRoot
     PortableMedia = $portableMedia
+    WindowsSourceDisk = $windowsDisk
+    IgnoredInternalDisks = @($ignoredInternalDisks)
+    StorageLayoutReady = $storageLayoutReady
+    StorageRisks = @($storageRisks)
     SecureBoot = $secureBootStatus
     BitLockerInspectionSucceeded = $inspectionSucceeded
+    PartitionCoverageReady = $partitionCoverageReady
     AcronisReady = $acronisReady
+    FixedDiskPartitions = @($partitionInventory)
     BitLocker = @($bitLockerResults)
     RecoveryBackups = @($keyBackups)
     DiskChecks = @($diskResults)
@@ -486,10 +720,13 @@ $summaryTextPath = Join-Path $caseDirectory 'PreCloneSummary.txt'
     "Acronis ready: $(if ($acronisReady) {'YES'} else {'NO'})",
     "BitLocker ready: $(if ($bitLockerReady) {'YES'} else {'NO'})",
     "Disk checks passed: $(if ($disksReady) {'YES'} else {'NO'})",
+    "Storage layout ready: $(if ($storageLayoutReady) {'YES'} else {'NO - senior technician review required'})",
+    "Windows source disk: $(if ($windowsDisk) {"disk $($windowsDisk.DiskNumber) ($($windowsDisk.SystemDrive))"} else {'unavailable'})",
+    "Other internal disks ignored: $($ignoredInternalDisks.Count)",
     "Secure Boot: $secureBootStatus",
     "Case folder: $caseDirectory",
     '',
-    'Acronis ready means every inspected fixed drive is fully decrypted and CHKDSK returned no errors.',
+    'Acronis ready means the Windows source disk is fully decrypted, every partition on that disk passed its applicable checks, and no RAID/Optane/RST/VMD/Storage Spaces or split-boot warning requires review.',
     'Recovery-password files are confidential and must be secured or removed from the service USB after the job.'
 ) | Set-Content -LiteralPath $summaryTextPath -Encoding UTF8 -Force
 
@@ -497,7 +734,7 @@ Write-Host ''
 Write-Host '==== PRE-CLONE RESULT ====' -ForegroundColor Cyan
 if ($acronisReady) {
     Write-Host 'READY FOR ACRONIS CLONE: YES' -ForegroundColor Green
-    Write-Host 'All fixed target drives are fully decrypted and passed CHKDSK.' -ForegroundColor Green
+    Write-Host 'The Windows source disk is fully decrypted, passed CHKDSK, and has no unresolved storage-layout warning.' -ForegroundColor Green
     $exitCode = 0
 } else {
     Write-Host 'READY FOR ACRONIS CLONE: NO' -ForegroundColor Red

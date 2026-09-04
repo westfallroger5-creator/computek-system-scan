@@ -30,12 +30,17 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Read-CompuTekInput {
     param([Parameter(Mandatory)][string]$Prompt)
+    Assert-CompuTekNotCancelled
     if ($env:COMPUTEK_SCANNER_APP -eq '1') {
         [Console]::Out.WriteLine("__COMPUTEK_PROMPT__:$Prompt")
         [Console]::Out.Flush()
-        return [Console]::In.ReadLine()
+        $response = [Console]::In.ReadLine()
+        Assert-CompuTekNotCancelled
+        return $response
     }
-    return Read-Host $Prompt
+    $response = Read-Host $Prompt
+    Assert-CompuTekNotCancelled
+    return $response
 }
 
 function Complete-CompuTekRun {
@@ -115,6 +120,12 @@ $modulePath = Join-Path $PSScriptRoot 'CompuTek.Scanner.Common.psm1'
 $catalogPath = Join-Path $PSScriptRoot 'RemoteAccessSignatures.json'
 Import-Module $modulePath -Force -ErrorAction Stop
 $catalog = Get-CompuTekCatalog -Path $catalogPath
+
+trap [OperationCanceledException] {
+    Write-CompuTekResultReason -Message 'The technician canceled the workflow. No further scan or removal actions were started. Review the saved session log and rerun the scan before treating the computer as clean.'
+    Complete-CompuTekRun 'Workflow canceled safely by the technician.' Yellow
+    exit 6
+}
 
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $portableRoot = if ($env:COMPUTEK_SCANNER_PORTABLE_ROOT) { $env:COMPUTEK_SCANNER_PORTABLE_ROOT } else { $PSScriptRoot }
@@ -208,6 +219,15 @@ function Show-CandidateSummary {
         Write-Host '    PROTECTED: This verified CompuTek access is kept automatically and cannot be removed by this scanner.' -ForegroundColor Green
         Write-Host '    CompuTek ownership verified: the Syncro shop identity matches the approved hash in the USB signature catalog.' -ForegroundColor Green
         if (@($Candidate.ProductIds) -contains 'splashtop') {
+            $splashtopRoles = @($Candidate.Findings | Where-Object {
+                $_.ProductId -eq 'splashtop' -and $_.ArtifactType -eq 'InstalledProgram'
+            } | ForEach-Object {
+                $roleVersion = if ($_.DisplayVersion) { " $($_.DisplayVersion)" } else { '' }
+                "$($_.Name)$roleVersion"
+            } | Sort-Object -Unique)
+            if ($splashtopRoles.Count -gt 0) {
+                Write-Host ("    Installed Splashtop roles ({0}): {1}" -f $splashtopRoles.Count,($splashtopRoles -join '; ')) -ForegroundColor Green
+            }
             Write-Host '    Splashtop ownership verified: Syncro is enabled for it and both products contain the same RMM deployment code. The code is never displayed or saved.' -ForegroundColor Green
             Write-Host '    Store Splashtop packages and nonmatching installations remain separate numbered findings.' -ForegroundColor Green
         }
@@ -369,6 +389,45 @@ function Get-FindingDetectedVersion {
     return $null
 }
 
+function Test-FindingIsStandaloneInstallerEvidence {
+    param($Finding)
+    if ($Finding.ArtifactType -ne 'File' -or -not $Finding.Path) { return $false }
+    $extension = [IO.Path]::GetExtension([string]$Finding.Path)
+    if ($extension -notmatch '(?i)^\.(exe|msi|msix|msixbundle|appx|appxbundle|zip)$') { return $false }
+    if ([string]$Finding.Path -notmatch '(?i)\\(downloads|desktop|temp)\\') { return $false }
+    $findingName = if ($Finding.PSObject.Properties['Name']) { [string]$Finding.Name } else { '' }
+    $fileDescription = if ($Finding.PSObject.Properties['FileDescription']) { [string]$Finding.FileDescription } else { '' }
+    $identity = "{0} {1} {2}" -f (Get-CompuTekSafeFileName ([string]$Finding.Path)),$findingName,$fileDescription
+    # Vendor download names commonly join the product and action (for example
+    # SyncroSetup.exe), so word boundaries are not reliable here. The negative
+    # look-behind keeps a temporary "uninstaller" from being mislabeled.
+    return ($identity -match '(?i)(?<!un)(?:installer|setup)|deployment[ _-]*package')
+}
+
+function Get-DetectedInstallerFiles {
+    param($Findings)
+    return @($Findings | Where-Object { Test-FindingIsStandaloneInstallerEvidence $_ } | Sort-Object Path -Unique)
+}
+
+function Open-DetectedInstallerFiles {
+    param($InstallerFindings)
+    $openedDirectories = @{}
+    foreach ($finding in @($InstallerFindings)) {
+        $installerFile = [Environment]::ExpandEnvironmentVariables(([string]$finding.Path).Trim().Trim('"'))
+        if (-not $installerFile -or -not (Test-Path -LiteralPath $installerFile -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
+        $directory = Split-Path -Parent $installerFile
+        $directoryKey = $directory.ToLowerInvariant()
+        if ($openedDirectories.ContainsKey($directoryKey)) { continue }
+        $openedDirectories[$directoryKey] = $true
+        try {
+            Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $installerFile) -ErrorAction Stop
+            Write-Host "Opened downloaded installer file: $installerFile" -ForegroundColor Green
+        } catch {
+            Write-Host "Could not show ${installerFile}: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+}
+
 function Test-FindingIsIndependentProductCopy {
     param($Finding)
     if ($Finding.ArtifactType -in @('InstalledProgram','AppxPackage')) { return $true }
@@ -385,74 +444,41 @@ function Test-FindingIsIndependentProductCopy {
     )
 }
 
-function Get-CompuTekManagedIdentityStatus {
-    param($Catalog)
+function Test-CompuTekManagedInstallationEntry {
+    param(
+        [Parameter(Mandatory)]$Entry,
+        [Parameter(Mandatory)]$ManagedIdentityStatus,
+        [Parameter(Mandatory)][ValidateSet('syncro','splashtop')][string]$ProductId
+    )
 
-    $approvedHashes = @()
-    $managedProperty = $Catalog.PSObject.Properties['managedIdentities']
-    if ($managedProperty -and $managedProperty.Value) {
-        $syncroProperty = $managedProperty.Value.PSObject.Properties['syncro']
-        if ($syncroProperty -and $syncroProperty.Value) {
-            $hashProperty = $syncroProperty.Value.PSObject.Properties['shopSubdomainSha256']
-            if ($hashProperty) { $approvedHashes = @($hashProperty.Value | ForEach-Object {([string]$_).Trim().ToUpperInvariant()} | Where-Object {$_ -match '^[A-F0-9]{64}$'}) }
-        }
-    }
+    if ($ProductId -eq 'syncro' -and -not $ManagedIdentityStatus.SyncroApproved) { return $false }
+    if ($ProductId -eq 'splashtop' -and -not $ManagedIdentityStatus.SplashtopLinked) { return $false }
+    if ([string]$Entry.ProductId -ne $ProductId) { return $false }
+    if (@($Entry.Findings | Where-Object {$_.ArtifactType -in @('AppxPackage','StartApp')}).Count -gt 0) { return $false }
 
-    $syncroApproved = $false
-    $syncroSplashtopEnabled = $false
-    $syncroSplashtopRmmCode = $null
-    foreach ($syncroRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\RepairTech\Syncro','HKLM:\SOFTWARE\RepairTech\Syncro')) {
-        try {
-            $syncroValues = Get-ItemProperty -LiteralPath $syncroRegistryPath -ErrorAction Stop
-            $subdomain = ([string]$syncroValues.shop_subdomain).Trim().ToLowerInvariant()
-            if ($subdomain -and $approvedHashes.Count -gt 0) {
-                $sha = [Security.Cryptography.SHA256]::Create()
-                try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($subdomain)))).Replace('-','') } finally { $sha.Dispose() }
-                if ($approvedHashes -contains $actualHash) { $syncroApproved = $true }
-            }
-            $splashtopStateText = ([string]$syncroValues.SplashtopState).Trim()
-            if ($splashtopStateText) {
-                try {
-                    $splashtopState = $splashtopStateText | ConvertFrom-Json -ErrorAction Stop
-                    $enabledProperty = $splashtopState.PSObject.Properties['Enabled']
-                    $rmmCodeProperty = $splashtopState.PSObject.Properties['RmmCode']
-                    $syncroSplashtopEnabled = ($enabledProperty -and [bool]$enabledProperty.Value)
-                    if ($rmmCodeProperty) { $syncroSplashtopRmmCode = ([string]$rmmCodeProperty.Value).Trim() }
-                } catch {
-                    # A damaged or legacy state value cannot prove ownership. Never
-                    # display or save the raw value because it may contain credentials.
-                    $syncroSplashtopEnabled = $false
-                    $syncroSplashtopRmmCode = $null
-                }
-            }
-            break
-        } catch {}
+    $approvedRoots = if ($ProductId -eq 'syncro') {
+        @($ManagedIdentityStatus.SyncroInstallRoots)
+    } else {
+        @($ManagedIdentityStatus.SplashtopInstallRoots)
     }
+    if ($approvedRoots.Count -eq 0) { return $false }
 
-    $deploymentCodeMatches = $false
-    foreach ($splashtopRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\Splashtop Inc.\Splashtop Remote Server','HKLM:\SOFTWARE\Splashtop Inc.\Splashtop Remote Server')) {
-        try {
-            $splashtopValues = Get-ItemProperty -LiteralPath $splashtopRegistryPath -ErrorAction Stop
-            $registeredRmmCode = ([string]$splashtopValues.RmmCode).Trim()
-            if ($syncroSplashtopRmmCode -and $registeredRmmCode -and $syncroSplashtopRmmCode -ceq $registeredRmmCode) {
-                $deploymentCodeMatches = $true
-                break
-            }
-        } catch {}
-    }
+    # Ownership is attached only to the concrete installation that has an active
+    # service/process inside the verified vendor root. Another version, portable
+    # copy, Store package, or residual registration remains separately reviewable.
+    $activeAnchors = @($Entry.Findings | Where-Object {
+        $_.Path -and
+        ($_.ArtifactType -eq 'Process' -or ($_.ArtifactType -eq 'Service' -and $_.ServiceState -eq 'Running')) -and
+        (Test-CompuTekPathWithinRoots -Path $_.Path -Roots $approvedRoots)
+    })
+    if ($activeAnchors.Count -eq 0) { return $false }
 
-    $splashtopLinked = ($syncroApproved -and $syncroSplashtopEnabled -and $deploymentCodeMatches)
-    return [pscustomobject]@{
-        SyncroApproved = $syncroApproved
-        SplashtopLinked = $splashtopLinked
-        MatchMethod = if ($splashtopLinked) {
-            'Approved Syncro shop identity + exact Splashtop RMM deployment-code match'
-        } elseif ($syncroApproved) {
-            'Approved Syncro shop identity; no exact Splashtop deployment-code match'
-        } else {
-            'No approved Syncro shop identity match'
-        }
-    }
+    $unexpectedActivePath = @($Entry.Findings | Where-Object {
+        $_.Path -and
+        ($_.ArtifactType -eq 'Process' -or $_.ArtifactType -eq 'Service') -and
+        -not (Test-CompuTekPathWithinRoots -Path $_.Path -Roots $approvedRoots)
+    })
+    return ($unexpectedActivePath.Count -eq 0)
 }
 
 function Test-PathWithinVersionAnchor {
@@ -499,11 +525,27 @@ function New-RemovalCandidates {
     # packages are authoritative installation anchors. Component DLL/build versions do
     # not create duplicate agents, while a separately running or downloaded executable
     # with a different version remains independently reviewable.
+    $productsWithCoreEvidence = @{}
+    foreach ($finding in @($Findings | Where-Object {
+        $_.ProductId -ne 'unknown' -and $_.ArtifactType -in @('InstalledProgram','AppxPackage','Service','Process') -and
+        -not (Test-FindingIsWindowsHostProcess $_)
+    })) {
+        $productsWithCoreEvidence[[string]$finding.ProductId] = $true
+    }
+
     $versionDataByProduct = @{}
     foreach ($finding in @($Findings | Where-Object {$_.ProductId -ne 'unknown'})) {
-        if (Test-FindingIsWindowsHostProcess $finding) {
+        $isDownloadedInstaller = Test-FindingIsStandaloneInstallerEvidence $finding
+        $isNonExecutableFile = ($finding.ArtifactType -eq 'File' -and [IO.Path]::GetExtension([string]$finding.Path) -notmatch '(?i)^\.(exe|com|msi|msix|appx|appxbundle)$')
+        if ($isDownloadedInstaller) {
+            $finding | Add-Member -NotePropertyName InstallerOnly -NotePropertyValue $true -Force
+            $finding | Add-Member -NotePropertyName SupportingOnly -NotePropertyValue $true -Force
+        } elseif ((Test-FindingIsWindowsHostProcess $finding) -or
+            ($productsWithCoreEvidence.ContainsKey([string]$finding.ProductId) -and
+             ((Test-FindingIsPassiveSupportEvidence $finding) -or $isNonExecutableFile))) {
             $finding | Add-Member -NotePropertyName SupportingOnly -NotePropertyValue $true -Force
         }
+        if ([bool]$finding.PSObject.Properties['SupportingOnly'] -and [bool]$finding.SupportingOnly) { continue }
         $version = Get-FindingDetectedVersion $finding
         if (-not $version) { continue }
         $productId = [string]$finding.ProductId
@@ -540,6 +582,7 @@ function New-RemovalCandidates {
     foreach ($finding in @($Findings)) {
         $scopePath = Get-FindingScopePath $finding
         $isSupportingOnly = [bool]$finding.PSObject.Properties['SupportingOnly'] -and [bool]$finding.SupportingOnly
+        if ($isSupportingOnly) { continue }
         $evidenceLocation = if ($isSupportingOnly) { $null } else { $scopePath }
         $resolvedVersion = $null
         $productVersionData = if ($versionDataByProduct.ContainsKey([string]$finding.ProductId)) { $versionDataByProduct[[string]$finding.ProductId] } else { $null }
@@ -568,7 +611,17 @@ function New-RemovalCandidates {
             }
             if ($fallbackVersions.Count -eq 1) { $resolvedVersion = [string]($fallbackVersions[0]) }
         }
-        $groupByVersion = ($finding.ProductId -ne 'unknown' -and -not [string]::IsNullOrWhiteSpace($resolvedVersion))
+        $independentFileName = Get-CompuTekSafeFileName ([string]$finding.Path)
+        $isIndependentDownloadedOrPortableCopy = (
+            $finding.ArtifactType -eq 'File' -and
+            (Test-FindingIsIndependentProductCopy $finding) -and
+            $independentFileName -notmatch '(?i)(?:unins|uninstall|update|updater)'
+        )
+        $groupByVersion = (
+            $finding.ProductId -ne 'unknown' -and
+            -not [string]::IsNullOrWhiteSpace($resolvedVersion) -and
+            -not $isIndependentDownloadedOrPortableCopy
+        )
         $groupAsPassiveProduct = (
             $finding.ProductId -ne 'unknown' -and
             -not $groupByVersion -and
@@ -620,59 +673,54 @@ function New-RemovalCandidates {
     $entries = @($scopeGroups.Values)
     foreach ($definition in @($managedSuiteDefinitions.Values)) {
         if (-not $ManagedIdentityStatus.SyncroApproved) { continue }
-        $suiteEntries = @($entries | Where-Object {
-            if ($definition.ProductIds -notcontains [string]$_.ProductId) { return $false }
-            if ([string]$_.ProductId -eq 'splashtop') {
-                if (-not $ManagedIdentityStatus.SplashtopLinked) { return $false }
-                if (@($_.Findings | Where-Object {$_.ArtifactType -in @('AppxPackage','StartApp')}).Count -gt 0) { return $false }
-            }
-            $suspiciousUserWritableEvidence = @($_.Findings | Where-Object {
-                if (-not $_.Path -or -not (Test-CompuTekUserWritablePath $_.Path)) { return $false }
-                $isPassiveDownloadedFile = (
-                    $_.ArtifactType -eq 'File' -and
-                    [IO.Path]::GetExtension([string]$_.Path) -match '(?i)^\.(exe|msi|msix|msixbundle|appx|appxbundle|zip)$' -and
-                    [string]$_.Path -match '(?i)\\(downloads|desktop|temp)\\'
-                )
-                return (-not $isPassiveDownloadedFile)
-            })
-            return ($suspiciousUserWritableEvidence.Count -eq 0)
+        $approvedPrimaryEntries = @($entries | Where-Object {
+            $definition.PrimaryProductIds -contains [string]$_.ProductId -and
+            (Test-CompuTekManagedInstallationEntry -Entry $_ -ManagedIdentityStatus $ManagedIdentityStatus -ProductId syncro)
         })
-        $hasPrimary = @($suiteEntries | Where-Object {$definition.PrimaryProductIds -contains [string]$_.ProductId}).Count -gt 0
-        if (-not $hasPrimary) { continue }
-
-        $managedFindings = New-Object System.Collections.Generic.List[object]
-        $managedLocations = New-Object System.Collections.Generic.List[string]
-        foreach ($entry in $suiteEntries) {
-            foreach ($finding in $entry.Findings.ToArray()) { $managedFindings.Add($finding) }
-            foreach ($location in $entry.Locations.ToArray()) {
-                if ($location -and -not $managedLocations.Contains([string]$location)) { $managedLocations.Add([string]$location) }
+        foreach ($primaryEntry in $approvedPrimaryEntries) {
+            $suiteEntries = @($primaryEntry)
+            if ($ManagedIdentityStatus.SplashtopLinked -and $definition.ProductIds -contains 'splashtop') {
+                $linkedSplashtopEntries = @($entries | Where-Object {
+                    [string]$_.ProductId -eq 'splashtop' -and
+                    (Test-CompuTekManagedInstallationEntry -Entry $_ -ManagedIdentityStatus $ManagedIdentityStatus -ProductId splashtop)
+                })
+                if ($linkedSplashtopEntries.Count -gt 0) { $suiteEntries += $linkedSplashtopEntries }
             }
+
+            $managedFindings = New-Object System.Collections.Generic.List[object]
+            $managedLocations = New-Object System.Collections.Generic.List[string]
+            foreach ($entry in $suiteEntries) {
+                foreach ($finding in $entry.Findings.ToArray()) { $managedFindings.Add($finding) }
+                foreach ($location in $entry.Locations.ToArray()) {
+                    if ($location -and -not $managedLocations.Contains([string]$location)) { $managedLocations.Add([string]$location) }
+                }
+            }
+            $primaryVersions = @($suiteEntries | Where-Object {
+                $definition.PrimaryProductIds -contains [string]$_.ProductId -and $_.DetectedVersion
+            } | ForEach-Object {[string]$_.DetectedVersion} | Sort-Object -Unique)
+            $primaryProductId = [string]($definition.PrimaryProductIds[0])
+            $includedProductIds = @($suiteEntries | ForEach-Object {[string]$_.ProductId} | Sort-Object -Unique)
+            $includesSplashtop = ($includedProductIds -contains 'splashtop')
+            $mergedEntry = [ordered]@{
+                ProductId = $primaryProductId
+                ProductIds = [string[]]$includedProductIds
+                ProductName = if ($includesSplashtop -and $definition.Name) {[string]$definition.Name} else {'CompuTek SyncroMSP Agent (ownership verified)'}
+                Category = 'rmm'
+                ScopeKey = "managed-suite:$($definition.Id):$($primaryEntry.ScopeKey)"
+                ScopePath = $null
+                GroupByVersion = $false
+                DetectedVersion = ($primaryVersions -join ', ')
+                Locations = $managedLocations
+                Findings = $managedFindings
+                IsManagedSuite = $true
+                ManagedSuiteId = [string]$definition.Id
+                ManagedIdentityMatch = [string]$ManagedIdentityStatus.MatchMethod
+            }
+            $mergedEntryKeys = @{}
+            foreach ($entry in $suiteEntries) { $mergedEntryKeys["$($entry.ProductId)|$($entry.ScopeKey)"] = $true }
+            $entries = @($entries | Where-Object {-not $mergedEntryKeys.ContainsKey("$($_.ProductId)|$($_.ScopeKey)")})
+            $entries += $mergedEntry
         }
-        $primaryVersions = @($suiteEntries | Where-Object {
-            $definition.PrimaryProductIds -contains [string]$_.ProductId -and $_.DetectedVersion
-        } | ForEach-Object {[string]$_.DetectedVersion} | Sort-Object -Unique)
-        $primaryProductId = [string]($definition.PrimaryProductIds[0])
-        $includedProductIds = @($suiteEntries | ForEach-Object {[string]$_.ProductId} | Sort-Object -Unique)
-        $includesSplashtop = ($includedProductIds -contains 'splashtop')
-        $mergedEntry = [ordered]@{
-            ProductId = $primaryProductId
-            ProductIds = [string[]]$includedProductIds
-            ProductName = if ($includesSplashtop -and $definition.Name) {[string]$definition.Name} else {'CompuTek SyncroMSP Agent (ownership verified)'}
-            Category = 'rmm'
-            ScopeKey = "managed-suite:$($definition.Id)"
-            ScopePath = $null
-            GroupByVersion = $false
-            DetectedVersion = ($primaryVersions -join ', ')
-            Locations = $managedLocations
-            Findings = $managedFindings
-            IsManagedSuite = $true
-            ManagedSuiteId = [string]$definition.Id
-            ManagedIdentityMatch = [string]$ManagedIdentityStatus.MatchMethod
-        }
-        $mergedEntryKeys = @{}
-        foreach ($entry in $suiteEntries) { $mergedEntryKeys["$($entry.ProductId)|$($entry.ScopeKey)"] = $true }
-        $entries = @($entries | Where-Object {-not $mergedEntryKeys.ContainsKey("$($_.ProductId)|$($_.ScopeKey)")})
-        $entries += $mergedEntry
     }
 
     $candidates = @()
@@ -1219,6 +1267,124 @@ function Move-ToCandidateQuarantine {
     }
 }
 
+function Get-CompuTekTemporaryRoots {
+    $roots = New-Object System.Collections.Generic.List[string]
+    foreach ($candidateRoot in @($env:TEMP,$env:TMP,(Join-Path $env:SystemRoot 'Temp'))) {
+        if (-not $candidateRoot) { continue }
+        try { $fullRoot = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables([string]$candidateRoot)).TrimEnd('\') } catch { continue }
+        if ((Test-Path -LiteralPath $fullRoot -PathType Container -ErrorAction SilentlyContinue) -and -not $roots.Contains($fullRoot)) { $roots.Add($fullRoot) }
+    }
+    foreach ($profile in @(Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directory -Force -ErrorAction SilentlyContinue)) {
+        if (($profile.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $profileTemp = Join-Path $profile.FullName 'AppData\Local\Temp'
+        if (-not (Test-Path -LiteralPath $profileTemp -PathType Container -ErrorAction SilentlyContinue)) { continue }
+        try { $fullRoot = [IO.Path]::GetFullPath($profileTemp).TrimEnd('\') } catch { continue }
+        if (-not $roots.Contains($fullRoot)) { $roots.Add($fullRoot) }
+    }
+    return @($roots.ToArray())
+}
+
+function Test-CompuTekTemporaryPath {
+    param([Parameter(Mandatory)][string]$Path, [string[]]$Roots = @(Get-CompuTekTemporaryRoots))
+    try { $fullPath = [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path.Trim('"'))).TrimEnd('\') } catch { return $false }
+    foreach ($root in @($Roots)) {
+        try { $fullRoot = [IO.Path]::GetFullPath([string]$root).TrimEnd('\') } catch { continue }
+        if ($fullPath.StartsWith($fullRoot + '\',[StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Remove-CandidateTemporaryArtifacts {
+    param($Candidate, [switch]$AllowProductWideCleanup)
+
+    $failures = New-Object System.Collections.Generic.List[string]
+    $tempRoots = @(Get-CompuTekTemporaryRoots)
+    if ($tempRoots.Count -eq 0) { return @() }
+    $evidenceDirectory = Join-Path $caseRoot 'TempCleanupEvidence'
+    $extensions = @('.exe','.com','.dll','.msi','.msp','.msix','.appx','.appxbundle','.bat','.cmd','.ps1','.vbs','.js','.jse','.wsf','.zip','.rar','.7z')
+    $candidateProductIds = @($Candidate.ProductIds | ForEach-Object {[string]$_})
+    $exactCandidatePaths = @($Candidate.Findings | ForEach-Object {@($_.Path,$_.SourcePath)} | Where-Object {$_} | ForEach-Object {
+        try {[IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables(([string]$_).Trim('"')))} catch {[string]$_}
+    })
+
+    foreach ($tempRoot in $tempRoots) {
+        foreach ($file in @(Get-CompuTekCandidateFilesSafe -Root $tempRoot -Extensions $extensions -MaxDepth 8)) {
+            Assert-CompuTekNotCancelled
+            if (-not (Test-CompuTekTemporaryPath -Path $file.FullName -Roots $tempRoots)) { continue }
+            try { if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue } } catch { continue }
+
+            $normalizedFile = try {[IO.Path]::GetFullPath($file.FullName)} catch {$file.FullName}
+            $wasExactFinding = @($exactCandidatePaths | Where-Object {$_ -and $_ -ieq $normalizedFile}).Count -gt 0
+            $quickArtifact = [pscustomobject][ordered]@{
+                ArtifactType='File'; Name=$file.Name; DisplayName=$file.Name; FileName=$file.Name
+                Path=$file.FullName; CommandLine=''; PackageName=''; ProductName=''; FileDescription=''
+                CompanyName=''; OriginalFilename=''; FileVersion=''; Signer=''; SignatureStatus='Unknown'
+            }
+            $quickMatches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $quickArtifact | Where-Object {
+                $candidateProductIds -contains [string]$_.Product.id
+            })
+            # The initial scan already metadata-inspected renamed tools. For the
+            # cleanup pass, avoid hashing and signature-checking every unrelated
+            # Temp executable unless its name/path matches or it was an exact finding.
+            if ($quickMatches.Count -eq 0 -and -not $wasExactFinding) { continue }
+
+            $fileEvidence = Get-CompuTekFileEvidence -Path $file.FullName -IncludeHash
+            $artifact = [pscustomobject][ordered]@{
+                ArtifactType='File'; Name=$fileEvidence.FileName; DisplayName=$fileEvidence.FileName
+                FileName=$fileEvidence.FileName; Path=$fileEvidence.Path; CommandLine=''; PackageName=''
+                ProductName=$fileEvidence.ProductName; FileDescription=$fileEvidence.FileDescription
+                CompanyName=$fileEvidence.CompanyName; OriginalFilename=$fileEvidence.OriginalFilename
+                FileVersion=$fileEvidence.FileVersion; Signer=$fileEvidence.Signer
+                SignatureStatus=$fileEvidence.SignatureStatus
+            }
+            $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $artifact | Where-Object {
+                $candidateProductIds -contains [string]$_.Product.id
+            })
+            if ($matches.Count -eq 0) { continue }
+
+            $strongIdentity = @($matches | Where-Object {
+                $_.Strength -eq 'High' -or @($_.Reasons | Where-Object {$_ -match '^(original-filename|executable):'}).Count -gt 0
+            }).Count -gt 0
+            $normalizedLeafName = ([string]$file.Name -replace '[^a-zA-Z0-9]','').ToLowerInvariant()
+            $namedProductFile = $false
+            foreach ($match in $matches) {
+                foreach ($identityText in @([string]$match.Product.id,[string]$match.Product.name) + @($match.Product.aliases)) {
+                    $identityToken = ([string]$identityText -replace '[^a-zA-Z0-9]','').ToLowerInvariant()
+                    if ($identityToken.Length -lt 5 -or $identityToken -in @('remote','support','remotesupport','agent','client','desktop','viewer','server','host','setup')) { continue }
+                    if ($normalizedLeafName.Contains($identityToken)) { $namedProductFile = $true; break }
+                }
+                if ($namedProductFile) { break }
+            }
+            if (-not $strongIdentity -and -not $namedProductFile -and -not $wasExactFinding) { continue }
+
+            if (-not $AllowProductWideCleanup -and -not $wasExactFinding) {
+                $fileVersion = Get-FindingDetectedVersion $artifact
+                if (-not $Candidate.DetectedVersion -or -not $fileVersion -or $fileVersion -ine $Candidate.DetectedVersion) { continue }
+            }
+
+            New-Item -Path $evidenceDirectory -ItemType Directory -Force | Out-Null
+            Initialize-CompuTekEvidenceDirectory -Path $evidenceDirectory | Out-Null
+            $evidenceRecord = [pscustomobject][ordered]@{
+                CandidateId=$Candidate.Id; ProductName=$Candidate.Name; OriginalPath=$file.FullName
+                SHA256=$fileEvidence.SHA256; FileVersion=$fileEvidence.FileVersion
+                OriginalFilename=$fileEvidence.OriginalFilename; CompanyName=$fileEvidence.CompanyName
+                SignatureStatus=$fileEvidence.SignatureStatus; RecordedAtUtc=(Get-Date).ToUniversalTime()
+            }
+            $evidencePath = Join-Path $evidenceDirectory (([guid]::NewGuid().ToString('N')) + '.json')
+            $evidenceRecord | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $evidencePath -Encoding UTF8
+            try {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $file.FullName -ErrorAction SilentlyContinue) { throw 'Windows still reports the file present after deletion.' }
+                Write-RemediationLog "Deleted matching temporary installer/residual: $($file.FullName)" 'Green'
+            } catch {
+                $failures.Add([string]$file.FullName)
+                Write-RemediationLog "Could not delete matching temporary file $($file.FullName): $($_.Exception.Message)" 'Red'
+            }
+        }
+    }
+    return @($failures.ToArray())
+}
+
 function Remove-CandidateResidualFiles {
     param($Candidate)
     $directories = New-Object System.Collections.Generic.List[string]
@@ -1243,6 +1409,11 @@ function Remove-CandidateResidualFiles {
         [void](Move-ToCandidateQuarantine -Candidate $Candidate -Path $directory -Kind 'installation directory')
     }
     foreach ($file in @($files | Sort-Object -Unique)) {
+        if (Test-CompuTekTemporaryPath -Path $file) {
+            # Handle these after the vendor uninstaller exits so executable Temp
+            # leftovers are deleted from the PC instead of copied to USB quarantine.
+            continue
+        }
         [void](Move-ToCandidateQuarantine -Candidate $Candidate -Path $file -Kind 'residual file')
     }
 }
@@ -1319,6 +1490,7 @@ function Wait-CompuTekTransientVendorCleanup {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $announced = $false
     do {
+        Assert-CompuTekNotCancelled
         try {
             $transientProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
                 $processPath = ([string]$_.ExecutablePath).ToLowerInvariant()
@@ -1463,6 +1635,8 @@ Write-Host 'Scanning. No changes are made during this phase...' -ForegroundColor
 
 try {
     $scan = Invoke-CompuTekRemoteAccessScan -CatalogPath $catalogPath -LookbackDays $LookbackDays -DeepScan:$DeepScan -IncludeHashes:$IncludeHashes
+} catch [OperationCanceledException] {
+    throw
 } catch {
     Write-Host "Scanner could not start: $($_.Exception.Message)" -ForegroundColor Red
     Complete-CompuTekRun 'Scanner stopped before collection completed.' Red
@@ -1485,7 +1659,43 @@ if ($scan.IsComplete) {
     foreach ($errorMessage in $scan.Errors) { Write-Host "  - $errorMessage" -ForegroundColor Yellow }
 }
 if (@($scan.Warnings).Count -gt 0) {
-    Write-Host ("Scan notes: {0} non-blocking access/inventory warning(s); details are saved in the JSON report." -f @($scan.Warnings).Count) -ForegroundColor DarkYellow
+    Write-Host ("Scan notes: {0} access/inventory warning(s); details are saved in the JSON report." -f @($scan.Warnings).Count) -ForegroundColor DarkYellow
+}
+
+if (-not $scan.IsComplete) {
+    Write-Host ''
+    Write-Host 'REMEDIATION LOCKED: Required scan coverage is incomplete.' -ForegroundColor Red
+    Write-Host 'No KEEP/REMOVE choices will be offered and no software will be changed. Correct the collector or access errors, then run the scan again.' -ForegroundColor Yellow
+    Write-Host "JSON report: $($reportPaths.Json)" -ForegroundColor DarkGray
+    Write-Host "CSV report:  $($reportPaths.Csv)" -ForegroundColor DarkGray
+    Write-Host "Startup inventory: $($reportPaths.StartupCsv)" -ForegroundColor DarkGray
+    Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
+    Complete-CompuTekRun 'Scan incomplete - remediation was blocked and technician attention is required.' Yellow
+    exit 3
+}
+
+$installerFindings = @(Get-DetectedInstallerFiles -Findings $scan.Findings)
+if ($installerFindings.Count -gt 0) {
+    $installerJsonPath = Join-Path $caseRoot 'DetectedInstallerFiles.json'
+    $installerCsvPath = Join-Path $caseRoot 'DetectedInstallerFiles.csv'
+    @($installerFindings) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $installerJsonPath -Encoding UTF8
+    @($installerFindings | Select-Object ProductName,Name,Path,DisplayVersion,FileVersion,LastWriteTimeUtc,SHA256) |
+        Export-Csv -LiteralPath $installerCsvPath -NoTypeInformation -Encoding UTF8
+
+    Write-Host "`n========== DOWNLOADED INSTALLER FILES (NOT INSTALLED AGENTS) ==========" -ForegroundColor Cyan
+    Write-Host 'These files may be useful for review, but they are not counted as installed remote-access versions and are not removal choices.' -ForegroundColor Green
+    $installerNumber = 0
+    foreach ($installerFinding in $installerFindings) {
+        $installerNumber++
+        $installerVersion = if ($installerFinding.FileVersion) { " (file version $($installerFinding.FileVersion))" } else { '' }
+        Write-Host ("F{0}. {1}{2}" -f $installerNumber,$installerFinding.ProductName,$installerVersion) -ForegroundColor Cyan
+        Write-Host ("    {0}" -f $installerFinding.Path) -ForegroundColor DarkGray
+    }
+    Write-Host "Installer-file report: $installerJsonPath" -ForegroundColor DarkGray
+    $installerAction = Read-CompuTekInput 'Type OPEN FILES to show these installer files in File Explorer, or press Enter to continue'
+    if ($installerAction -match '(?i)^\s*OPEN\s+FILES\s*$') {
+        Open-DetectedInstallerFiles -InstallerFindings $installerFindings
+    }
 }
 
 $allCandidates = @(New-RemovalCandidates -Findings $scan.Findings)
@@ -1499,7 +1709,7 @@ if ($allCandidates.Count -eq 0) {
         exit 0
     }
     Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
-    Complete-CompuTekRun 'Scan incomplete — technician attention is required.'
+    Complete-CompuTekRun 'Scan incomplete - technician attention is required.'
     exit 3
 }
 
@@ -1539,7 +1749,7 @@ if ($candidates.Count -eq 0) {
         exit 0
     }
     Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
-    Complete-CompuTekRun 'Scan incomplete — technician attention is required.'
+    Complete-CompuTekRun 'Scan incomplete - technician attention is required.'
     exit 3
 }
 
@@ -1685,7 +1895,7 @@ if ($selected.Count -eq 0) {
         exit 0
     }
     Write-CompuTekResultReason -Message (Get-CompuTekAttentionReason -VerificationErrors @($scan.Errors))
-    Complete-CompuTekRun 'Technician review complete, but the scan was incomplete — attention is required.'
+    Complete-CompuTekRun 'Technician review complete, but the scan was incomplete - attention is required.'
     exit 3
 }
 
@@ -1694,6 +1904,7 @@ Write-Host 'Logs and configuration will be preserved first. Then uninstallers, s
 Write-Host 'The technician confirmed these removals with YES. Starting the approved work now.' -ForegroundColor Cyan
 
 foreach ($candidate in $selected) {
+    Assert-CompuTekNotCancelled
     Write-Host "`nRemoving $($candidate.Name) from $(Get-CandidateLocationLabel $candidate)..." -ForegroundColor Magenta
     $decisionRecord = @($decisions | Where-Object {$_.CandidateId -eq $candidate.Id})[0]
     $decisionRecord.RemovalOutcome = 'RemovalAttempted'
@@ -1706,7 +1917,26 @@ foreach ($candidate in $selected) {
     }
 }
 
+Assert-CompuTekNotCancelled
 Wait-CompuTekTransientVendorCleanup -Candidates $selected -TimeoutSeconds 45
+Assert-CompuTekNotCancelled
+Write-Host "`nRemoving matching temporary installers and executable leftovers..." -ForegroundColor Cyan
+foreach ($candidate in $selected) {
+    $sameProductKept = Test-CandidateHasKeptProductPeer -Candidate $candidate -AllCandidates $allCandidates -DecisionById $decisionById
+    $tempCleanupError = $null
+    try {
+        $tempCleanupFailures = @(Remove-CandidateTemporaryArtifacts -Candidate $candidate -AllowProductWideCleanup:(-not $sameProductKept))
+    } catch [OperationCanceledException] {
+        throw
+    } catch {
+        $tempCleanupFailures = @()
+        $tempCleanupError = "Temporary-file cleanup for $($candidate.Name) could not complete: $($_.Exception.Message)"
+        Write-RemediationLog $tempCleanupError 'Red'
+    }
+    $candidate | Add-Member -NotePropertyName TempCleanupFailures -NotePropertyValue $tempCleanupFailures -Force
+    $candidate | Add-Member -NotePropertyName TempCleanupError -NotePropertyValue $tempCleanupError -Force
+}
+Assert-CompuTekNotCancelled
 Write-Host "`nRe-scanning to verify the result..." -ForegroundColor Cyan
 $manualRemovalItems = @()
 $attentionRequired = $false
@@ -1717,9 +1947,12 @@ try {
     $verificationSummary = @()
     foreach ($candidate in $selected) {
         $remaining = @($verification.Findings | Where-Object {Test-FindingBelongsToCandidate -Finding $_ -Candidate $candidate})
-        $status = if (-not $verification.IsComplete) {
+        $tempCleanupFailures = @($candidate.TempCleanupFailures | Where-Object {Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue})
+        $tempCleanupIncomplete = -not [string]::IsNullOrWhiteSpace([string]$candidate.TempCleanupError)
+        if ($tempCleanupIncomplete) { $verificationErrors += [string]$candidate.TempCleanupError }
+        $status = if (-not $verification.IsComplete -or $tempCleanupIncomplete) {
             'NotVerified-ScanIncomplete'
-        } elseif ($remaining.Count -gt 0) {
+        } elseif ($remaining.Count -gt 0 -or $tempCleanupFailures.Count -gt 0) {
             'RemovalIncomplete'
         } else {
             'RemovalVerified'
@@ -1733,7 +1966,8 @@ try {
             elseif ($_.InstallLocation) { [string]$_.InstallLocation }
             elseif ($_.SourcePath) { [string]$_.SourcePath }
             elseif ($_.RegistryPath) { [string]$_.RegistryPath }
-        } | Where-Object {$_} | Sort-Object -Unique)
+        } | Where-Object {$_}) + @($tempCleanupFailures)
+        $remainingLocations = @($remainingLocations | Sort-Object -Unique)
         $remainingServices = @($remaining | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Select-Object -ExpandProperty Name -Unique)
         $remainingStartupItems = @($remaining | Where-Object {$_.ArtifactType -eq 'StartupFile' -and $_.SourcePath} | Select-Object -ExpandProperty SourcePath -Unique)
         $verificationSummary += [pscustomobject]@{
@@ -1743,10 +1977,11 @@ try {
             InstallationScope = Get-CandidateLocationLabel $candidate
             Status = $status
             RemainingFindings = $remaining.Count
+            RemainingTempFiles = $tempCleanupFailures.Count
             RemainingStartupItems = $remainingStartupItems.Count
             RemainingLocations = $remainingLocations -join '; '
         }
-        Write-Host ("{0}: {1} ({2} remaining finding(s))" -f $candidate.Id,$status,$remaining.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
+        Write-Host ("{0}: {1} ({2} remaining finding(s), {3} locked temporary file(s))" -f $candidate.Id,$status,$remaining.Count,$tempCleanupFailures.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
         if ($status -ne 'RemovalVerified') {
             $manualRemovalItems += [pscustomobject][ordered]@{
                 CandidateId = $candidate.Id
@@ -1763,7 +1998,7 @@ try {
     $verificationSummary | Export-Csv -LiteralPath (Join-Path $caseRoot 'RemovalVerification.csv') -NoTypeInformation -Encoding UTF8
     $verificationSummary | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $caseRoot 'RemovalVerification.json') -Encoding UTF8
     if (-not $verification.IsComplete) {
-        $verificationErrors = @($verification.Errors)
+        $verificationErrors = @($verificationErrors) + @($verification.Errors)
         Write-Host 'Verification scan was incomplete. No removal is marked verified; review its collector errors.' -ForegroundColor Red
     }
     Write-Host "After-remediation JSON: $($verificationPaths.Json)" -ForegroundColor DarkGray
@@ -1774,6 +2009,8 @@ try {
     } else {
         Write-Host 'No startup-folder download/reinstall commands remain flagged.' -ForegroundColor Green
     }
+} catch [OperationCanceledException] {
+    throw
 } catch {
     $verificationErrors = @($_.Exception.Message)
     foreach ($record in @($decisions | Where-Object {$_.Decision -eq 'Remove'})) { $record.RemovalOutcome = 'NotVerified-ScanFailed' }
