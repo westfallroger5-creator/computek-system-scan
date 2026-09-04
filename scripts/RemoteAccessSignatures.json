@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": "2026.08.31.1",
+  "catalogVersion": "2026.09.02.1",
   "description": "CompuTek remote-access and remote-management software catalog. Product-specific fields are used for identification; broad terms are heuristic-only.",
   "managedIdentities": {
     "syncro": {
@@ -237,8 +237,8 @@
       "name": "NetSupport Manager / Client",
       "category": "remote-support",
       "aliases": ["netsupport manager", "netsupport client"],
-      "executables": ["client32.exe", "pcicfgui.exe", "nsm.exe"],
-      "originalFilenames": ["client32.exe", "pcicfgui.exe"],
+      "executables": ["client32.exe", "pcicfgui.exe", "pcictlui.exe", "remcmdstub.exe", "nsm.exe"],
+      "originalFilenames": ["client32.exe", "pcicfgui.exe", "pcictlui.exe", "remcmdstub.exe"],
       "servicePatterns": ["NetSupport*"],
       "packagePatterns": ["*NetSupport Manager*", "*NetSupport Client*"],
       "pathPatterns": ["*\\netsupport manager\\*", "*\\netsupport\\*"]
@@ -270,9 +270,9 @@
       "name": "Remote Utilities",
       "category": "remote-support",
       "aliases": ["remote utilities", "rutserver", "rutview"],
-      "executables": ["rutserver.exe", "rutview.exe", "rfusclient.exe"],
-      "originalFilenames": ["rutserver.exe", "rutview.exe"],
-      "servicePatterns": ["Remote Utilities*", "rutserver*"],
+      "executables": ["rutserver.exe", "rutserv.exe", "rutview.exe", "rfusclient.exe"],
+      "originalFilenames": ["rutserver.exe", "rutserv.exe", "rutview.exe"],
+      "servicePatterns": ["Remote Utilities*", "rutserver*", "rutserv*"],
       "packagePatterns": ["*Remote Utilities*"],
       "pathPatterns": ["*\\remote utilities - host\\*", "*\\remote utilities\\*"]
     },
@@ -369,11 +369,11 @@
       "name": "SimpleHelp",
       "category": "rmm",
       "aliases": ["simplehelp", "simple help"],
-      "executables": ["simplehelp.exe", "simplehelper.exe", "remote access.exe"],
-      "originalFilenames": ["simplehelp.exe"],
+      "executables": ["simplehelp.exe", "simplehelper.exe", "simplehelpcustomer.exe", "simplegatewayservice.exe", "remote access.exe"],
+      "originalFilenames": ["simplehelp.exe", "simplehelpcustomer.exe", "simplegatewayservice.exe"],
       "servicePatterns": ["SimpleHelp*"],
       "packagePatterns": ["*SimpleHelp*"],
-      "pathPatterns": ["*\\simplehelp\\*"]
+      "pathPatterns": ["*\\simplehelp\\*", "*\\programdata\\jwrapper-remote access\\*", "*\\appdata\\roaming\\jwrapper-simplesetup\\*"]
     },
     {
       "id": "beyondtrust-bomgar",
@@ -435,11 +435,11 @@
       "name": "Getscreen.me",
       "category": "remote-support",
       "aliases": ["getscreen", "getscreen.me"],
-      "executables": ["getscreen.exe", "getscreenme.exe"],
-      "originalFilenames": ["getscreen.exe"],
-      "servicePatterns": ["Getscreen*"],
-      "packagePatterns": ["*Getscreen*"],
-      "pathPatterns": ["*\\getscreen.me\\*", "*\\getscreen\\*"]
+      "executables": ["getscreen.exe", "getscreenme.exe", "getscreen-x86.exe", "getscreen.upd.exe"],
+      "originalFilenames": ["getscreen.exe", "getscreen-x86.exe", "getscreen.upd.exe"],
+      "servicePatterns": ["Getscreen*", "Getscreen.me", "GetscreenSV"],
+      "packagePatterns": ["*Getscreen*", "*Getscreen.me*"],
+      "pathPatterns": ["*\\getscreen.me\\*", "*\\getscreen\\*", "*\\program files\\getscreen.me\\*", "*\\program files (x86)\\getscreen.me\\*"]
     },
     {
       "id": "anyviewer",
@@ -468,8 +468,8 @@
       "name": "LiteManager",
       "category": "remote-support",
       "aliases": ["litemanager", "lite manager"],
-      "executables": ["romserver.exe", "romviewer.exe"],
-      "originalFilenames": ["romserver.exe", "romviewer.exe"],
+      "executables": ["romserver.exe", "romviewer.exe", "lmnoipserver.exe", "romfusclient.exe"],
+      "originalFilenames": ["romserver.exe", "romviewer.exe", "lmnoipserver.exe", "romfusclient.exe"],
       "servicePatterns": ["LiteManager*", "ROMServer*"],
       "packagePatterns": ["*LiteManager*"],
       "pathPatterns": ["*\\litemanager*\\*"]
@@ -648,8 +648,8 @@
       "name": "ScreenMeet Support",
       "category": "remote-support",
       "aliases": ["screenmeet", "screenmeet support"],
-      "executables": ["screenmeet.exe", "screenmeetclient.exe"],
-      "originalFilenames": ["screenmeet.exe"],
+      "executables": ["screenmeet.exe", "screenmeetclient.exe", "screenmeetsupport.exe", "screenmeet.support.exe"],
+      "originalFilenames": ["screenmeet.exe", "screenmeetsupport.exe", "screenmeet.support.exe"],
       "servicePatterns": ["ScreenMeet*"],
       "packagePatterns": ["*ScreenMeet*"],
       "pathPatterns": ["*\\screenmeet\\*"]
@@ -714,11 +714,154 @@
       "name": "eHorus",
       "category": "rmm",
       "aliases": ["ehorus", "e horus"],
-      "executables": ["ehorus_agent.exe", "ehorus.exe"],
-      "originalFilenames": ["ehorus_agent.exe"],
+      "executables": ["ehorus_agent.exe", "ehorus.exe", "ehorus standalone.exe", "ehorus_cmd.exe", "ehorus_launcher.exe", "ehorus_uit.exe"],
+      "originalFilenames": ["ehorus_agent.exe", "ehorus standalone.exe", "ehorus_cmd.exe", "ehorus_launcher.exe", "ehorus_uit.exe"],
       "servicePatterns": ["eHorus*"],
       "packagePatterns": ["*eHorus*"],
-      "pathPatterns": ["*\\ehorus\\*"]
+      "pathPatterns": ["*\\ehorus\\*", "*\\program files\\ehorus_agent\\*"]
+    },
+    {
+      "id": "desktopnow",
+      "name": "DesktopNow Remote Computer Access",
+      "category": "remote-support",
+      "aliases": ["desktopnow", "desktop now", "nch desktopnow"],
+      "executables": ["desktopnow.exe"],
+      "originalFilenames": ["desktopnow.exe"],
+      "servicePatterns": ["DesktopNow*"],
+      "packagePatterns": ["*DesktopNow*", "*NCH Software DesktopNow*"],
+      "pathPatterns": ["*\\desktopnow\\*", "*\\nch software\\desktopnow\\*"]
+    },
+    {
+      "id": "heartbeat-rm",
+      "name": "HeartbeatRM",
+      "category": "rmm",
+      "aliases": ["heartbeatrm", "heartbeat rm", "heartbeat rmm"],
+      "executables": ["hbrm-x64.exe", "hbrm-updater-x64.exe", "hbrm-installer.exe"],
+      "originalFilenames": ["hbrm-x64.exe", "hbrm-updater-x64.exe", "hbrm-installer.exe"],
+      "servicePatterns": ["HeartbeatRM*", "Heartbeat RM*", "hbrm*"],
+      "packagePatterns": ["*HeartbeatRM*", "*Heartbeat RM*"],
+      "pathPatterns": ["*\\program files\\heartbeatrm\\*", "*\\program files (x86)\\heartbeatrm\\*", "*\\heartbeatrm\\*"]
+    },
+    {
+      "id": "immybot",
+      "name": "ImmyBot",
+      "category": "rmm",
+      "aliases": ["immybot", "immy bot", "immyagent"],
+      "executables": ["immyagent.exe", "immyupdater.exe", "immybot.agent.ephemeral.exe"],
+      "originalFilenames": ["immyagent.exe", "immyupdater.exe", "immybot.agent.ephemeral.exe"],
+      "servicePatterns": ["ImmyBot*", "Immy Bot*", "ImmyAgent*"],
+      "packagePatterns": ["*ImmyBot*", "*Immy Bot*"],
+      "pathPatterns": ["*\\program files\\immybot\\*", "*\\program files (x86)\\immybot\\*", "*\\programdata\\immybot\\*", "*\\windows\\temp\\immybot\\*"]
+    },
+    {
+      "id": "miradore",
+      "name": "Miradore Management Agent",
+      "category": "rmm",
+      "aliases": ["miradore", "miradore management agent", "miradore online client"],
+      "executables": ["miradoreclient.exe", "mdtray.exe"],
+      "originalFilenames": ["miradoreclient.exe", "mdtray.exe"],
+      "servicePatterns": ["Miradore*", "Miradore Online Client*"],
+      "packagePatterns": ["*Miradore*", "*Miradore Online Client*"],
+      "pathPatterns": ["*\\program files\\miradore\\onlineclient\\bin\\*", "*\\miradore\\*"]
+    },
+    {
+      "id": "monitic",
+      "name": "Monitic RMM",
+      "category": "rmm",
+      "aliases": ["monitic", "monitic rmm", "monitic agent"],
+      "executables": ["moniticinstaller.exe"],
+      "originalFilenames": ["moniticinstaller.exe"],
+      "servicePatterns": ["Monitic*"],
+      "packagePatterns": ["*Monitic*"],
+      "pathPatterns": ["*\\program files\\monitic\\*", "*\\monitic\\*"]
+    },
+    {
+      "id": "myivo",
+      "name": "MyIVO",
+      "category": "rmm",
+      "aliases": ["myivo", "my ivo"],
+      "executables": ["myivomgr.exe", "myivomanager.exe"],
+      "originalFilenames": ["myivomgr.exe", "myivomanager.exe"],
+      "servicePatterns": ["MyIVO*"],
+      "packagePatterns": ["*MyIVO*"],
+      "pathPatterns": ["*\\myivo\\*"]
+    },
+    {
+      "id": "netviewer",
+      "name": "Netviewer",
+      "category": "remote-support",
+      "aliases": ["netviewer", "net viewer"],
+      "executables": ["netviewer.exe"],
+      "originalFilenames": ["netviewer.exe"],
+      "servicePatterns": ["Netviewer*"],
+      "packagePatterns": ["*Netviewer*"],
+      "pathPatterns": ["*\\netviewer\\*"]
+    },
+    {
+      "id": "pcanywhere",
+      "name": "Symantec pcAnywhere",
+      "category": "remote-support",
+      "aliases": ["pcanywhere", "pc anywhere", "symantec pcanywhere"],
+      "executables": ["awhost32.exe", "awrem32.exe", "pcaquickconnect.exe", "winaw32.exe"],
+      "originalFilenames": ["awhost32.exe", "awrem32.exe", "pcaquickconnect.exe", "winaw32.exe"],
+      "servicePatterns": ["pcAnywhere*", "Symantec pcAnywhere*"],
+      "packagePatterns": ["*pcAnywhere*", "*Symantec pcAnywhere*"],
+      "pathPatterns": ["*\\symantec\\pcanywhere\\*", "*\\pcanywhere\\*"]
+    },
+    {
+      "id": "remotecall",
+      "name": "RSUPPORT RemoteCall",
+      "category": "remote-support",
+      "aliases": ["remotecall", "remote call", "rsupport remotecall", "startsupport"],
+      "executables": ["rcengmgru.exe", "rcmgrsvc.exe", "rxstartsupport.exe", "rcstartsupport.exe", "raautoup.exe", "remotesupportplayeru.exe"],
+      "originalFilenames": ["rcengmgru.exe", "rcmgrsvc.exe", "rxstartsupport.exe", "rcstartsupport.exe", "raautoup.exe", "remotesupportplayeru.exe"],
+      "servicePatterns": ["RemoteCall*", "RSUPPORT RemoteCall*", "RCMgrSvc*"],
+      "packagePatterns": ["*RemoteCall*", "*RSUPPORT RemoteCall*"],
+      "pathPatterns": ["*\\remotecall\\*", "*\\rsupport\\remotecall\\*"]
+    },
+    {
+      "id": "remoteview",
+      "name": "RSUPPORT RemoteView",
+      "category": "remote-support",
+      "aliases": ["remoteview", "remote view", "rsupport remoteview"],
+      "executables": ["remoteview.exe", "rvagent.exe", "rvagtray.exe"],
+      "originalFilenames": ["remoteview.exe", "rvagent.exe", "rvagtray.exe"],
+      "servicePatterns": ["RemoteView*", "RVAgent*"],
+      "packagePatterns": ["*RemoteView*", "*RSUPPORT RemoteView*"],
+      "pathPatterns": ["*\\remoteview\\*", "*\\rsupport\\remoteview\\*"]
+    },
+    {
+      "id": "servereye",
+      "name": "Server-Eye",
+      "category": "rmm",
+      "aliases": ["server-eye", "servereye", "server eye"],
+      "executables": ["servereye.exe", "serviceproxylocalsys.exe"],
+      "originalFilenames": ["servereye.exe", "serviceproxylocalsys.exe"],
+      "servicePatterns": ["Server-Eye*", "ServerEye*", "ServiceProxyLocalSys*"],
+      "packagePatterns": ["*Server-Eye*", "*ServerEye*"],
+      "pathPatterns": ["*\\server-eye\\*", "*\\servereye\\*"]
+    },
+    {
+      "id": "tiflux",
+      "name": "TiFlux RMM",
+      "category": "rmm",
+      "aliases": ["tiflux", "ti flux", "tiagent", "tipeertopeer"],
+      "executables": ["tiagent.exe", "tiservice.exe", "tiupdateservice.exe", "tipeertopeer.exe"],
+      "originalFilenames": ["tiagent.exe", "tiservice.exe", "tiupdateservice.exe", "tipeertopeer.exe"],
+      "servicePatterns": ["TiService", "TiUpdateService*", "TiFLUX*"],
+      "packagePatterns": ["*TiFLUX*", "*TiFlux Sistema de Gestao*"],
+      "pathPatterns": ["*\\program files (x86)\\tiflux\\*", "*\\programdata\\tiflux\\*"]
+    },
+    {
+      "id": "turbomeeting",
+      "name": "RHUB TurboMeeting",
+      "category": "remote-support",
+      "aliases": ["turbomeeting", "turbo meeting", "rhub turbomeeting"],
+      "executables": ["turbomeeting.exe", "turbomeetingstarter.exe"],
+      "originalFilenames": ["turbomeeting.exe", "turbomeetingstarter.exe"],
+      "servicePatterns": ["TurboMeeting*", "RHUB*"],
+      "packagePatterns": ["*TurboMeeting*", "*RHUB*"],
+      "pathPatterns": ["*\\turbomeeting\\*", "*\\rhub\\*"]
     },
     {
       "id": "windows-rdp",

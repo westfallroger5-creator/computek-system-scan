@@ -39,8 +39,12 @@ foreach ($relativePath in @(
     [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot $relativePath),[ref]$tokens,[ref]$parseErrors)
     Assert-True (@($parseErrors).Count -eq 0) "$relativePath parses in Windows PowerShell"
 }
-Assert-True (@($catalog.products).Count -ge 60) 'Catalog contains at least 60 remote-access/RMM product families'
+Assert-True (@($catalog.products).Count -ge 80) 'Catalog contains at least 80 remote-access/RMM product families'
 Assert-True (@($catalog.products.id | Sort-Object -Unique).Count -eq @($catalog.products).Count) 'Catalog product IDs are unique'
+$septemberCatalogAdditions = @('desktopnow','heartbeat-rm','immybot','miradore','monitic','myivo','netviewer','pcanywhere','remotecall','remoteview','servereye','tiflux','turbomeeting')
+Assert-True (@($septemberCatalogAdditions | Where-Object {$_ -notin $catalog.products.id}).Count -eq 0) 'The September signature update retains every reviewed new product family'
+Assert-True ($catalog.catalogVersion -eq '2026.09.02.1' -and @($catalog.managedIdentities.syncro.shopSubdomainSha256).Count -gt 0) 'The updated catalog version preserves the approved CompuTek managed-identity protection'
+Assert-True (@($catalog.products | Where-Object {$_.id -in @('gotoassist','goto-opener','team-remote-desktop','vnc-viewer-generic')}).Count -eq 4) 'The signature update does not remove existing GoTo, Store-app, or generic VNC coverage'
 Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\Teams\current\Teams.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed Teams executable in its expected per-user folder is trusted'
 Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\OneDrive\OneDrive.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid') 'A valid Microsoft-signed OneDrive executable in its expected per-user folder is trusted'
 Assert-True (Test-CompuTekTrustedMicrosoftApplication -Path 'C:\Users\Victim\AppData\Local\Microsoft\OneDrive\26.150.0804.0011\OneDriveLauncher.exe' -CompanyName 'Microsoft Corporation' -Signer 'CN=Microsoft Corporation' -SignatureStatus 'Valid' -ArtifactType ScheduledTask -Name 'OneDrive Startup Task') 'The signed versioned OneDriveLauncher scheduled task is trusted'
@@ -85,7 +89,21 @@ Assert-True ($remediationSource -match 'Test-CandidateHasKeptProductPeer' -and $
 Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
 Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
 Assert-True ($remediationSource -match 'Test-FindingIsIndependentProductCopy' -and $remediationSource -match "ArtifactType -in @\('InstalledProgram','AppxPackage'\)") 'Installed programs and Store packages anchor component evidence without merging independent portable copies'
-Assert-True ($moduleSource -match 'Warnings\s*=\s*\$warningArray' -and $moduleSource -match 'CollectorWarnings\s*=\s*\$warningArray\.Count' -and $moduleSource -notmatch 'foreach \(\$warning in @\(\$script:CollectorWarnings\)\)[\s\S]{0,180}\$errors\.Add') 'Partial access warnings are reported without turning an otherwise successful removal verification into error code 3'
+Assert-True ($moduleSource -match 'Required file coverage under' -and $moduleSource -match 'Add-CompuTekCollectorFailure \$coverageMessage' -and $moduleSource -match 'Test-CompuTekKnownWindowsProtectedCoveragePath' -and $remediationSource -match 'REMEDIATION LOCKED: Required scan coverage is incomplete') 'Unexpected required file-access gaps lock remediation while known Windows-protected paths remain explicit limitations'
+Assert-True ($remediationSource.IndexOf('REMEDIATION LOCKED: Required scan coverage is incomplete') -lt $remediationSource.IndexOf('New-RemovalCandidates -Findings $scan.Findings')) 'The initial completeness gate runs before any technician removal candidates are created'
+$coverageClassification = & $scannerModule {
+    [pscustomobject]@{
+        WindowsDefenderProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'Microsoft\Windows Defender\Scans')
+        DefenderForEndpointProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'Microsoft\Windows Defender Advanced Threat Protection\DataCollection')
+        CapabilityAccessProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'Microsoft\Windows\CapabilityAccessManager')
+        MicrosoftSystemDataProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'Microsoft\Windows\SystemData')
+        MicrosoftFeedsProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path 'C:\Users\Mary Ann\AppData\Local\Microsoft\Feeds\{5588ACFD-6436-411B-A5CE-666AE6A92D3D}~'
+        HiddenScreenConnectProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'ScreenConnect Client (test)')
+        UnknownVendorProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'UnknownVendor\LockedAgent')
+        UnknownUserAgentProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path 'C:\Users\Mary Ann\AppData\Local\UnknownVendor\HiddenAgent'
+    }
+}
+Assert-True ($coverageClassification.WindowsDefenderProtected -and $coverageClassification.DefenderForEndpointProtected -and $coverageClassification.CapabilityAccessProtected -and $coverageClassification.MicrosoftSystemDataProtected -and $coverageClassification.MicrosoftFeedsProtected -and -not $coverageClassification.HiddenScreenConnectProtected -and -not $coverageClassification.UnknownVendorProtected -and -not $coverageClassification.UnknownUserAgentProtected) 'Only explicit Windows-owned protected namespaces are non-blocking; hidden or unknown ProgramData/AppData agents still fail closed'
 Assert-True ($moduleSource -match 'supersedesProductIds' -and @($catalog.products | Where-Object {$_.id -eq 'logmein-rescue'}).supersedesProductIds -contains 'logmein') 'A specific LogMeIn Rescue match suppresses the broad LogMeIn family match for the same artifact'
 Assert-True ($remediationSource -match 'Wait-CompuTekTransientVendorCleanup' -and $remediationSource -match 'Waiting for the vendor uninstaller to finish its temporary cleanup before verification') 'Verification waits briefly for self-cleaning vendor uninstallers instead of flagging their temporary removal process as leftover software'
 
@@ -105,6 +123,11 @@ $singleEndpointArtifacts = @(& $scannerModule {
     }
 })
 Assert-True ($singleEndpointArtifacts.Count -eq 1 -and $singleEndpointArtifacts[0].ConnectionCount -eq 1) 'Process inventory handles a single active remote endpoint without failing the scan'
+$emptyTcpMap = & $scannerModule {
+    function Get-NetTCPConnection { throw 'No MSFT_NetTCPConnection objects found with property State equal to Established.' }
+    try { Get-CompuTekTcpProcessMap } finally { Remove-Item Function:\Get-NetTCPConnection -Force -ErrorAction SilentlyContinue }
+}
+Assert-True ($emptyTcpMap.Count -eq 0) 'No established TCP connections is a successful empty inventory rather than a collection failure'
 
 $malformedStartupPath = 'https://portal.example.invalid/start?source=Windows|Startup'
 Assert-True ($null -eq (Get-CompuTekSafeFileName $malformedStartupPath)) 'A Startup URL with filename-invalid characters is handled without throwing'
@@ -234,10 +257,14 @@ Assert-True ($allCatalogFindings.Count -eq @($catalog.products).Count) 'Analysis
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Get-CompuTekManagedIdentityStatus','Test-PathWithinVersionAnchor','New-RemovalCandidates','Split-CompuTekRemovalCandidates','Invoke-FullCandidateRemoval','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath')) {
+foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Test-FindingIsStandaloneInstallerEvidence','Get-DetectedInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Test-CompuTekManagedInstallationEntry','Test-PathWithinVersionAnchor','New-RemovalCandidates','Split-CompuTekRemovalCandidates','Invoke-FullCandidateRemoval','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath','Test-CompuTekTemporaryPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
+Assert-True (Test-CompuTekTemporaryPath -Path 'C:\Users\Victim\AppData\Local\Temp\AnyDesk.exe' -Roots @('C:\Users\Victim\AppData\Local\Temp')) 'Product cleanup recognizes a file below an approved temporary root'
+Assert-True (-not (Test-CompuTekTemporaryPath -Path 'C:\Users\Victim\Downloads\AnyDesk.exe' -Roots @('C:\Users\Victim\AppData\Local\Temp'))) 'Product cleanup cannot expand from Temp into Downloads or another user folder'
+Assert-True (-not (Test-CompuTekTemporaryPath -Path 'C:\Users\Victim\AppData\Local\Temp' -Roots @('C:\Users\Victim\AppData\Local\Temp'))) 'Product cleanup cannot delete an entire temporary root'
+Assert-True ($remediationSource -match 'Remove-CandidateTemporaryArtifacts' -and $remediationSource -match 'TempCleanupEvidence' -and $remediationSource -match 'Get-CompuTekFileEvidence -Path \$file\.FullName -IncludeHash' -and $remediationSource -match 'Remove-Item -LiteralPath \$file\.FullName' -and $remediationSource -match 'AllowProductWideCleanup:\(-not \$sameProductKept\)') 'Approved removals delete only matching Temp installers after recording evidence and preserve version boundaries when another copy is kept'
 $sampleAttentionReason = Get-CompuTekAttentionReason -Items @([pscustomobject]@{
     ProductName = 'AnyDesk'
     Status = 'RemovalIncomplete'
@@ -250,8 +277,12 @@ $sampleScanFailureReason = Get-CompuTekAttentionReason -VerificationErrors @('Sc
 Assert-True ($sampleScanFailureReason -match 'Scheduled-task collection failed' -and $sampleScanFailureReason -match 'could not verify a clean result') 'Attention reason explains the collector problem when verification could not complete'
 $caseRoot = 'Z:\CompuTekTest\Case'
 $quarantineRoot = 'Z:\CompuTekTest\Quarantine'
-$approvedManagedIdentity = [pscustomobject]@{SyncroApproved=$true;SplashtopLinked=$true;MatchMethod='Synthetic approved Syncro shop identity hash'}
-$unapprovedManagedIdentity = [pscustomobject]@{SyncroApproved=$false;SplashtopLinked=$false;MatchMethod='No approved Syncro shop identity match'}
+$approvedManagedIdentity = [pscustomobject]@{
+    SyncroApproved=$true;SplashtopLinked=$true;MatchMethod='Synthetic approved per-installation identity'
+    SyncroInstallRoots=@('C:\ProgramData\Syncro','C:\Program Files\RepairTech\Syncro','C:\Program Files\RepairTech\LiveAgent')
+    SplashtopInstallRoots=@('C:\Program Files (x86)\Splashtop\Splashtop Remote\Server')
+}
+$unapprovedManagedIdentity = [pscustomobject]@{SyncroApproved=$false;SplashtopLinked=$false;MatchMethod='No approved Syncro shop identity match';SyncroInstallRoots=@();SplashtopInstallRoots=@()}
 
 $syntheticShopSubdomain = 'computek-test-shop'
 $identitySha = [Security.Cryptography.SHA256]::Create()
@@ -261,20 +292,23 @@ $syntheticIdentityCatalog = [pscustomobject]@{
         syncro = [pscustomobject]@{shopSubdomainSha256=@($syntheticShopHash)}
     }
 }
-$matchingManagedIdentity = & {
+$matchingManagedIdentity = & $scannerModule {
+    param($syntheticIdentityCatalog,$syntheticShopSubdomain)
     function Get-ItemProperty {
         param($LiteralPath,$ErrorAction)
         if ($LiteralPath -match 'RepairTech\\Syncro$') {
-            return [pscustomobject]@{shop_subdomain=$syntheticShopSubdomain;SplashtopState='{"Enabled":true,"RmmCode":"SYNTHETIC-CODE-A"}'}
+            return [pscustomobject]@{shop_subdomain=$syntheticShopSubdomain;InstallLocation='C:\Program Files\RepairTech\Syncro';SplashtopState='{"Enabled":true,"RmmCode":"SYNTHETIC-CODE-A"}'}
         }
-        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-A'} }
+        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-A';InstallPath='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server'} }
+        if ($LiteralPath -match 'Services\\SplashtopRemoteService$') { return [pscustomobject]@{ImagePath='"C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe"'} }
         throw 'Synthetic registry path not found'
     }
     try { Get-CompuTekManagedIdentityStatus -Catalog $syntheticIdentityCatalog } finally { Remove-Item Function:\Get-ItemProperty -Force -ErrorAction SilentlyContinue }
-}
+} $syntheticIdentityCatalog $syntheticShopSubdomain
 Assert-True ($matchingManagedIdentity.SyncroApproved -and $matchingManagedIdentity.SplashtopLinked -and $matchingManagedIdentity.MatchMethod -notmatch 'SYNTHETIC-CODE') 'Splashtop is managed only when its live RMM code exactly matches enabled Syncro state, without returning the code'
 
-$mismatchedManagedIdentity = & {
+$mismatchedManagedIdentity = & $scannerModule {
+    param($syntheticIdentityCatalog,$syntheticShopSubdomain)
     function Get-ItemProperty {
         param($LiteralPath,$ErrorAction)
         if ($LiteralPath -match 'RepairTech\\Syncro$') {
@@ -284,20 +318,22 @@ $mismatchedManagedIdentity = & {
         throw 'Synthetic registry path not found'
     }
     try { Get-CompuTekManagedIdentityStatus -Catalog $syntheticIdentityCatalog } finally { Remove-Item Function:\Get-ItemProperty -Force -ErrorAction SilentlyContinue }
-}
+} $syntheticIdentityCatalog $syntheticShopSubdomain
 Assert-True ($mismatchedManagedIdentity.SyncroApproved -and -not $mismatchedManagedIdentity.SplashtopLinked) 'A different Splashtop RMM code remains a separate technician finding even on a CompuTek-managed PC'
 
-$disabledManagedIdentity = & {
+$disabledManagedIdentity = & $scannerModule {
+    param($syntheticIdentityCatalog,$syntheticShopSubdomain)
     function Get-ItemProperty {
         param($LiteralPath,$ErrorAction)
         if ($LiteralPath -match 'RepairTech\\Syncro$') {
             return [pscustomobject]@{shop_subdomain=$syntheticShopSubdomain;SplashtopState='{"Enabled":false,"RmmCode":"SYNTHETIC-CODE-A"}'}
         }
-        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-A'} }
+        if ($LiteralPath -match 'Splashtop Remote Server$') { return [pscustomobject]@{RmmCode='SYNTHETIC-CODE-A';InstallPath='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server'} }
+        if ($LiteralPath -match 'Services\\SplashtopRemoteService$') { return [pscustomobject]@{ImagePath='"C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe"'} }
         throw 'Synthetic registry path not found'
     }
     try { Get-CompuTekManagedIdentityStatus -Catalog $syntheticIdentityCatalog } finally { Remove-Item Function:\Get-ItemProperty -Force -ErrorAction SilentlyContinue }
-}
+} $syntheticIdentityCatalog $syntheticShopSubdomain
 Assert-True ($disabledManagedIdentity.SyncroApproved -and -not $disabledManagedIdentity.SplashtopLinked) 'A matching code is not enough when Syncro reports Splashtop disabled'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\Program Files\Common Files\Microsoft Shared' -Directory) 'Shared Common Files trees cannot be quarantined as a product folder'
 Assert-True (Test-ProtectedRemediationPath -Path 'C:\ProgramData\Microsoft\Windows' -Directory) 'Microsoft ProgramData trees cannot be quarantined as a product folder'
@@ -358,22 +394,39 @@ $failedAppxResult = & {
 }
 Assert-True ($failedAppxResult.Attempted -and -not $failedAppxResult.Success) 'A failed Windows package removal is surfaced so exact Store-ID fallback can run'
 
-$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.73.16374'}
+$syncroService = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Service';Name='Syncro';Path='C:\ProgramData\Syncro\bin\Syncro.Service.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.73.16374';ServiceState='Running'}
 $syncroLive = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='Process';Name='Syncro Live';Path='C:\Program Files\RepairTech\LiveAgent\SyncroLive.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.29.18406'}
 $syncroInstall = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='InstalledProgram';Name='Syncro';Path='C:\Program Files\RepairTech\Syncro';InstallLocation='C:\Program Files\RepairTech\Syncro';RegistryPath='HKLM:\Software\Uninstall\Syncro';PackageFullName=$null;DisplayVersion='1.0.203.18518';FileVersion=$null}
 $syncroScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall) -ManagedIdentityStatus $approvedManagedIdentity)
 Assert-True ($syncroScopes.Count -eq 1 -and $syncroScopes[0].IsManagedSuite -and $syncroScopes[0].DetectedVersion -eq '1.0.203.18518' -and $syncroScopes[0].Locations.Count -eq 3) 'Different Syncro component build numbers are shown once as the managed suite'
 
 $splashtopInstall = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='InstalledProgram';Name='Splashtop Streamer';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote';InstallLocation='C:\Program Files (x86)\Splashtop\Splashtop Remote';RegistryPath='HKLM:\Software\Uninstall\Splashtop';PackageFullName=$null;DisplayVersion='3.8.4.1';FileVersion=$null}
-$splashtopService = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='SplashtopRemoteService';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='3.82.2.9'}
+$splashtopService = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='Service';Name='SplashtopRemoteService';Path='C:\Program Files (x86)\Splashtop\Splashtop Remote\Server\SRService.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='3.82.2.9';ServiceState='Running'}
 $syncroDownloadedInstaller = [pscustomobject]@{ProductId='syncro';ProductName='SyncroMSP Agent';Category='rmm';ArtifactType='File';Name='SyncroSetup.exe';Path='C:\Users\Tech\Downloads\SyncroSetup.exe';SourcePath=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.203.18518'}
 $managedScopes = @(New-RemovalCandidates @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopService,$syncroDownloadedInstaller) -ManagedIdentityStatus $approvedManagedIdentity)
-Assert-True ($managedScopes.Count -eq 1 -and $managedScopes[0].IsManagedSuite -and @($managedScopes[0].ProductIds).Count -eq 2 -and $managedScopes[0].Findings.Count -eq 6) 'Syncro, its bundled Splashtop components, and a passive downloaded installer collapse into one protected managed item'
-Assert-True (Test-FindingBelongsToCandidate -Finding $splashtopService -Candidate $managedScopes[0]) 'Protected managed-suite evidence includes its Splashtop components'
+Assert-True ($managedScopes.Count -eq 1 -and @($managedScopes | Where-Object {$_.IsManagedSuite -and @($_.ProductIds).Count -eq 2 -and $_.Findings.Count -eq 5}).Count -eq 1) 'Only the active per-installation Syncro and linked Splashtop components enter the protected managed item'
+$protectedManagedScope = @($managedScopes | Where-Object {$_.IsManagedSuite})[0]
+Assert-True ($syncroDownloadedInstaller.InstallerOnly -and @(Get-DetectedInstallerFiles @($syncroDownloadedInstaller)).Count -eq 1) 'A downloaded Syncro installer is reported separately and is never treated as an installed agent'
+Assert-True (Test-FindingBelongsToCandidate -Finding $splashtopService -Candidate $protectedManagedScope) 'Protected managed-suite evidence includes only its linked Splashtop installation'
 $managedOnlySets = Split-CompuTekRemovalCandidates -Candidates $managedScopes
-Assert-True (@($managedOnlySets.Protected).Count -eq 1 -and @($managedOnlySets.Review).Count -eq 0) 'A verified managed suite receives no technician removal number'
+Assert-True (@($managedOnlySets.Protected).Count -eq 1 -and @($managedOnlySets.Review).Count -eq 0) 'The verified installation receives no removal number and a downloaded installer is not a removal candidate'
+$splashtopRmmInstall = $splashtopInstall.PSObject.Copy()
+$splashtopRmmInstall.Name = 'Splashtop for RMM'
+$splashtopRmmInstall.DisplayVersion = '3.8.202.0'
+$splashtopRmmInstall.RegistryPath = 'HKLM:\Software\Uninstall\Splashtop for RMM'
+$splashtopStartStreamer = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='StartApp';Name='Splashtop Streamer';Path=$null;InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion=$null}
+$splashtopStartRmm = $splashtopStartStreamer.PSObject.Copy(); $splashtopStartRmm.Name = 'Splashtop for RMM'
+$splashtopShortcut = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='File';Name='Splashtop Streamer.lnk';Path='C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Splashtop Remote\Splashtop Streamer.lnk';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion=$null}
+$splashtopSharedDll = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='File';Name='stevt_srs.dll';Path='C:\ProgramData\Splashtop\Common\Event\stevt_srs.dll';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='1.0.0.1'}
+$splashtopStreamerInstaller = [pscustomobject]@{ProductId='splashtop';ProductName='Splashtop Streamer / SOS';Category='remote-support';ArtifactType='File';Name='Splashtop_Streamer_Win_INSTALLER_v3.8.2.0.exe';Path='C:\Users\Tech\Downloads\Splashtop_Streamer_Win_INSTALLER_v3.8.2.0.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='3.82.0.48'}
+$splashtopRmmInstaller = $splashtopStreamerInstaller.PSObject.Copy(); $splashtopRmmInstaller.Name = 'Splashtop_RMM_Win_INSTALLER_v3.8.2.2.exe'; $splashtopRmmInstaller.Path = 'C:\Users\Tech\Downloads\Splashtop_RMM_Win_INSTALLER_v3.8.2.2.exe'; $splashtopRmmInstaller.FileVersion = '3.82.2.9'
+$splashtopFieldEvidence = @($syncroService,$syncroLive,$syncroInstall,$splashtopInstall,$splashtopRmmInstall,$splashtopService,$splashtopStartStreamer,$splashtopStartRmm,$splashtopShortcut,$splashtopSharedDll,$splashtopStreamerInstaller,$splashtopRmmInstaller)
+$splashtopFieldScopes = @(New-RemovalCandidates $splashtopFieldEvidence -ManagedIdentityStatus $approvedManagedIdentity)
+$splashtopInstallerFiles = @(Get-DetectedInstallerFiles $splashtopFieldEvidence)
+Assert-True ($splashtopFieldScopes.Count -eq 1 -and $splashtopFieldScopes[0].IsManagedSuite -and @($splashtopFieldScopes[0].Findings | Where-Object {$_.ProductId -eq 'splashtop' -and $_.ArtifactType -eq 'InstalledProgram'}).Count -eq 2) 'Two installed Splashtop roles remain one protected CompuTek suite instead of six false versions'
+Assert-True ($splashtopInstallerFiles.Count -eq 2 -and $splashtopStartStreamer.SupportingOnly -and $splashtopShortcut.SupportingOnly -and $splashtopSharedDll.SupportingOnly) 'Splashtop Start entries, shortcuts, shared DLLs, and downloaded installers do not become installed-agent choices'
 $managedRemovalRejected = $false
-try { Invoke-FullCandidateRemoval -Candidate $managedScopes[0] } catch { $managedRemovalRejected = ($_.Exception.Message -match 'Protected CompuTek managed access') }
+try { Invoke-FullCandidateRemoval -Candidate $protectedManagedScope } catch { $managedRemovalRejected = ($_.Exception.Message -match 'Protected CompuTek managed access') }
 Assert-True $managedRemovalRejected 'The removal engine rejects a protected managed candidate even if another code path passes it one'
 $standaloneSplashtop = @(New-RemovalCandidates @($splashtopInstall,$splashtopService) -ManagedIdentityStatus $unapprovedManagedIdentity)
 Assert-True ($standaloneSplashtop.Count -eq 1 -and -not $standaloneSplashtop[0].IsManagedSuite) 'Standalone Splashtop remains a normal review finding when no Syncro primary agent is present'
@@ -406,7 +459,7 @@ $anyDeskService = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Ca
 $anyDeskTempUninstaller = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='File';Name='AnyDeskUninst1234.exe';Path='C:\Users\Victim\AppData\Local\Temp\AnyDeskUninst1234.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='9.7.15';SignatureStatus='Valid';CompanyName='AnyDesk Software GmbH'}
 $anyDeskPrintDriver = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='File';Name='AnyDeskPrintDriverRenderFilter.dll';Path='C:\Users\Victim\AppData\Roaming\AnyDesk\printer_driver\AnyDeskPrintDriverRenderFilter.dll';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='10.0.10011.16384';SignatureStatus='Valid';CompanyName='Windows DDK provider'}
 $anyDeskFieldScopes = @(New-RemovalCandidates @($anyDeskPrefixedInstall,$anyDeskService,$anyDeskTempUninstaller,$anyDeskPrintDriver) -ManagedIdentityStatus $unapprovedManagedIdentity)
-Assert-True ($anyDeskFieldScopes.Count -eq 1 -and $anyDeskFieldScopes[0].DetectedVersion -eq '9.7.15' -and $anyDeskFieldScopes[0].Findings.Count -eq 4) 'One AnyDesk installation is displayed once despite a prefixed uninstall version, temporary uninstaller, and printer-driver build version'
+Assert-True ($anyDeskFieldScopes.Count -eq 1 -and $anyDeskFieldScopes[0].DetectedVersion -eq '9.7.15' -and $anyDeskFieldScopes[0].Findings.Count -eq 3 -and $anyDeskPrintDriver.SupportingOnly) 'One AnyDesk installation is displayed once despite a prefixed uninstall version, temporary uninstaller, and printer-driver build version'
 $anyDeskPortable = [pscustomobject]@{ProductId='anydesk';ProductName='AnyDesk';Category='remote-support';ArtifactType='Process';Name='AnyDesk.exe';Path='C:\Users\Victim\Downloads\AnyDesk.exe';InstallLocation=$null;RegistryPath=$null;PackageFullName=$null;DisplayVersion=$null;FileVersion='8.0.0';SignatureStatus='Valid';CompanyName='AnyDesk Software GmbH'}
 $anyDeskWithPortableScopes = @(New-RemovalCandidates @($anyDeskPrefixedInstall,$anyDeskService,$anyDeskPrintDriver,$anyDeskPortable) -ManagedIdentityStatus $unapprovedManagedIdentity)
 Assert-True ($anyDeskWithPortableScopes.Count -eq 2 -and @($anyDeskWithPortableScopes | Where-Object {$_.DetectedVersion -eq '8.0.0'}).Count -eq 1) 'A separately running AnyDesk portable copy with another version stays independently removable'
@@ -526,6 +579,55 @@ $realVncViewer = New-TestEvidence @{
 $matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $realVncViewer)
 Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'realvnc') 'A vendor-specific VNC path suppresses the generic fallback finding'
 
+$desktopNow = New-TestEvidence @{
+    ArtifactType='File';Name='desktopnow.exe';DisplayName='desktopnow.exe';Path='C:\Program Files (x86)\NCH Software\DesktopNow\desktopnow.exe'
+    FileName='desktopnow.exe';OriginalFilename='desktopnow.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $desktopNow)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'desktopnow') 'DesktopNow is detected by its vendor-specific executable and installation path'
+
+$heartbeatInstaller = New-TestEvidence @{
+    ArtifactType='File';Name='hbrm-installer.exe';DisplayName='hbrm-installer.exe';Path='C:\Users\Technician\Downloads\hbrm-installer.exe'
+    FileName='hbrm-installer.exe';OriginalFilename='hbrm-installer.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $heartbeatInstaller)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'heartbeat-rm') 'HeartbeatRM installer artifacts are detected before an agent is installed'
+
+$miradoreClient = New-TestEvidence @{
+    ArtifactType='Process';Name='MiradoreClient.exe';DisplayName='MiradoreClient.exe';Path='C:\Program Files\Miradore\OnlineClient\bin\MiradoreClient.exe'
+    FileName='MiradoreClient.exe';OriginalFilename='MiradoreClient.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $miradoreClient)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'miradore') 'Miradore is detected through its documented client process and agent path'
+
+$remoteCall = New-TestEvidence @{
+    ArtifactType='File';Name='rxstartsupport.exe';DisplayName='rxstartsupport.exe';Path='C:\Users\Victim\Downloads\rxstartsupport.exe'
+    FileName='rxstartsupport.exe';OriginalFilename='rxstartsupport.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $remoteCall)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'remotecall') 'RSUPPORT RemoteCall is detected from its vendor-specific support executable'
+
+$genericAgent = New-TestEvidence @{
+    ArtifactType='File';Name='agentu.exe';DisplayName='agentu.exe';Path='C:\Program Files\Unrelated Vendor\agentu.exe'
+    FileName='agentu.exe';OriginalFilename='agentu.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $genericAgent)
+Assert-True ($matches.Product.id -notcontains 'remotecall') 'The generic agentu.exe name does not identify unrelated software as RemoteCall'
+
+$genericPcStarter = New-TestEvidence @{
+    ArtifactType='File';Name='pcstarter.exe';DisplayName='pcstarter.exe';Path='C:\Program Files\Unrelated Vendor\pcstarter.exe'
+    FileName='pcstarter.exe';OriginalFilename='pcstarter.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $genericPcStarter)
+Assert-True ($matches.Product.id -notcontains 'turbomeeting') 'The generic pcstarter.exe name does not identify unrelated software as TurboMeeting'
+
+$simpleHelpJWrapper = New-TestEvidence @{
+    ArtifactType='File';Name='windowslauncher.exe';DisplayName='windowslauncher.exe';Path='C:\ProgramData\JWrapper-Remote Access\windowslauncher.exe'
+    FileName='windowslauncher.exe';OriginalFilename='windowslauncher.exe'
+}
+$matches = @(Find-CompuTekProductMatch -Catalog $catalog -Evidence $simpleHelpJWrapper)
+Assert-True ($matches.Count -eq 1 -and $matches[0].Product.id -eq 'simplehelp') 'A generic SimpleHelp launcher is detected only when its vendor-specific JWrapper path confirms it'
+
 $zohoBooks = New-TestEvidence @{
     ArtifactType='InstalledProgram';Name='Zoho Books';DisplayName='Zoho Books';Path='C:\Program Files\Zoho\Books\books.exe'
     Publisher='Zoho Corporation';ProductName='Zoho Books';FileName='books.exe'
@@ -608,7 +710,7 @@ $postScamErrors = $null
 $postScamPath = Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'
 $postScamSource = Get-Content -LiteralPath $postScamPath -Raw
 $postScamAst = [System.Management.Automation.Language.Parser]::ParseFile($postScamPath,[ref]$postScamTokens,[ref]$postScamErrors)
-foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport','Add-Gap','Get-RecentEvents')) {
+foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekDefenderConfigurationNoOp','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport','Add-Gap','Get-RecentEvents')) {
     $postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $postScamFunction.Extent.Text
 }
@@ -628,6 +730,10 @@ Assert-True ($postScamSource -match "'Windows PowerShell' -Ids @\(800\)" -and $p
 Assert-True ($postScamSource -match 'hehggadaopoacecdllhhajmbjkdcmajg' -and $postScamSource -match '\$isTrustedExtension') 'The exact official ChatGPT extension ID is retained as supplemental inventory instead of a warning'
 $defenderMessage = "Microsoft Defender found malware.`r`nName: Trojan:Win32/TestThreat`r`nPath: file:_C:\Temp\bad.exe"
 Assert-True ((Get-CompuTekDefenderFindingName -EventId 1116 -Message $defenderMessage) -eq (Get-CompuTekDefenderFindingName -EventId 1117 -Message $defenderMessage)) 'Defender detection and remediation events for the same threat consolidate into one warning group'
+$defenderNoOpMessage = "Microsoft Defender Antivirus Configuration has changed.`r`nOld value: Default\Real-Time Protection\DpaDisabled = 0x0`r`nNew value: HKLM\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection\DpaDisabled = 0x0"
+Assert-True (Test-CompuTekDefenderConfigurationNoOp $defenderNoOpMessage) 'A Defender 5007 record with the same setting and value is supplemental noise, not an actionable security-control change'
+Assert-True (-not (Test-CompuTekDefenderConfigurationNoOp ($defenderNoOpMessage -replace '0x0$','0x1'))) 'A Defender setting whose value actually changed remains actionable'
+Assert-True ($postScamSource -match 'Get-CompuTekEstablishedTcpConnections' -and $postScamSource -notmatch 'Get-NetTCPConnection -State Established -ErrorAction Stop') 'Post-scam network collection treats a normal empty established-connection query consistently'
 Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.26.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
 Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\Work\computek-system-scan-windows-app\scripts\PostScam_SystemIntegrityScanner.ps1') 'PowerShell logging from the scanner source tree is recognized during development tests'
 Assert-True (-not (Test-CompuTekTrustedScannerScriptPath 'C:\Users\Victim\Downloads\CompuTek.Scanner.Common.psm1')) 'A scanner-named script in an untrusted folder is not suppressed'

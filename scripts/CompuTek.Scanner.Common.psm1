@@ -30,6 +30,49 @@ function Add-CompuTekCollectorFailure {
     }
 }
 
+function Assert-CompuTekNotCancelled {
+    $cancelFile = [string]$env:COMPUTEK_SCANNER_CANCEL_FILE
+    if ($cancelFile -and (Test-Path -LiteralPath $cancelFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+        throw (New-Object OperationCanceledException 'The technician canceled the running CompuTek workflow.')
+    }
+}
+
+function Test-CompuTekKnownWindowsProtectedCoveragePath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    try { $normalizedPath = [IO.Path]::GetFullPath($Path).TrimEnd('\') }
+    catch { return $false }
+    if ($normalizedPath -match '(?i)\\Users\\[^\\]+\\AppData\\Local\\Microsoft\\Feeds(?:\\|$)') {
+        return $true
+    }
+    if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { return $false }
+    $protectedPrefixes = @(
+        'Microsoft\Crypto',
+        'Microsoft\Diagnosis',
+        'Microsoft\Network\Downloader',
+        'Microsoft\Provisioning',
+        'Microsoft\Search',
+        'Microsoft\Windows\CapabilityAccessManager',
+        'Microsoft\Windows\AppRepository',
+        'Microsoft\Windows\Containers',
+        'Microsoft\Windows\SystemData',
+        'Microsoft\Windows\WER',
+        'Microsoft\Windows Defender',
+        'Microsoft\Windows Defender Advanced Threat Protection',
+        'Packages',
+        'USOPrivate',
+        'USOShared'
+    ) | ForEach-Object { Join-Path $env:ProgramData $_ }
+    foreach ($prefix in $protectedPrefixes) {
+        $normalizedPrefix = [IO.Path]::GetFullPath($prefix).TrimEnd('\')
+        if ($normalizedPath.Equals($normalizedPrefix,[StringComparison]::OrdinalIgnoreCase) -or
+            $normalizedPath.StartsWith($normalizedPrefix + '\',[StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Get-CompuTekCandidateFilesSafe {
     [CmdletBinding()]
     param(
@@ -59,9 +102,11 @@ function Get-CompuTekCandidateFilesSafe {
     $visitedDirectories = @{}
     $filesInspected = 0
     $candidateFiles = 0
-    $readErrors = 0
+    $blockingReadErrors = New-Object System.Collections.Generic.List[string]
+    $protectedReadErrors = New-Object System.Collections.Generic.List[string]
 
     while ($pending.Count -gt 0) {
+        Assert-CompuTekNotCancelled
         $entry = $pending.Dequeue()
         try { $directoryKey = [IO.Path]::GetFullPath([string]$entry.Path).TrimEnd('\').ToLowerInvariant() } catch { $directoryKey = ([string]$entry.Path).ToLowerInvariant() }
         if ($visitedDirectories.ContainsKey($directoryKey)) { continue }
@@ -69,7 +114,14 @@ function Get-CompuTekCandidateFilesSafe {
 
         $directoryErrors = @()
         $children = @(Get-ChildItem -LiteralPath $entry.Path -Force -ErrorAction SilentlyContinue -ErrorVariable +directoryErrors)
-        $readErrors += @($directoryErrors).Count
+        if (@($directoryErrors).Count -gt 0) {
+            $failedDirectory = [string]$entry.Path
+            if (Test-CompuTekKnownWindowsProtectedCoveragePath -Path $failedDirectory) {
+                if (-not $protectedReadErrors.Contains($failedDirectory)) { $protectedReadErrors.Add($failedDirectory) }
+            } else {
+                if (-not $blockingReadErrors.Contains($failedDirectory)) { $blockingReadErrors.Add($failedDirectory) }
+            }
+        }
         foreach ($child in $children) {
             if ($child.PSIsContainer) {
                 if ($MaxDepth -ge 0 -and [int]$entry.Depth -ge $MaxDepth) { continue }
@@ -89,8 +141,13 @@ function Get-CompuTekCandidateFilesSafe {
         }
     }
 
-    if ($readErrors -gt 0) {
-        Add-CompuTekCollectorWarning "Some folders under '$Root' could not be read ($readErrors access/read errors)."
+    if ($blockingReadErrors.Count -gt 0) {
+        $coverageMessage = "Required file coverage under '$Root' is incomplete ($($blockingReadErrors.Count) unreadable director$(if($blockingReadErrors.Count -eq 1){'y'}else{'ies'}): $(@($blockingReadErrors | Select-Object -First 8) -join '; ')$(if($blockingReadErrors.Count -gt 8){'; ...'}))."
+        Add-CompuTekCollectorFailure $coverageMessage
+        Add-CompuTekCollectorWarning $coverageMessage
+    }
+    if ($protectedReadErrors.Count -gt 0) {
+        Add-CompuTekCollectorWarning ("Windows protected {0} director{1} under '{2}' could not be enumerated and were recorded as a coverage limitation: {3}{4}" -f $protectedReadErrors.Count,$(if($protectedReadErrors.Count -eq 1){'y'}else{'ies'}),$Root,(@($protectedReadErrors | Select-Object -First 8) -join '; '),$(if($protectedReadErrors.Count -gt 8){'; ...'}else{''}))
     }
     Write-CompuTekScanStage -Message ("Finished {0} - inspected {1:N0} files, {2:N0} relevant file types" -f $Root,$filesInspected,$candidateFiles)
 }
@@ -335,6 +392,144 @@ function Test-CompuTekTrustedMicrosoftApplication {
         $SignatureStatus -eq 'Valid' -and
         ("$CompanyName $Signer" -match '(?i)\bMicrosoft(?: Corporation)?\b')
     )
+}
+
+function Get-CompuTekNormalizedDirectoryPath {
+    param([AllowNull()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    try {
+        $expanded = [Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"'))
+        if ($expanded -match '(?i)\.exe(?:\s|$)') { $expanded = Get-CompuTekExecutablePath $expanded }
+        if (-not $expanded) { return $null }
+        if ([IO.Path]::HasExtension($expanded)) { $expanded = Split-Path -Parent $expanded }
+        return ([IO.Path]::GetFullPath($expanded)).TrimEnd('\')
+    } catch { return $null }
+}
+
+function Test-CompuTekPathWithinRoots {
+    param([AllowNull()][string]$Path, [object[]]$Roots)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try { $candidate = ([IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path.Trim().Trim('"')))).TrimEnd('\') } catch { return $false }
+    foreach ($rootValue in @($Roots)) {
+        $root = Get-CompuTekNormalizedDirectoryPath ([string]$rootValue)
+        if (-not $root) { continue }
+        if ($candidate.Equals($root,[StringComparison]::OrdinalIgnoreCase) -or
+            $candidate.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+function Get-CompuTekManagedIdentityStatus {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Catalog)
+
+    $approvedHashes = @()
+    $managedProperty = $Catalog.PSObject.Properties['managedIdentities']
+    if ($managedProperty -and $managedProperty.Value) {
+        $syncroProperty = $managedProperty.Value.PSObject.Properties['syncro']
+        if ($syncroProperty -and $syncroProperty.Value) {
+            $hashProperty = $syncroProperty.Value.PSObject.Properties['shopSubdomainSha256']
+            if ($hashProperty) {
+                $approvedHashes = @($hashProperty.Value | ForEach-Object {([string]$_).Trim().ToUpperInvariant()} | Where-Object {$_ -match '^[A-F0-9]{64}$'})
+            }
+        }
+    }
+
+    $syncroApproved = $false
+    $syncroSplashtopEnabled = $false
+    $syncroSplashtopRmmCode = $null
+    $approvedRegistryPath = $null
+    $syncroRoots = New-Object System.Collections.Generic.List[string]
+    foreach ($defaultRoot in @(
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'RepairTech\Syncro' }),
+        $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'RepairTech\LiveAgent' }),
+        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} 'RepairTech\Syncro' }),
+        $(if ($env:ProgramData) { Join-Path $env:ProgramData 'Syncro' })
+    ) | Where-Object {$_}) { if (-not $syncroRoots.Contains($defaultRoot)) { $syncroRoots.Add($defaultRoot) } }
+
+    foreach ($syncroRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\RepairTech\Syncro','HKLM:\SOFTWARE\RepairTech\Syncro')) {
+        try {
+            $syncroValues = Get-ItemProperty -LiteralPath $syncroRegistryPath -ErrorAction Stop
+            $subdomain = ([string]$syncroValues.shop_subdomain).Trim().ToLowerInvariant()
+            $identityMatches = $false
+            if ($subdomain -and $approvedHashes.Count -gt 0) {
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try { $actualHash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($subdomain)))).Replace('-','') } finally { $sha.Dispose() }
+                $identityMatches = ($approvedHashes -contains $actualHash)
+            }
+            if (-not $identityMatches) { continue }
+
+            $syncroApproved = $true
+            $approvedRegistryPath = $syncroRegistryPath
+            foreach ($propertyName in @('InstallLocation','InstallPath','Path','BasePath','AppPath')) {
+                $property = $syncroValues.PSObject.Properties[$propertyName]
+                $root = if ($property) { Get-CompuTekNormalizedDirectoryPath ([string]$property.Value) } else { $null }
+                if ($root -and -not $syncroRoots.Contains($root)) { $syncroRoots.Add($root) }
+            }
+            $splashtopStateText = ([string]$syncroValues.SplashtopState).Trim()
+            if ($splashtopStateText) {
+                try {
+                    $splashtopState = $splashtopStateText | ConvertFrom-Json -ErrorAction Stop
+                    $enabledProperty = $splashtopState.PSObject.Properties['Enabled']
+                    $rmmCodeProperty = $splashtopState.PSObject.Properties['RmmCode']
+                    $syncroSplashtopEnabled = ($enabledProperty -and [bool]$enabledProperty.Value)
+                    if ($rmmCodeProperty) { $syncroSplashtopRmmCode = ([string]$rmmCodeProperty.Value).Trim() }
+                } catch {
+                    $syncroSplashtopEnabled = $false
+                    $syncroSplashtopRmmCode = $null
+                }
+            }
+            break
+        } catch {}
+    }
+
+    $deploymentCodeMatches = $false
+    $approvedSplashtopRegistryPath = $null
+    $splashtopRoots = New-Object System.Collections.Generic.List[string]
+    foreach ($splashtopRegistryPath in @('HKLM:\SOFTWARE\WOW6432Node\Splashtop Inc.\Splashtop Remote Server','HKLM:\SOFTWARE\Splashtop Inc.\Splashtop Remote Server')) {
+        try {
+            $splashtopValues = Get-ItemProperty -LiteralPath $splashtopRegistryPath -ErrorAction Stop
+            $registeredRmmCode = ([string]$splashtopValues.RmmCode).Trim()
+            if (-not ($syncroSplashtopRmmCode -and $registeredRmmCode -and $syncroSplashtopRmmCode -ceq $registeredRmmCode)) { continue }
+            $deploymentCodeMatches = $true
+            $approvedSplashtopRegistryPath = $splashtopRegistryPath
+            foreach ($propertyName in @('InstallLocation','InstallPath','Path','BasePath','Directory')) {
+                $property = $splashtopValues.PSObject.Properties[$propertyName]
+                $root = if ($property) { Get-CompuTekNormalizedDirectoryPath ([string]$property.Value) } else { $null }
+                if ($root -and -not $splashtopRoots.Contains($root)) { $splashtopRoots.Add($root) }
+            }
+            break
+        } catch {}
+    }
+    if ($deploymentCodeMatches) {
+        foreach ($serviceRegistryPath in @('HKLM:\SYSTEM\CurrentControlSet\Services\SplashtopRemoteService','HKLM:\SYSTEM\CurrentControlSet\Services\SplashtopRemoteServiceOneShot')) {
+            try {
+                $serviceValues = Get-ItemProperty -LiteralPath $serviceRegistryPath -ErrorAction Stop
+                $executablePath = Get-CompuTekExecutablePath ([string]$serviceValues.ImagePath)
+                $root = Get-CompuTekNormalizedDirectoryPath $executablePath
+                if ($root -and -not $splashtopRoots.Contains($root)) { $splashtopRoots.Add($root) }
+            } catch {}
+        }
+    }
+
+    $splashtopLinked = ($syncroApproved -and $syncroSplashtopEnabled -and $deploymentCodeMatches -and $splashtopRoots.Count -gt 0)
+    return [pscustomobject]@{
+        SyncroApproved = $syncroApproved
+        SyncroApprovedRegistryPath = $approvedRegistryPath
+        SyncroInstallRoots = @($syncroRoots.ToArray())
+        SplashtopLinked = $splashtopLinked
+        SplashtopApprovedRegistryPath = $approvedSplashtopRegistryPath
+        SplashtopInstallRoots = @($splashtopRoots.ToArray())
+        MatchMethod = if ($splashtopLinked) {
+            'Approved Syncro identity plus an exact per-installation Splashtop deployment-code and service-path match'
+        } elseif ($syncroApproved) {
+            'Approved Syncro identity; no exact per-installation Splashtop deployment-code and service-path match'
+        } else {
+            'No approved Syncro shop identity match'
+        }
+    }
 }
 
 function Test-CompuTekTrustedApplication {
@@ -666,7 +861,7 @@ function Get-CompuTekTcpProcessMap {
     param()
     $map = @{}
     if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return $map }
-    foreach ($connection in Get-NetTCPConnection -State Established -ErrorAction Stop) {
+    foreach ($connection in @(Get-CompuTekEstablishedTcpConnections)) {
         if (-not $connection.OwningProcess) { continue }
         if ($connection.RemoteAddress -in @('127.0.0.1','::1','0.0.0.0','::')) { continue }
         $key = [string]$connection.OwningProcess
@@ -674,6 +869,21 @@ function Get-CompuTekTcpProcessMap {
         $map[$key].Add("$($connection.RemoteAddress):$($connection.RemotePort)")
     }
     return $map
+}
+
+function Get-CompuTekEstablishedTcpConnections {
+    [CmdletBinding()]
+    param()
+    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return @() }
+    try {
+        return @(Get-NetTCPConnection -State Established -ErrorAction Stop)
+    } catch {
+        if ([string]$_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound*' -or
+            [string]$_.Exception.Message -match '(?i)No MSFT_NetTCPConnection objects found') {
+            return @()
+        }
+        throw
+    }
 }
 
 function Get-CompuTekProcessArtifacts {
@@ -1077,6 +1287,7 @@ function Invoke-CompuTekRemoteAccessScan {
         [switch]$IncludeHashes
     )
 
+    Assert-CompuTekNotCancelled
     $started = (Get-Date).ToUniversalTime()
     $script:CollectorWarnings.Clear()
     $script:CollectorFailures.Clear()
@@ -1088,7 +1299,7 @@ function Invoke-CompuTekRemoteAccessScan {
 
     $connectionMap = @{}
     Write-CompuTekScanStage -Message 'Step 2 of 10 - mapping active network connections'
-    try { $connectionMap = Get-CompuTekTcpProcessMap } catch { $errors.Add("TCP connection inventory failed: $($_.Exception.Message)") }
+    try { $connectionMap = Get-CompuTekTcpProcessMap } catch [OperationCanceledException] { throw } catch { $errors.Add("TCP connection inventory failed: $($_.Exception.Message)") }
 
     $collectorNumber = 2
     foreach ($collector in @(
@@ -1100,10 +1311,13 @@ function Invoke-CompuTekRemoteAccessScan {
         @{Name='native remote features'; Run={ Get-CompuTekNativeFeatureArtifacts }},
         @{Name='targeted files'; Run={ Get-CompuTekTargetedFileArtifacts -Catalog $catalog -LookbackDays $LookbackDays -DeepScan:$DeepScan }}
     )) {
+        Assert-CompuTekNotCancelled
         $collectorNumber++
         Write-CompuTekScanStage -Message ("Step {0} of 10 - collecting {1}" -f $collectorNumber,$collector.Name)
         try {
             foreach ($artifact in & $collector.Run) { if ($artifact) { $artifacts.Add($artifact) } }
+        } catch [OperationCanceledException] {
+            throw
         } catch {
             $errors.Add("$($collector.Name) inventory failed: $($_.Exception.Message)")
         }
@@ -1114,6 +1328,7 @@ function Invoke-CompuTekRemoteAccessScan {
     Write-CompuTekScanStage -Message ("Step 10 of 10 - analyzing {0} collected artifacts" -f $artifacts.Count)
     $dedupe = @{}
     foreach ($artifact in $artifacts) {
+        Assert-CompuTekNotCancelled
         if ($IncludeHashes -and $artifact.Path -and -not $artifact.SHA256 -and (Test-Path -LiteralPath $artifact.Path -PathType Leaf)) {
             $withHash = Get-CompuTekFileEvidence -Path $artifact.Path -IncludeHash
             if ($withHash.SHA256) { $artifact.SHA256 = $withHash.SHA256 }
@@ -1320,12 +1535,15 @@ function Invoke-CompuTekUninstallCommand {
 }
 
 Export-ModuleMember -Function @(
+    'Assert-CompuTekNotCancelled',
     'Get-CompuTekCatalog',
     'Get-CompuTekExecutablePath',
     'Get-CompuTekSafeFileName',
     'Test-CompuTekUserWritablePath',
     'Test-CompuTekTrustedMicrosoftApplication',
     'Test-CompuTekTrustedApplication',
+    'Test-CompuTekPathWithinRoots',
+    'Get-CompuTekManagedIdentityStatus',
     'Get-CompuTekFileEvidence',
     'Get-CompuTekCandidateFilesSafe',
     'Find-CompuTekProductMatch',
@@ -1335,6 +1553,7 @@ Export-ModuleMember -Function @(
     'Get-CompuTekStartupCommandInfo',
     'Get-CompuTekPersistenceArtifacts',
     'Get-CompuTekTcpProcessMap',
+    'Get-CompuTekEstablishedTcpConnections',
     'Invoke-CompuTekRemoteAccessScan',
     'Export-CompuTekScanReport',
     'Split-CompuTekUninstallCommand',
