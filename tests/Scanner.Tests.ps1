@@ -88,6 +88,7 @@ Assert-True ($remediationSource -match 'Remove-CandidateStoreProducts' -and $rem
 Assert-True ($remediationSource -match 'Test-CandidateHasKeptProductPeer' -and $remediationSource -match 'AllowProductWideStoreFallback' -and $remediationSource -match 'another version of this product was approved to keep') 'Product-wide Store fallback is blocked when a different version was approved to keep'
 Assert-True ($moduleSource -match '\$inspectExecutableMetadata = \(\$file\.Extension[^\r\n]+\$DeepScan') 'Deep Scan inspects metadata in old executables so renamed dormant tools are not limited by lookback age'
 Assert-True ($remediationSource -match 'Remove-CandidateStartupItems' -and $remediationSource -match 'startup-folder reinstall item' -and $remediationSource -match 'RemainingStartupItems' -and $remediationSource -match 'After-remediation startup inventory') 'Approved Startup relaunch items are quarantined before uninstall and checked by the follow-up scan'
+Assert-True ($remediationSource -match 'Get-CandidateFirewallRuleTargets' -and $remediationSource -match 'Remove-NetFirewallRule -InputObject \$rule' -and $remediationSource -match 'Get-CandidateRemainingFirewallRules' -and $remediationSource -match 'RemainingFirewallRules') 'Approved removals delete only associated firewall rules and verify that they are gone'
 Assert-True ($remediationSource -match 'Test-FindingIsIndependentProductCopy' -and $remediationSource -match "ArtifactType -in @\('InstalledProgram','AppxPackage'\)") 'Installed programs and Store packages anchor component evidence without merging independent portable copies'
 Assert-True ($moduleSource -match 'Required file coverage under' -and $moduleSource -match 'Add-CompuTekCollectorFailure \$coverageMessage' -and $moduleSource -match 'Test-CompuTekKnownWindowsProtectedCoveragePath' -and $remediationSource -match 'REMEDIATION LOCKED: Required scan coverage is incomplete') 'Unexpected required file-access gaps lock remediation while known Windows-protected paths remain explicit limitations'
 Assert-True ($remediationSource.IndexOf('REMEDIATION LOCKED: Required scan coverage is incomplete') -lt $remediationSource.IndexOf('New-RemovalCandidates -Findings $scan.Findings')) 'The initial completeness gate runs before any technician removal candidates are created'
@@ -98,12 +99,14 @@ $coverageClassification = & $scannerModule {
         CapabilityAccessProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'Microsoft\Windows\CapabilityAccessManager')
         MicrosoftSystemDataProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'Microsoft\Windows\SystemData')
         MicrosoftFeedsProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path 'C:\Users\Mary Ann\AppData\Local\Microsoft\Feeds\{5588ACFD-6436-411B-A5CE-666AE6A92D3D}~'
+        McAfeeProxyDataProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'McAfee\Proxy\data')
+        OtherMcAfeeFolderProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'McAfee\UnknownRemoteAgent')
         HiddenScreenConnectProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'ScreenConnect Client (test)')
         UnknownVendorProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path (Join-Path $env:ProgramData 'UnknownVendor\LockedAgent')
         UnknownUserAgentProtected = Test-CompuTekKnownWindowsProtectedCoveragePath -Path 'C:\Users\Mary Ann\AppData\Local\UnknownVendor\HiddenAgent'
     }
 }
-Assert-True ($coverageClassification.WindowsDefenderProtected -and $coverageClassification.DefenderForEndpointProtected -and $coverageClassification.CapabilityAccessProtected -and $coverageClassification.MicrosoftSystemDataProtected -and $coverageClassification.MicrosoftFeedsProtected -and -not $coverageClassification.HiddenScreenConnectProtected -and -not $coverageClassification.UnknownVendorProtected -and -not $coverageClassification.UnknownUserAgentProtected) 'Only explicit Windows-owned protected namespaces are non-blocking; hidden or unknown ProgramData/AppData agents still fail closed'
+Assert-True ($coverageClassification.WindowsDefenderProtected -and $coverageClassification.DefenderForEndpointProtected -and $coverageClassification.CapabilityAccessProtected -and $coverageClassification.MicrosoftSystemDataProtected -and $coverageClassification.MicrosoftFeedsProtected -and $coverageClassification.McAfeeProxyDataProtected -and -not $coverageClassification.OtherMcAfeeFolderProtected -and -not $coverageClassification.HiddenScreenConnectProtected -and -not $coverageClassification.UnknownVendorProtected -and -not $coverageClassification.UnknownUserAgentProtected) 'Only explicit Windows/security-product protected namespaces are non-blocking; hidden or unknown ProgramData/AppData agents still fail closed'
 Assert-True ($moduleSource -match 'supersedesProductIds' -and @($catalog.products | Where-Object {$_.id -eq 'logmein-rescue'}).supersedesProductIds -contains 'logmein') 'A specific LogMeIn Rescue match suppresses the broad LogMeIn family match for the same artifact'
 Assert-True ($remediationSource -match 'Wait-CompuTekTransientVendorCleanup' -and $remediationSource -match 'Waiting for the vendor uninstaller to finish its temporary cleanup before verification') 'Verification waits briefly for self-cleaning vendor uninstallers instead of flagging their temporary removal process as leftover software'
 
@@ -257,7 +260,7 @@ Assert-True ($allCatalogFindings.Count -eq @($catalog.products).Count) 'Analysis
 $remediationTokens = $null
 $remediationErrors = $null
 $remediationAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'scripts\RemoteAccessScanAndRemove.ps1'),[ref]$remediationTokens,[ref]$remediationErrors)
-foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Test-FindingIsStandaloneInstallerEvidence','Get-DetectedInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Test-CompuTekManagedInstallationEntry','Test-PathWithinVersionAnchor','New-RemovalCandidates','Split-CompuTekRemovalCandidates','Invoke-FullCandidateRemoval','Remove-CandidateAppxPackages','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath','Test-CompuTekTemporaryPath')) {
+foreach ($functionName in @('Get-CompuTekAttentionReason','Get-CandidateInstallerFiles','Test-FindingIsStandaloneInstallerEvidence','Get-DetectedInstallerFiles','Get-FindingScopePath','Test-FindingIsWindowsHostProcess','Test-FindingIsPassiveSupportEvidence','Get-FindingDetectedVersion','Test-FindingIsIndependentProductCopy','Test-CompuTekManagedInstallationEntry','Test-PathWithinVersionAnchor','New-RemovalCandidates','Split-CompuTekRemovalCandidates','Invoke-FullCandidateRemoval','Remove-CandidateAppxPackages','Get-CandidateFirewallRuleTargets','Remove-CandidateFirewallRules','Get-CandidateRemainingFirewallRules','Test-FindingBelongsToCandidate','Test-CandidateHasKeptProductPeer','ConvertTo-CompuTekCandidateSelection','Test-ProtectedRemediationPath','Test-CompuTekTemporaryPath')) {
     $functionAst = @($remediationAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $functionAst.Extent.Text
 }
@@ -265,6 +268,35 @@ Assert-True (Test-CompuTekTemporaryPath -Path 'C:\Users\Victim\AppData\Local\Tem
 Assert-True (-not (Test-CompuTekTemporaryPath -Path 'C:\Users\Victim\Downloads\AnyDesk.exe' -Roots @('C:\Users\Victim\AppData\Local\Temp'))) 'Product cleanup cannot expand from Temp into Downloads or another user folder'
 Assert-True (-not (Test-CompuTekTemporaryPath -Path 'C:\Users\Victim\AppData\Local\Temp' -Roots @('C:\Users\Victim\AppData\Local\Temp'))) 'Product cleanup cannot delete an entire temporary root'
 Assert-True ($remediationSource -match 'Remove-CandidateTemporaryArtifacts' -and $remediationSource -match 'TempCleanupEvidence' -and $remediationSource -match 'Get-CompuTekFileEvidence -Path \$file\.FullName -IncludeHash' -and $remediationSource -match 'Remove-Item -LiteralPath \$file\.FullName' -and $remediationSource -match 'AllowProductWideCleanup:\(-not \$sameProductKept\)') 'Approved removals delete only matching Temp installers after recording evidence and preserve version boundaries when another copy is kept'
+$firewallCandidate = [pscustomobject]@{
+    ProductIds=@('anydesk')
+    Findings=@([pscustomobject]@{ArtifactType='File';Path='C:\Users\Victim\Downloads\AnyDesk.exe';SourcePath=$null})
+}
+$script:RemovedFirewallRules = @{}
+function Get-NetFirewallRule {
+    param($Name,$ErrorAction)
+    $rules = @(
+        [pscustomobject]@{Name='AnyDesk-In';DisplayName='AnyDesk inbound'},
+        [pscustomobject]@{Name='Unrelated-In';DisplayName='Unrelated inbound'}
+    )
+    if ($Name) { return @($rules | Where-Object {$_.Name -eq $Name -and -not $script:RemovedFirewallRules.ContainsKey($_.Name)}) }
+    return $rules
+}
+function Get-NetFirewallApplicationFilter {
+    param($AssociatedNetFirewallRule,$ErrorAction)
+    if ($AssociatedNetFirewallRule.Name -eq 'AnyDesk-In') { return [pscustomobject]@{Program='C:\Users\Victim\Downloads\AnyDesk.exe'} }
+    return [pscustomobject]@{Program='C:\Program Files\Unrelated\unrelated.exe'}
+}
+function Remove-NetFirewallRule { param($InputObject,$Confirm,$ErrorAction) $script:RemovedFirewallRules[$InputObject.Name]=$true }
+function Write-RemediationLog { param($Message,$Color) }
+try {
+    $firewallTargets = @(Get-CandidateFirewallRuleTargets -Candidate $firewallCandidate)
+    Remove-CandidateFirewallRules -Candidate $firewallCandidate
+    $remainingFirewallTargets = @(Get-CandidateRemainingFirewallRules $firewallCandidate)
+    Assert-True ($firewallTargets.Count -eq 1 -and $firewallTargets[0].RuleName -eq 'AnyDesk-In' -and $script:RemovedFirewallRules.ContainsKey('AnyDesk-In') -and -not $script:RemovedFirewallRules.ContainsKey('Unrelated-In') -and $remainingFirewallTargets.Count -eq 0) 'Firewall cleanup removes and verifies only a rule tied to the technician-selected executable'
+} finally {
+    Remove-Item Function:\Get-NetFirewallRule,Function:\Get-NetFirewallApplicationFilter,Function:\Remove-NetFirewallRule,Function:\Write-RemediationLog -Force -ErrorAction SilentlyContinue
+}
 $sampleAttentionReason = Get-CompuTekAttentionReason -Items @([pscustomobject]@{
     ProductName = 'AnyDesk'
     Status = 'RemovalIncomplete'
@@ -710,7 +742,7 @@ $postScamErrors = $null
 $postScamPath = Join-Path $repoRoot 'scripts\PostScam_SystemIntegrityScanner.ps1'
 $postScamSource = Get-Content -LiteralPath $postScamPath -Raw
 $postScamAst = [System.Management.Automation.Language.Parser]::ParseFile($postScamPath,[ref]$postScamTokens,[ref]$postScamErrors)
-foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekDefenderConfigurationNoOp','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport','Add-Gap','Get-RecentEvents')) {
+foreach ($functionName in @('Test-CompuTekPostScamUserWritableRisk','Test-CompuTekPostScamPersistenceText','Get-CompuTekDefenderFindingName','Test-CompuTekDefenderConfigurationNoOp','Test-CompuTekKnownGenDigitalHostsEntry','Test-CompuTekTrustedScannerScriptPath','Get-CompuTekPostScamDataValue','Get-CompuTekPostScamFirstDataValue','Get-CompuTekPostScamDisplayResource','Get-CompuTekPostScamReason','Get-CompuTekPostScamReviewStep','ConvertTo-CompuTekHtmlText','Get-CompuTekPostScamCategoryLabel','New-CompuTekPostScamHtmlReport','Add-Gap','Get-RecentEvents')) {
     $postScamFunction = @($postScamAst.FindAll({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName},$true))[0]
     Invoke-Expression $postScamFunction.Extent.Text
 }
@@ -733,6 +765,10 @@ Assert-True ((Get-CompuTekDefenderFindingName -EventId 1116 -Message $defenderMe
 $defenderNoOpMessage = "Microsoft Defender Antivirus Configuration has changed.`r`nOld value: Default\Real-Time Protection\DpaDisabled = 0x0`r`nNew value: HKLM\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection\DpaDisabled = 0x0"
 Assert-True (Test-CompuTekDefenderConfigurationNoOp $defenderNoOpMessage) 'A Defender 5007 record with the same setting and value is supplemental noise, not an actionable security-control change'
 Assert-True (-not (Test-CompuTekDefenderConfigurationNoOp ($defenderNoOpMessage -replace '0x0$','0x1'))) 'A Defender setting whose value actually changed remains actionable'
+Assert-True (Test-CompuTekKnownGenDigitalHostsEntry '127.0.0.1 gen-webserver.internal www.gen-webserver.internal # gen digital helper server') 'The exact Gen Digital local helper hosts entry is retained as informational security-product configuration'
+Assert-True (-not (Test-CompuTekKnownGenDigitalHostsEntry '203.0.113.25 bank.example.com # gen digital helper server')) 'A redirected public hostname is never suppressed by the Gen Digital hosts exception'
+Assert-True (([regex]::Matches($postScamSource,'(?m)-and \$commandText -match \$suspiciousCommandRegex\)')).Count -eq 2 -and $postScamSource -match 'Severity ''Informational'' -Name "Common utility prefetch:') 'PowerShell Temp-path mentions and common 7-Zip/archiver Prefetch are supporting leads unless risky behavior is present'
+Assert-True ($postScamSource -match 'Get-CompuTekThirdPartyAntivirusNames' -and $postScamSource -match 'Microsoft Defender preferences were unavailable while third-party antivirus is registered') 'Unavailable Defender preferences are a coverage note when another antivirus is registered'
 Assert-True ($postScamSource -match 'Get-CompuTekEstablishedTcpConnections' -and $postScamSource -notmatch 'Get-NetTCPConnection -State Established -ErrorAction Stop') 'Post-scam network collection treats a normal empty established-connection query consistently'
 Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\ProgramData\CompuTek\ScannerApp\Engine\1.4.26.0\CompuTek.Scanner.Common.psm1') 'PowerShell logging from the protected embedded scanner engine is recognized as scanner-generated evidence'
 Assert-True (Test-CompuTekTrustedScannerScriptPath 'C:\Work\computek-system-scan-windows-app\scripts\PostScam_SystemIntegrityScanner.ps1') 'PowerShell logging from the scanner source tree is recognized during development tests'
