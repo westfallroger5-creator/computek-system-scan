@@ -170,6 +170,25 @@ function Test-CompuTekDefenderConfigurationNoOp {
     return ($oldSetting -ieq $newSetting -and $oldMatch.Groups['Value'].Value -ieq $newMatch.Groups['Value'].Value)
 }
 
+function Get-CompuTekThirdPartyAntivirusNames {
+    try {
+        return @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntivirusProduct -ErrorAction Stop |
+            Where-Object { $_.displayName -and $_.displayName -notmatch '(?i)Microsoft Defender|Windows Defender' } |
+            ForEach-Object { [string]$_.displayName } |
+            Sort-Object -Unique)
+    } catch {
+        return @()
+    }
+}
+
+function Test-CompuTekKnownGenDigitalHostsEntry {
+    param([AllowNull()][string]$Line)
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $false }
+    return ($Line -match '(?i)^\s*127\.0\.0\.1\s+(?:(?:www\.)?gen-webserver\.internal\s*)+(?:#\s*gen digital helper server\s*)?$' -or
+        $Line -match '(?i)^\s*127\.0\.0\.1\s+(?:(?:www\.)?family\.gen-webserver\.internal\s*)+(?:#\s*gen digital helper server\s*)?$' -or
+        $Line -match '(?i)^\s*127\.0\.0\.1\s+(?:(?:www\.)?revocation\.gen-webserver\.internal\s*)+(?:#\s*gen digital helper server\s*)?$')
+}
+
 function Test-CompuTekTrustedScannerScriptPath {
     param([AllowNull()][string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -708,7 +727,7 @@ foreach ($event in Get-RecentEvents -LogName 'Microsoft-Windows-PowerShell/Opera
     $eventData = Get-EventDataMap $event
     if ($event.ProcessId -eq $PID -or (Test-CompuTekTrustedScannerScriptPath ([string](Get-CompuTekPostScamDataValue -Data $eventData -Names @('Path'))))) { continue }
     $commandText = Get-CompuTekPowerShellCommandText $event
-    if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and ($commandText -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $commandText))) {
+    if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and $commandText -match $suspiciousCommandRegex) {
         Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name "PowerShell event $($event.Id)" -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data $eventData
     }
 }
@@ -716,7 +735,7 @@ foreach ($event in Get-RecentEvents -LogName 'Windows PowerShell' -Ids @(800) -M
     $eventData = Get-EventDataMap $event
     if ($event.ProcessId -eq $PID -or (Test-CompuTekTrustedScannerScriptPath ([string](Get-CompuTekPostScamDataValue -Data $eventData -Names @('Path'))))) { continue }
     $commandText = Get-CompuTekPowerShellCommandText $event
-    if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and ($commandText -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $commandText))) {
+    if (-not (Test-CompuTekGeneratedPowerShellText $commandText) -and $commandText -match $suspiciousCommandRegex) {
         Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name 'Classic PowerShell command' -Details (Protect-CommandText $commandText) -TimeCreated $event.TimeCreated -Source $event.LogName -EventId $event.Id -Data $eventData
     }
 }
@@ -750,7 +769,14 @@ try {
             Add-Evidence -Category 'SecurityControl' -Severity 'High' -Name "Defender protection disabled: $property" -Details "$property=True" -Source 'Get-MpPreference'
         }
     }
-} catch { Add-Gap "Microsoft Defender preferences could not be collected: $($_.Exception.Message)" }
+} catch {
+    $thirdPartyAntivirus = @(Get-CompuTekThirdPartyAntivirusNames)
+    if ($thirdPartyAntivirus.Count -gt 0) {
+        Add-CoverageNote ("Microsoft Defender preferences were unavailable while third-party antivirus is registered ({0}). Defender event history was still reviewed; confirm the listed antivirus is enabled and current during Final System Check." -f ($thirdPartyAntivirus -join ', '))
+    } else {
+        Add-Gap "Microsoft Defender preferences could not be collected: $($_.Exception.Message)"
+    }
+}
 
 $sysmonLog = $null
 try {
@@ -877,7 +903,7 @@ foreach ($profile in Get-ChildItem (Join-Path $env:SystemDrive 'Users') -Directo
             $lineNumber = 0
             foreach ($line in Get-Content -LiteralPath $history -ErrorAction Stop) {
                 $lineNumber++
-                if ($line -match $suspiciousCommandRegex -or (Test-CompuTekPostScamUserWritableRisk $line)) {
+                if ($line -match $suspiciousCommandRegex) {
                     Add-Evidence -Category 'SuspiciousExecution' -Severity 'High' -Name 'Suspicious PowerShell history command' -Details ("line {0}: {1}" -f $lineNumber,(Protect-CommandText $line)) -Path $history -User $profile.Name -Source 'PSReadLine'
                 }
             }
@@ -962,7 +988,12 @@ try {
 
 try {
     $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-    $customHosts = @(Get-Content -LiteralPath $hostsPath -ErrorAction Stop | Where-Object {$_ -match '\S' -and $_ -notmatch '^\s*#'})
+    $allCustomHosts = @(Get-Content -LiteralPath $hostsPath -ErrorAction Stop | Where-Object {$_ -match '\S' -and $_ -notmatch '^\s*#'})
+    $knownSecurityProductHosts = @($allCustomHosts | Where-Object { Test-CompuTekKnownGenDigitalHostsEntry $_ })
+    if ($knownSecurityProductHosts.Count -gt 0) {
+        Add-Evidence -Category 'NetworkConfiguration' -Severity 'Informational' -Name 'Known Gen Digital security-product hosts entries' -Details (Get-TruncatedText ($knownSecurityProductHosts -join "`n") 4000) -Path $hostsPath -Source 'FileSystem'
+    }
+    $customHosts = @($allCustomHosts | Where-Object { -not (Test-CompuTekKnownGenDigitalHostsEntry $_) })
     if ($customHosts.Count -gt 0) {
         Add-Evidence -Category 'NetworkConfiguration' -Severity 'Medium' -Name 'Custom hosts-file entries' -Details (Get-TruncatedText ($customHosts -join "`n") 4000) -Path $hostsPath -Source 'FileSystem'
     }
@@ -1010,8 +1041,10 @@ try {
     $prefetch = @(Get-ChildItem -LiteralPath $prefetchPath -Filter '*.pf' -File -Force -ErrorAction Stop | Where-Object {$_.LastWriteTime -ge $cutoff} | Select-Object Name,Length,CreationTimeUtc,LastWriteTimeUtc)
     $prefetch | Export-Csv -LiteralPath (Join-Path $caseRoot 'RecentPrefetch.csv') -NoTypeInformation -Encoding UTF8
     foreach ($item in $prefetch) {
-        if ($item.Name -match '(?i)(RCLONE|MEGA|WINSCP|PSCP|CURL|BITSADMIN|7Z|RAR|PROCDUMP|PSEXEC|MIMIKATZ|NANODUMP)') {
+        if ($item.Name -match '(?i)(RCLONE|MEGA|WINSCP|PSCP|PROCDUMP|PSEXEC|MIMIKATZ|NANODUMP)') {
             Add-Evidence -Category 'ExecutionArtifact' -Severity 'Medium' -Name "Prefetch: $($item.Name)" -Details ("last run evidence timestamp={0:u}" -f $item.LastWriteTimeUtc) -TimeCreated $item.LastWriteTimeUtc -Path (Join-Path $prefetchPath $item.Name) -Source 'Prefetch' -Data $item
+        } elseif ($item.Name -match '(?i)(CURL|BITSADMIN|7Z|RAR|TAR)') {
+            Add-Evidence -Category 'ExecutionArtifact' -Severity 'Informational' -Name "Common utility prefetch: $($item.Name)" -Details ("Windows recorded execution at {0:u}. This common utility is saved as a lead only; Prefetch alone does not show suspicious arguments or data transfer." -f $item.LastWriteTimeUtc) -TimeCreated $item.LastWriteTimeUtc -Path (Join-Path $prefetchPath $item.Name) -Source 'Prefetch' -Data $item
         } elseif ($item.Name -match $remoteRegex) {
             Add-Evidence -Category 'RemoteAccessExecution' -Severity 'Review' -Name "Remote-support prefetch: $($item.Name)" -Details ("Windows recorded execution at {0:u}. Prefetch does not show who used the program or whether a remote session occurred." -f $item.LastWriteTimeUtc) -TimeCreated $item.LastWriteTimeUtc -Path (Join-Path $prefetchPath $item.Name) -Source 'Prefetch' -Data $item
         }

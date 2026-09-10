@@ -59,6 +59,7 @@ function Test-CompuTekKnownWindowsProtectedCoveragePath {
         'Microsoft\Windows\WER',
         'Microsoft\Windows Defender',
         'Microsoft\Windows Defender Advanced Threat Protection',
+        'McAfee\Proxy\data',
         'Packages',
         'USOPrivate',
         'USOShared'
@@ -147,7 +148,7 @@ function Get-CompuTekCandidateFilesSafe {
         Add-CompuTekCollectorWarning $coverageMessage
     }
     if ($protectedReadErrors.Count -gt 0) {
-        Add-CompuTekCollectorWarning ("Windows protected {0} director{1} under '{2}' could not be enumerated and were recorded as a coverage limitation: {3}{4}" -f $protectedReadErrors.Count,$(if($protectedReadErrors.Count -eq 1){'y'}else{'ies'}),$Root,(@($protectedReadErrors | Select-Object -First 8) -join '; '),$(if($protectedReadErrors.Count -gt 8){'; ...'}else{''}))
+        Add-CompuTekCollectorWarning ("Known Windows/security-product protected {0} director{1} under '{2}' could not be enumerated and were recorded as a coverage limitation: {3}{4}" -f $protectedReadErrors.Count,$(if($protectedReadErrors.Count -eq 1){'y'}else{'ies'}),$Root,(@($protectedReadErrors | Select-Object -First 8) -join '; '),$(if($protectedReadErrors.Count -gt 8){'; ...'}else{''}))
     }
     Write-CompuTekScanStage -Message ("Finished {0} - inspected {1:N0} files, {2:N0} relevant file types" -f $Root,$filesInspected,$candidateFiles)
 }

@@ -1430,6 +1430,74 @@ function Remove-CandidateRegistration {
     }
 }
 
+function Get-CandidateFirewallRuleTargets {
+    param($Candidate, [switch]$AllowProductWideCleanup)
+
+    if (-not (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue)) { return @() }
+
+    $candidateProductIds = @($Candidate.ProductIds | ForEach-Object {[string]$_})
+    $exactPaths = @($Candidate.Findings | ForEach-Object {@($_.Path,$_.SourcePath)} | Where-Object {$_} | ForEach-Object {
+        try { [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables(([string]$_).Trim('"'))) } catch { $null }
+    }) + @(Get-CandidateInstallerFiles $Candidate)
+    $exactPaths = @($exactPaths | Where-Object {$_} | Sort-Object -Unique)
+    $targets = New-Object System.Collections.Generic.List[object]
+
+    foreach ($rule in @(Get-NetFirewallRule -ErrorAction SilentlyContinue)) {
+        foreach ($filter in @(Get-NetFirewallApplicationFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue)) {
+            $program = [Environment]::ExpandEnvironmentVariables(([string]$filter.Program).Trim('"'))
+            if ([string]::IsNullOrWhiteSpace($program) -or $program -eq 'Any') { continue }
+            try { $normalizedProgram = [IO.Path]::GetFullPath($program) } catch { continue }
+            $isExactCandidatePath = @($exactPaths | Where-Object {$normalizedProgram.Equals([string]$_,[StringComparison]::OrdinalIgnoreCase)}).Count -gt 0
+            $isSelectedProduct = $false
+            if (-not $isExactCandidatePath -and $AllowProductWideCleanup) {
+                $fileEvidence = Get-CompuTekFileEvidence -Path $normalizedProgram
+                $firewallEvidence = [pscustomobject]@{
+                    ArtifactType='File';Source='Windows Firewall';Name=[string]$rule.DisplayName;DisplayName=[string]$rule.DisplayName
+                    Path=$normalizedProgram;CommandLine=$normalizedProgram;ProductName=$fileEvidence.ProductName;FileDescription=$fileEvidence.FileDescription
+                    CompanyName=$fileEvidence.CompanyName;OriginalFilename=$fileEvidence.OriginalFilename;FileName=(Get-CompuTekSafeFileName $normalizedProgram)
+                    Publisher=$null;Signer=$fileEvidence.Signer;SignatureStatus=$fileEvidence.SignatureStatus;PackageName=$null
+                }
+                $isSelectedProduct = @((Find-CompuTekProductMatch -Catalog $catalog -Evidence $firewallEvidence) | Where-Object {$_.Product.id -in $candidateProductIds}).Count -gt 0
+            }
+            if ($isExactCandidatePath -or $isSelectedProduct) {
+                $targets.Add([pscustomobject]@{RuleName=[string]$rule.Name;DisplayName=[string]$rule.DisplayName;Program=$normalizedProgram})
+            }
+        }
+    }
+    return @($targets.ToArray() | Sort-Object RuleName,Program -Unique)
+}
+
+function Remove-CandidateFirewallRules {
+    param($Candidate, [switch]$AllowProductWideCleanup)
+
+    $targets = @(Get-CandidateFirewallRuleTargets -Candidate $Candidate -AllowProductWideCleanup:$AllowProductWideCleanup)
+    $Candidate | Add-Member -NotePropertyName FirewallRuleTargets -NotePropertyValue $targets -Force
+    foreach ($target in $targets) {
+        Assert-CompuTekNotCancelled
+        try {
+            $rule = Get-NetFirewallRule -Name $target.RuleName -ErrorAction Stop
+            Remove-NetFirewallRule -InputObject $rule -Confirm:$false -ErrorAction Stop
+            Write-RemediationLog ("Removed firewall rule '{0}' tied to {1}" -f $target.DisplayName,$target.Program) 'Green'
+        } catch {
+            Write-RemediationLog ("Could not remove firewall rule '{0}' tied to {1}: {2}" -f $target.DisplayName,$target.Program,$_.Exception.Message) 'Red'
+        }
+    }
+}
+
+function Get-CandidateRemainingFirewallRules {
+    param($Candidate)
+    $targetProperty = $Candidate.PSObject.Properties['FirewallRuleTargets']
+    if (-not $targetProperty -or -not (Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue)) { return @() }
+    $remaining = New-Object System.Collections.Generic.List[string]
+    foreach ($target in @($targetProperty.Value)) {
+        if (Get-NetFirewallRule -Name $target.RuleName -ErrorAction SilentlyContinue) {
+            $remaining.Add(("{0} -> {1}" -f $target.DisplayName,$target.Program))
+        }
+    }
+    return @($remaining.ToArray())
+}
+
 function Invoke-FullCandidateRemoval {
     param($Candidate, [switch]$AllowProductWideStoreFallback)
 
@@ -1450,6 +1518,7 @@ function Invoke-FullCandidateRemoval {
     # Prevent a selected agent from being relaunched or reinstalled at sign-in
     # while its registered vendor uninstaller is running.
     Remove-CandidateStartupItems $Candidate
+    Remove-CandidateFirewallRules -Candidate $Candidate -AllowProductWideCleanup:$AllowProductWideStoreFallback
 
     $uninstallResult = Invoke-OfficialUninstall $Candidate
     if (-not $uninstallResult.Attempted) {
@@ -1948,11 +2017,12 @@ try {
     foreach ($candidate in $selected) {
         $remaining = @($verification.Findings | Where-Object {Test-FindingBelongsToCandidate -Finding $_ -Candidate $candidate})
         $tempCleanupFailures = @($candidate.TempCleanupFailures | Where-Object {Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue})
+        $remainingFirewallRules = @(Get-CandidateRemainingFirewallRules $candidate)
         $tempCleanupIncomplete = -not [string]::IsNullOrWhiteSpace([string]$candidate.TempCleanupError)
         if ($tempCleanupIncomplete) { $verificationErrors += [string]$candidate.TempCleanupError }
         $status = if (-not $verification.IsComplete -or $tempCleanupIncomplete) {
             'NotVerified-ScanIncomplete'
-        } elseif ($remaining.Count -gt 0 -or $tempCleanupFailures.Count -gt 0) {
+        } elseif ($remaining.Count -gt 0 -or $tempCleanupFailures.Count -gt 0 -or $remainingFirewallRules.Count -gt 0) {
             'RemovalIncomplete'
         } else {
             'RemovalVerified'
@@ -1967,7 +2037,7 @@ try {
             elseif ($_.SourcePath) { [string]$_.SourcePath }
             elseif ($_.RegistryPath) { [string]$_.RegistryPath }
         } | Where-Object {$_}) + @($tempCleanupFailures)
-        $remainingLocations = @($remainingLocations | Sort-Object -Unique)
+        $remainingLocations = @($remainingLocations + $remainingFirewallRules | Sort-Object -Unique)
         $remainingServices = @($remaining | Where-Object {$_.ArtifactType -eq 'Service' -and $_.Name} | Select-Object -ExpandProperty Name -Unique)
         $remainingStartupItems = @($remaining | Where-Object {$_.ArtifactType -eq 'StartupFile' -and $_.SourcePath} | Select-Object -ExpandProperty SourcePath -Unique)
         $verificationSummary += [pscustomobject]@{
@@ -1978,10 +2048,11 @@ try {
             Status = $status
             RemainingFindings = $remaining.Count
             RemainingTempFiles = $tempCleanupFailures.Count
+            RemainingFirewallRules = $remainingFirewallRules.Count
             RemainingStartupItems = $remainingStartupItems.Count
             RemainingLocations = $remainingLocations -join '; '
         }
-        Write-Host ("{0}: {1} ({2} remaining finding(s), {3} locked temporary file(s))" -f $candidate.Id,$status,$remaining.Count,$tempCleanupFailures.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
+        Write-Host ("{0}: {1} ({2} remaining finding(s), {3} locked temporary file(s), {4} firewall rule(s))" -f $candidate.Id,$status,$remaining.Count,$tempCleanupFailures.Count,$remainingFirewallRules.Count) -ForegroundColor $(if($status -eq 'RemovalVerified'){'Green'}else{'Red'})
         if ($status -ne 'RemovalVerified') {
             $manualRemovalItems += [pscustomobject][ordered]@{
                 CandidateId = $candidate.Id
