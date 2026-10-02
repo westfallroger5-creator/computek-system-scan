@@ -35,6 +35,8 @@ namespace CompuTek.Scanner.App
         private readonly Button cancelButton = new Button();
         private readonly Label statusLabel = new Label();
         private readonly ProgressBar progress = new ProgressBar();
+        private readonly Panel statusPanel = new Panel();
+        private readonly Panel inputPanel = new Panel();
         private readonly Timer runningTimer = new Timer();
 
         private EngineLayout engineLayout;
@@ -83,39 +85,55 @@ namespace CompuTek.Scanner.App
 
             Panel header = new Panel();
             header.Dock = DockStyle.Fill;
-            header.Size = new Size(ClientSize.Width, 92);
             header.BackColor = Navy;
 
+            TableLayoutPanel headerLayout = new TableLayoutPanel();
+            headerLayout.Dock = DockStyle.Fill;
+            headerLayout.ColumnCount = 3;
+            headerLayout.RowCount = 1;
+            headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118F));
+            headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            headerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 410F));
+            headerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            header.Controls.Add(headerLayout);
+
             brandLogo.BackColor = Color.Transparent;
-            brandLogo.Location = new Point(18, 14);
-            brandLogo.Size = new Size(96, 64);
+            brandLogo.Dock = DockStyle.Fill;
+            brandLogo.Margin = new Padding(18, 13, 4, 13);
             brandLogo.SizeMode = PictureBoxSizeMode.Zoom;
             brandLogo.TabStop = false;
             try { brandLogo.Image = Branding.CreateLogoImage(); } catch { }
-            header.Controls.Add(brandLogo);
+            headerLayout.Controls.Add(brandLogo, 0, 0);
+
+            Panel headingPanel = new Panel();
+            headingPanel.Dock = DockStyle.Fill;
+            headingPanel.Margin = new Padding(4, 0, 8, 0);
+            headerLayout.Controls.Add(headingPanel, 1, 0);
 
             Label title = new Label();
             title.Text = "CompuTek Scanner";
             title.ForeColor = Color.White;
             title.Font = new Font("Segoe UI Semibold", 22F, FontStyle.Bold, GraphicsUnit.Point);
             title.AutoSize = true;
-            title.Location = new Point(128, 12);
-            header.Controls.Add(title);
+            title.Location = new Point(6, 11);
+            headingPanel.Controls.Add(title);
 
             Label subtitle = new Label();
             subtitle.Text = "Security scanning, verified remediation, evidence collection, and technician utilities";
             subtitle.ForeColor = Color.FromArgb(215, 230, 240);
-            subtitle.AutoSize = true;
-            subtitle.Location = new Point(131, 56);
-            header.Controls.Add(subtitle);
+            subtitle.AutoEllipsis = true;
+            subtitle.Location = new Point(8, 56);
+            subtitle.Size = new Size(610, 24);
+            subtitle.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
+            headingPanel.Controls.Add(subtitle);
 
             catalogLabel.ForeColor = Color.White;
             catalogLabel.TextAlign = ContentAlignment.MiddleRight;
-            catalogLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            catalogLabel.Location = new Point(730, 18);
-            catalogLabel.Size = new Size(420, 52);
+            catalogLabel.Dock = DockStyle.Fill;
+            catalogLabel.Margin = new Padding(8, 10, 18, 10);
             catalogLabel.Text = "Loading signature catalog...";
-            header.Controls.Add(catalogLabel);
+            catalogLabel.AutoEllipsis = true;
+            headerLayout.Controls.Add(catalogLabel, 2, 0);
             layout.Controls.Add(header, 0, 0);
 
             TabControl toolTabs = new TabControl();
@@ -134,10 +152,16 @@ namespace CompuTek.Scanner.App
             toolTabs.SelectedTab = finalCheckTab;
             layout.Controls.Add(toolTabs, 0, 1);
 
-            Panel finalCheckPanel = new Panel();
+            TableLayoutPanel finalCheckPanel = new TableLayoutPanel();
             finalCheckPanel.Dock = DockStyle.Fill;
             finalCheckPanel.BackColor = LightBackground;
-            finalCheckPanel.Padding = new Padding(20, 14, 20, 10);
+            finalCheckPanel.Padding = new Padding(18, 14, 18, 10);
+            finalCheckPanel.ColumnCount = 2;
+            finalCheckPanel.RowCount = 2;
+            finalCheckPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36F));
+            finalCheckPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 64F));
+            finalCheckPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            finalCheckPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
 
             finalSystemCheckButton.Text = "&Run Final System Check";
             finalSystemCheckButton.AccessibleName = "Run Final System Check";
@@ -147,135 +171,201 @@ namespace CompuTek.Scanner.App
             finalSystemCheckButton.FlatStyle = FlatStyle.Flat;
             finalSystemCheckButton.FlatAppearance.BorderSize = 0;
             finalSystemCheckButton.Font = new Font("Segoe UI Semibold", 13F, FontStyle.Bold);
-            finalSystemCheckButton.Location = new Point(24, 22);
-            finalSystemCheckButton.Size = new Size(360, 64);
+            finalSystemCheckButton.Dock = DockStyle.Fill;
+            finalSystemCheckButton.Margin = new Padding(6, 8, 18, 12);
             finalSystemCheckButton.Click += StartFinalSystemCheck;
-            finalCheckPanel.Controls.Add(finalSystemCheckButton);
+            finalCheckPanel.Controls.Add(finalSystemCheckButton, 0, 0);
 
             Label finalCheckDescription = new Label();
             finalCheckDescription.Text = "Most-used store workflow: disable hibernation, verify activation, Windows security, updates and devices, create a restore point, and confirm working audio.";
             finalCheckDescription.Font = new Font("Segoe UI", 10.5F, FontStyle.Regular);
-            finalCheckDescription.Location = new Point(414, 24);
-            finalCheckDescription.Size = new Size(710, 62);
-            finalCheckPanel.Controls.Add(finalCheckDescription);
+            finalCheckDescription.Dock = DockStyle.Fill;
+            finalCheckDescription.Margin = new Padding(10, 12, 8, 6);
+            finalCheckDescription.TextAlign = ContentAlignment.MiddleLeft;
+            finalCheckPanel.Controls.Add(finalCheckDescription, 1, 0);
 
             Label finalCheckShortcut = new Label();
             finalCheckShortcut.Text = "Start here when preparing a repaired computer to leave the store. Keyboard: Alt+R.";
             finalCheckShortcut.ForeColor = Color.FromArgb(60, 80, 92);
-            finalCheckShortcut.Location = new Point(24, 110);
-            finalCheckShortcut.Size = new Size(1050, 34);
-            finalCheckPanel.Controls.Add(finalCheckShortcut);
+            finalCheckShortcut.Dock = DockStyle.Fill;
+            finalCheckShortcut.Margin = new Padding(6, 4, 6, 0);
+            finalCheckShortcut.TextAlign = ContentAlignment.MiddleLeft;
+            finalCheckPanel.Controls.Add(finalCheckShortcut, 0, 1);
+            finalCheckPanel.SetColumnSpan(finalCheckShortcut, 2);
             finalCheckTab.Controls.Add(finalCheckPanel);
 
-            Panel commandPanel = new Panel();
+            TableLayoutPanel commandPanel = new TableLayoutPanel();
             commandPanel.Dock = DockStyle.Fill;
-            commandPanel.Size = new Size(ClientSize.Width, 156);
             commandPanel.Padding = new Padding(14, 10, 14, 8);
             commandPanel.BackColor = LightBackground;
+            commandPanel.ColumnCount = 3;
+            commandPanel.RowCount = 1;
+            commandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46F));
+            commandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27F));
+            commandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 27F));
+            commandPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
             GroupBox options = new GroupBox();
             options.Text = "Scan options";
-            options.Location = new Point(16, 10);
-            options.Size = new Size(520, 132);
-            options.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            options.Dock = DockStyle.Fill;
+            options.Margin = new Padding(2, 0, 12, 0);
+
+            TableLayoutPanel optionsLayout = new TableLayoutPanel();
+            optionsLayout.Dock = DockStyle.Fill;
+            optionsLayout.Padding = new Padding(12, 6, 12, 4);
+            optionsLayout.ColumnCount = 2;
+            optionsLayout.RowCount = 3;
+            optionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52F));
+            optionsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48F));
+            optionsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            optionsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
+            optionsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            options.Controls.Add(optionsLayout);
+
+            FlowLayoutPanel lookbackPanel = new FlowLayoutPanel();
+            lookbackPanel.Dock = DockStyle.Fill;
+            lookbackPanel.WrapContents = false;
+            lookbackPanel.Margin = new Padding(0);
 
             Label daysLabel = new Label();
             daysLabel.Text = "Look back:";
             daysLabel.AutoSize = true;
-            daysLabel.Location = new Point(18, 31);
-            options.Controls.Add(daysLabel);
+            daysLabel.Margin = new Padding(0, 6, 6, 0);
+            lookbackPanel.Controls.Add(daysLabel);
 
             lookbackDays.Minimum = 1;
             lookbackDays.Maximum = 365;
             lookbackDays.Value = 7;
-            lookbackDays.Location = new Point(91, 27);
             lookbackDays.Width = 62;
-            options.Controls.Add(lookbackDays);
+            lookbackDays.Margin = new Padding(0, 2, 6, 0);
+            lookbackPanel.Controls.Add(lookbackDays);
 
             Label daysSuffix = new Label();
             daysSuffix.Text = "days";
             daysSuffix.AutoSize = true;
-            daysSuffix.Location = new Point(159, 31);
-            options.Controls.Add(daysSuffix);
+            daysSuffix.Margin = new Padding(0, 6, 0, 0);
+            lookbackPanel.Controls.Add(daysSuffix);
+            optionsLayout.Controls.Add(lookbackPanel, 0, 0);
+            optionsLayout.SetColumnSpan(lookbackPanel, 2);
 
             deepScan.Text = "Full fixed-drive scan (much slower)";
             deepScan.AutoSize = true;
-            deepScan.Location = new Point(18, 64);
-            options.Controls.Add(deepScan);
+            deepScan.Dock = DockStyle.Fill;
+            deepScan.Margin = new Padding(0, 3, 6, 0);
+            optionsLayout.Controls.Add(deepScan, 0, 1);
 
             includeHashes.Text = "Hash reported files";
             includeHashes.AutoSize = true;
-            includeHashes.Location = new Point(270, 64);
-            options.Controls.Add(includeHashes);
+            includeHashes.Dock = DockStyle.Fill;
+            includeHashes.Margin = new Padding(0, 3, 0, 0);
+            optionsLayout.Controls.Add(includeHashes, 1, 1);
 
             Label removalReview = new Label();
             removalReview.Text = "Remote findings are always shown and offered for technician review. Nothing is removed automatically.";
             removalReview.ForeColor = Color.FromArgb(90, 65, 0);
-            removalReview.Location = new Point(18, 94);
-            removalReview.Size = new Size(480, 30);
-            options.Controls.Add(removalReview);
-            commandPanel.Controls.Add(options);
+            removalReview.Dock = DockStyle.Fill;
+            removalReview.Margin = new Padding(0, 2, 0, 0);
+            removalReview.AutoEllipsis = true;
+            optionsLayout.Controls.Add(removalReview, 0, 2);
+            optionsLayout.SetColumnSpan(removalReview, 2);
+            commandPanel.Controls.Add(options, 0, 0);
 
-            remoteButton.Text = "Run remote-access scanner";
+            TableLayoutPanel scanActions = new TableLayoutPanel();
+            scanActions.Dock = DockStyle.Fill;
+            scanActions.Margin = new Padding(0, 0, 12, 0);
+            scanActions.ColumnCount = 1;
+            scanActions.RowCount = 3;
+            scanActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            scanActions.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            scanActions.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));
+
+            remoteButton.Text = "1. Review remote access";
+            remoteButton.AccessibleDescription = "Find remote-support software, protect verified CompuTek access, and ask what to keep or remove.";
             remoteButton.BackColor = Blue;
             remoteButton.ForeColor = Color.White;
             remoteButton.FlatStyle = FlatStyle.Flat;
             remoteButton.FlatAppearance.BorderSize = 0;
             remoteButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            remoteButton.Size = new Size(250, 46);
-            remoteButton.Location = new Point(558, 15);
-            remoteButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            remoteButton.Dock = DockStyle.Fill;
+            remoteButton.Margin = new Padding(0, 3, 0, 6);
             remoteButton.Click += StartRemoteScanner;
-            commandPanel.Controls.Add(remoteButton);
+            scanActions.Controls.Add(remoteButton, 0, 0);
 
-            postScamButton.Text = "Collect post-scam evidence";
+            postScamButton.Text = "2. Check for scammer changes";
+            postScamButton.AccessibleDescription = "Collect focused evidence of persistence, security changes, remote sessions, and possible customer harm.";
             postScamButton.BackColor = Green;
             postScamButton.ForeColor = Color.White;
             postScamButton.FlatStyle = FlatStyle.Flat;
             postScamButton.FlatAppearance.BorderSize = 0;
             postScamButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            postScamButton.Size = new Size(250, 46);
-            postScamButton.Location = new Point(558, 76);
-            postScamButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            postScamButton.Dock = DockStyle.Fill;
+            postScamButton.Margin = new Padding(0, 6, 0, 3);
             postScamButton.Click += StartPostScamScanner;
-            commandPanel.Controls.Add(postScamButton);
+            scanActions.Controls.Add(postScamButton, 0, 1);
+
+            Label scanOrderHint = new Label();
+            scanOrderHint.Text = "Start with remote access, then run the post-scam check.";
+            scanOrderHint.ForeColor = Color.FromArgb(60, 80, 92);
+            scanOrderHint.Dock = DockStyle.Fill;
+            scanOrderHint.TextAlign = ContentAlignment.MiddleCenter;
+            scanActions.Controls.Add(scanOrderHint, 0, 2);
+            commandPanel.Controls.Add(scanActions, 1, 0);
+
+            TableLayoutPanel fileActions = new TableLayoutPanel();
+            fileActions.Dock = DockStyle.Fill;
+            fileActions.Margin = new Padding(0);
+            fileActions.ColumnCount = 2;
+            fileActions.RowCount = 3;
+            fileActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            fileActions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            fileActions.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            fileActions.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
+            fileActions.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
 
             reloadButton.Text = "Reload signatures";
-            reloadButton.Size = new Size(150, 34);
-            reloadButton.Location = new Point(828, 15);
-            reloadButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            reloadButton.Dock = DockStyle.Fill;
+            reloadButton.Margin = new Padding(0, 0, 0, 5);
             reloadButton.Click += delegate { ReloadEngine(); };
-            commandPanel.Controls.Add(reloadButton);
+            fileActions.Controls.Add(reloadButton, 0, 0);
+            fileActions.SetColumnSpan(reloadButton, 2);
 
             openCaseButton.Text = "Open last case folder";
-            openCaseButton.Size = new Size(150, 34);
-            openCaseButton.Location = new Point(828, 58);
-            openCaseButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            openCaseButton.Dock = DockStyle.Fill;
+            openCaseButton.Margin = new Padding(0, 0, 4, 4);
             openCaseButton.Enabled = false;
             openCaseButton.Click += OpenLastCaseFolder;
-            commandPanel.Controls.Add(openCaseButton);
+            fileActions.Controls.Add(openCaseButton, 0, 1);
 
             openReportButton.Text = "Open last report";
-            openReportButton.Size = new Size(160, 34);
-            openReportButton.Location = new Point(988, 58);
-            openReportButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            openReportButton.Dock = DockStyle.Fill;
+            openReportButton.Margin = new Padding(4, 0, 0, 4);
             openReportButton.Enabled = false;
             openReportButton.Click += OpenLastReport;
-            commandPanel.Controls.Add(openReportButton);
+            fileActions.Controls.Add(openReportButton, 1, 1);
 
             Label safety = new Label();
             safety.Text = "Verified CompuTek access is protected. Reviewable removals require numbered KEEP/REMOVE choices and one final YES.";
             safety.ForeColor = Color.FromArgb(128, 74, 0);
-            safety.Location = new Point(828, 96);
-            safety.Size = new Size(320, 54);
-            safety.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            commandPanel.Controls.Add(safety);
+            safety.Dock = DockStyle.Fill;
+            safety.Margin = new Padding(0, 4, 0, 0);
+            safety.TextAlign = ContentAlignment.MiddleLeft;
+            safety.AutoEllipsis = true;
+            fileActions.Controls.Add(safety, 0, 2);
+            fileActions.SetColumnSpan(safety, 2);
+            commandPanel.Controls.Add(fileActions, 2, 0);
             securityTab.Controls.Add(commandPanel);
 
-            Panel technicianPanel = new Panel();
+            TableLayoutPanel technicianPanel = new TableLayoutPanel();
             technicianPanel.Dock = DockStyle.Fill;
             technicianPanel.BackColor = LightBackground;
             technicianPanel.Padding = new Padding(16, 12, 16, 8);
+            technicianPanel.ColumnCount = 2;
+            technicianPanel.RowCount = 3;
+            technicianPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            technicianPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50F));
+            technicianPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
+            technicianPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            technicianPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 38F));
 
             technicianToolboxButton.Text = "Open IT Technician Toolbox";
             technicianToolboxButton.BackColor = Blue;
@@ -283,16 +373,16 @@ namespace CompuTek.Scanner.App
             technicianToolboxButton.FlatStyle = FlatStyle.Flat;
             technicianToolboxButton.FlatAppearance.BorderSize = 0;
             technicianToolboxButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            technicianToolboxButton.Location = new Point(18, 16);
-            technicianToolboxButton.Size = new Size(330, 46);
+            technicianToolboxButton.Dock = DockStyle.Fill;
+            technicianToolboxButton.Margin = new Padding(2, 2, 10, 8);
             technicianToolboxButton.Click += StartTechnicianToolbox;
-            technicianPanel.Controls.Add(technicianToolboxButton);
+            technicianPanel.Controls.Add(technicianToolboxButton, 0, 0);
 
             Label toolboxDescription = new Label();
             toolboxDescription.Text = "System/network information, DNS/IP repair, internet test, temp cleanup, SFC, CHKDSK, DISM, Task Manager, print queue, BitLocker, and reboot.";
-            toolboxDescription.Location = new Point(18, 68);
-            toolboxDescription.Size = new Size(330, 55);
-            technicianPanel.Controls.Add(toolboxDescription);
+            toolboxDescription.Dock = DockStyle.Fill;
+            toolboxDescription.Margin = new Padding(6, 2, 16, 2);
+            technicianPanel.Controls.Add(toolboxDescription, 0, 1);
 
             preCloneButton.Text = "Run Pre-Clone Preparation";
             preCloneButton.BackColor = Color.FromArgb(180, 92, 28);
@@ -300,32 +390,34 @@ namespace CompuTek.Scanner.App
             preCloneButton.FlatStyle = FlatStyle.Flat;
             preCloneButton.FlatAppearance.BorderSize = 0;
             preCloneButton.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            preCloneButton.Location = new Point(370, 16);
-            preCloneButton.Size = new Size(330, 46);
+            preCloneButton.Dock = DockStyle.Fill;
+            preCloneButton.Margin = new Padding(10, 2, 2, 8);
             preCloneButton.Click += StartPreClone;
-            technicianPanel.Controls.Add(preCloneButton);
+            technicianPanel.Controls.Add(preCloneButton, 1, 0);
 
             Label preCloneDescription = new Label();
             preCloneDescription.Text = "Acronis gate: verify complete BitLocker recovery keys on the USB, fully decrypt fixed drives, then pass CHKDSK.";
-            preCloneDescription.Location = new Point(370, 68);
-            preCloneDescription.Size = new Size(330, 55);
-            technicianPanel.Controls.Add(preCloneDescription);
+            preCloneDescription.Dock = DockStyle.Fill;
+            preCloneDescription.Margin = new Padding(16, 2, 6, 2);
+            technicianPanel.Controls.Add(preCloneDescription, 1, 1);
 
             Label technicianWarning = new Label();
             technicianWarning.Text = "Pre-Clone and repair tools can change Windows or disks. The Final System Check intentionally performs the store's required finishing actions.";
             technicianWarning.ForeColor = Color.FromArgb(150, 60, 0);
-            technicianWarning.Location = new Point(18, 135);
-            technicianWarning.Size = new Size(1034, 36);
-            technicianPanel.Controls.Add(technicianWarning);
+            technicianWarning.Dock = DockStyle.Fill;
+            technicianWarning.Margin = new Padding(6, 0, 6, 0);
+            technicianWarning.TextAlign = ContentAlignment.MiddleLeft;
+            technicianPanel.Controls.Add(technicianWarning, 0, 2);
+            technicianPanel.SetColumnSpan(technicianWarning, 2);
             technicianTab.Controls.Add(technicianPanel);
 
-            Panel statusPanel = new Panel();
             statusPanel.Dock = DockStyle.Fill;
-            statusPanel.Size = new Size(ClientSize.Width, 40);
-            statusPanel.BackColor = Color.White;
+            statusPanel.BackColor = Color.FromArgb(232, 245, 236);
             statusPanel.Padding = new Padding(12, 7, 12, 5);
             statusLabel.Text = "Ready";
             statusLabel.Dock = DockStyle.Fill;
+            statusLabel.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
+            statusLabel.ForeColor = Color.FromArgb(26, 92, 60);
             statusPanel.Controls.Add(statusLabel);
             progress.Style = ProgressBarStyle.Marquee;
             progress.MarqueeAnimationSpeed = 25;
@@ -335,37 +427,47 @@ namespace CompuTek.Scanner.App
             statusPanel.Controls.Add(progress);
             layout.Controls.Add(statusPanel, 0, 4);
 
-            Panel inputPanel = new Panel();
             inputPanel.Dock = DockStyle.Fill;
-            inputPanel.Size = new Size(ClientSize.Width, 82);
             inputPanel.BackColor = Color.White;
-            inputPanel.Padding = new Padding(14, 8, 14, 10);
+            inputPanel.Padding = new Padding(14, 6, 14, 8);
+
+            TableLayoutPanel inputLayout = new TableLayoutPanel();
+            inputLayout.Dock = DockStyle.Fill;
+            inputLayout.ColumnCount = 3;
+            inputLayout.RowCount = 2;
+            inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104F));
+            inputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 146F));
+            inputLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 25F));
+            inputLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            inputPanel.Controls.Add(inputLayout);
             promptLabel.Text = "Technician response (enabled when the scanner asks a question)";
-            promptLabel.Location = new Point(14, 8);
-            promptLabel.Size = new Size(900, 20);
-            inputPanel.Controls.Add(promptLabel);
-            responseText.Location = new Point(14, 35);
-            responseText.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-            responseText.Width = 870;
+            promptLabel.Dock = DockStyle.Fill;
+            promptLabel.AutoEllipsis = true;
+            promptLabel.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
+            inputLayout.Controls.Add(promptLabel, 0, 0);
+            inputLayout.SetColumnSpan(promptLabel, 3);
+            responseText.Dock = DockStyle.Fill;
+            responseText.Margin = new Padding(0, 2, 8, 1);
             responseText.BorderStyle = BorderStyle.FixedSingle;
             responseText.Enabled = false;
             responseText.KeyDown += HandleResponseKeyDown;
-            inputPanel.Controls.Add(responseText);
+            inputLayout.Controls.Add(responseText, 0, 1);
             sendButton.Text = "Send";
-            sendButton.Location = new Point(895, 33);
-            sendButton.Size = new Size(96, 30);
-            sendButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            sendButton.Dock = DockStyle.Fill;
+            sendButton.Margin = new Padding(0, 1, 8, 0);
             sendButton.Enabled = false;
             sendButton.Click += SendResponse;
-            inputPanel.Controls.Add(sendButton);
+            inputLayout.Controls.Add(sendButton, 1, 1);
             cancelButton.Text = "Cancel safely";
             cancelButton.AccessibleName = "Cancel the running tool safely";
-            cancelButton.Location = new Point(1001, 33);
-            cancelButton.Size = new Size(138, 30);
-            cancelButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            cancelButton.Dock = DockStyle.Fill;
+            cancelButton.Margin = new Padding(0, 1, 0, 0);
+            cancelButton.FlatStyle = FlatStyle.Flat;
+            cancelButton.FlatAppearance.BorderColor = Color.FromArgb(180, 92, 28);
             cancelButton.Enabled = false;
             cancelButton.Click += CancelRunningTool;
-            inputPanel.Controls.Add(cancelButton);
+            inputLayout.Controls.Add(cancelButton, 2, 1);
             layout.Controls.Add(inputPanel, 0, 3);
 
             GroupBox outputGroup = new GroupBox();
@@ -377,9 +479,10 @@ namespace CompuTek.Scanner.App
             output.ForeColor = Color.Gainsboro;
             output.Font = new Font("Consolas", 9.5F, FontStyle.Regular);
             output.ReadOnly = true;
-            output.WordWrap = false;
+            output.WordWrap = true;
             output.Dock = DockStyle.Fill;
             output.DetectUrls = false;
+            output.ScrollBars = RichTextBoxScrollBars.Vertical;
             outputGroup.Controls.Add(output);
             layout.Controls.Add(outputGroup, 0, 2);
         }
@@ -397,6 +500,7 @@ namespace CompuTek.Scanner.App
                     engineLayout.Catalog.SourceDescription,
                     engineLayout.Catalog.SignatureDescription);
                 statusLabel.Text = "Ready — signature catalog validated";
+                SetStatusAppearance(Color.FromArgb(232, 245, 236), Color.FromArgb(26, 92, 60));
                 SetActionControlsEnabled(true);
             }
             catch (Exception exception)
@@ -404,6 +508,7 @@ namespace CompuTek.Scanner.App
                 engineLayout = null;
                 catalogLabel.Text = "Signature catalog error";
                 statusLabel.Text = "Scanner unavailable: " + exception.Message;
+                SetStatusAppearance(Color.FromArgb(253, 232, 232), Color.FromArgb(145, 35, 35));
                 SetActionControlsEnabled(false);
                 MessageBox.Show(
                     "The scanner cannot run until the signature catalog is corrected.\r\n\r\n" + exception.Message,
@@ -574,7 +679,10 @@ namespace CompuTek.Scanner.App
             BeginInvoke((MethodInvoker)delegate
             {
                 awaitingInput = true;
+                currentStage = "Waiting for technician response";
                 promptLabel.Text = args.Prompt;
+                promptLabel.ForeColor = Color.FromArgb(117, 77, 0);
+                inputPanel.BackColor = Color.FromArgb(255, 248, 225);
                 responseText.Enabled = true;
                 sendButton.Enabled = true;
                 responseText.Clear();
@@ -592,6 +700,8 @@ namespace CompuTek.Scanner.App
                 responseText.Enabled = false;
                 sendButton.Enabled = false;
                 promptLabel.Text = "Technician response (enabled when the scanner asks a question)";
+                promptLabel.ForeColor = SystemColors.ControlText;
+                inputPanel.BackColor = Color.White;
                 if (engineHost != null) engineHost.Dispose();
                 engineHost = null;
                 runningTimer.Stop();
@@ -611,7 +721,8 @@ namespace CompuTek.Scanner.App
                 else
                     status = runningDisplayName + " stopped with exit code " + args.ExitCode;
                 SetRunningState(false, status);
-                AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : (args.ExitCode == 3 || args.ExitCode == 4 || args.ExitCode == 5 ? Color.Khaki : Color.Salmon));
+                SetCompletionAppearance(args.ExitCode);
+                AppendOutput(status + ".", args.ExitCode == 0 ? Color.LightGreen : (args.ExitCode == 3 || args.ExitCode == 4 || args.ExitCode == 5 || args.ExitCode == 7 ? Color.Khaki : Color.Salmon));
                 openCaseButton.Enabled = !String.IsNullOrWhiteSpace(lastCaseFolder) && Directory.Exists(lastCaseFolder);
                 openReportButton.Enabled = !String.IsNullOrWhiteSpace(lastReportPath) && File.Exists(lastReportPath);
                 if (args.ExitCode == 3 && String.Equals(runningDisplayName, "Remote-access scanner", StringComparison.OrdinalIgnoreCase))
@@ -683,6 +794,7 @@ namespace CompuTek.Scanner.App
             engineHost.RequestCancellation();
             cancelButton.Enabled = false;
             statusLabel.Text = "Safe cancellation requested — waiting for the current operation";
+            SetStatusAppearance(Color.FromArgb(255, 243, 205), Color.FromArgb(112, 73, 0));
             AppendOutput("Safe cancellation requested by the technician.", Color.Khaki);
         }
 
@@ -698,6 +810,8 @@ namespace CompuTek.Scanner.App
                 responseText.Enabled = false;
                 sendButton.Enabled = false;
                 promptLabel.Text = "Waiting for the scanner...";
+                promptLabel.ForeColor = Color.FromArgb(40, 80, 105);
+                inputPanel.BackColor = Color.FromArgb(237, 246, 252);
             }
             catch (Exception exception)
             {
@@ -793,13 +907,36 @@ namespace CompuTek.Scanner.App
             Process.Start(startInfo);
         }
 
+        private void SetStatusAppearance(Color background, Color foreground)
+        {
+            statusPanel.BackColor = background;
+            statusLabel.ForeColor = foreground;
+        }
+
+        private void SetCompletionAppearance(int exitCode)
+        {
+            if (exitCode == 0)
+                SetStatusAppearance(Color.FromArgb(232, 245, 236), Color.FromArgb(26, 92, 60));
+            else if (exitCode == 3 || exitCode == 4 || exitCode == 5 || exitCode == 7)
+                SetStatusAppearance(Color.FromArgb(255, 243, 205), Color.FromArgb(112, 73, 0));
+            else if (exitCode == 6)
+                SetStatusAppearance(Color.FromArgb(235, 238, 240), Color.FromArgb(70, 78, 84));
+            else
+                SetStatusAppearance(Color.FromArgb(253, 232, 232), Color.FromArgb(145, 35, 35));
+        }
+
         private void SetRunningState(bool running, string status)
         {
             progress.Visible = running;
             statusLabel.Text = status;
+            if (running)
+                SetStatusAppearance(Color.FromArgb(225, 240, 250), Color.FromArgb(20, 76, 112));
+            else if (status.StartsWith("Could not", StringComparison.OrdinalIgnoreCase))
+                SetStatusAppearance(Color.FromArgb(253, 232, 232), Color.FromArgb(145, 35, 35));
             SetActionControlsEnabled(!running && engineLayout != null);
             reloadButton.Enabled = !running;
             cancelButton.Enabled = running;
+            cancelButton.BackColor = running ? Color.FromArgb(255, 235, 214) : SystemColors.Control;
         }
 
         private void SetActionControlsEnabled(bool enabled)
@@ -881,6 +1018,7 @@ namespace CompuTek.Scanner.App
                     engineHost.RequestCancellation();
                     cancelButton.Enabled = false;
                     statusLabel.Text = "Safe cancellation requested — waiting for the current operation";
+                    SetStatusAppearance(Color.FromArgb(255, 243, 205), Color.FromArgb(112, 73, 0));
                     AppendOutput("Safe cancellation requested by the technician.", Color.Khaki);
                 }
             }
