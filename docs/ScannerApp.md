@@ -4,6 +4,10 @@
 
 The CompuTek logo is embedded in the application header and program icon. The USB does not need a separate logo file.
 
+The v1.6 interface uses responsive, DPI-aware panels so the scan controls, technician-response field, and **Cancel safely** button remain visible on smaller displays and Windows scaling settings. The first page remains **Final system check**. Under **Security scans**, the two main actions are numbered in the recommended order: review remote access first, then check for scammer changes. Long paths and findings wrap in the live output area instead of forcing horizontal scrolling.
+
+The status strip uses plain-language color cues: blue while a tool is running, green when it completes successfully, yellow when technician attention or an incomplete result is reported, gray after safe cancellation, and red for a failure. When the engine asks a question, the technician-response row turns yellow; after the response is sent it turns blue while the scanner continues. Color is supplemental—the full result remains written on screen and in the USB session log.
+
 ## Files to keep together
 
 - `CompuTekScanner.exe` — the application and embedded, versioned scanner engine.
